@@ -8,7 +8,7 @@ opencv-python = "*"
 pygame = "*"
 numpy = "*"
 torch = "*"
-tensorboard = "*"
+#tensorboard = "*"
 setuptools = "==59.5.0"
 
 [dev-packages]

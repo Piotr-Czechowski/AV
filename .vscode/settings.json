@@ -1,0 +1,12 @@
+{
+    "python.pythonPath": "${workspaceFolder}/venv/bin/python",  // Upewnij się, że ścieżka do Pythona jest prawidłowa
+    "terminal.integrated.env.linux": {
+        "PYTHONPATH": "${workspaceFolder}:${workspaceFolder}/A_to_B"
+    },
+    "terminal.integrated.env.windows": {
+        "PYTHONPATH": "${workspaceFolder};${workspaceFolder}\\A_to_B"
+    },
+    "terminal.integrated.env.osx": {
+        "PYTHONPATH": "${workspaceFolder}:${workspaceFolder}/A_to_B"
+    }
+}

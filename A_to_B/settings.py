@@ -2,7 +2,7 @@ import torch
 SHOULD_USE_CUDA = 'cuda' if torch.cuda.is_available() else 'cpu'
 
 # Global params
-PORT = 2060  # Port on which the server is running
+PORT = 2000  # Port on which the server is running
 ACTION_TYPE = 'discrete'  # 'discrete' or 'continuous'
 CAMERA_TYPE = 'rgb'  # 'rgb' or 'semantic'
 GAMMA = 0.9  # Discount factor
@@ -10,7 +10,8 @@ LR = 1e-4  # Learning rate
 USE_ENTROPY = True  # Entropy is a measure of chaos in a system
 # Using the measure of entropy it is easier to avoid getting stuck in a local optima
 # The name of the model which you want to load
-LOAD_MODEL = 'final_models\\a-b_sc7_rgb_discrete_gamma-0.9_lr-0.0001.pth'
+LOAD_MODEL = 'A_to_B/final_models/a-b_sc7_rgb_discrete_gamma-0.9_lr-0.0001.pth'
+LOAD_MODEL_PC = 'A_to_B/final_models/PC_MODEL'
 # If you do not want to load anything keep it empty
 STEP_COUNTER = 200  # How many steps in one episode?
 SLEEP_BETWEEN_ACTIONS = 0.2  # How many sec sleep between consecutive actions? E.g: 0.2 gives 5 actions per 1 sec

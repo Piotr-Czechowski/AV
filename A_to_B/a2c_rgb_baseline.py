@@ -16,11 +16,11 @@ import torch.multiprocessing as mp
 import settings
 from torch.distributions.categorical import Categorical
 from torch.distributions.multivariate_normal import MultivariateNormal
-from torch.utils.tensorboard import SummaryWriter
+#from torch.utils.tensorboard import SummaryWriter
 
-from carla_env_chase import CarlaEnv
+from carla_env import CarlaEnv
 
-# For RGB camera
+# For RGB
 from nets.a2c import Actor as DeepActor  # Continuous
 from nets.a2c import DiscreteActor as DeepDiscreteActor  # Separate actor
 from nets.a2c import Critic as DeepCritic  # Separate critic
@@ -45,10 +45,10 @@ gamma = settings.GAMMA
 lr = settings.LR
 use_entropy = settings.USE_ENTROPY
 scenario = settings.SCENARIO
-model_description = settings.TB_DESCRIPTION
 
 # Tensorboard
-writer = SummaryWriter(comment=model_description)
+#comment = f'a-b_{action_type}_{camera_type}_sc{scenario}_g{gamma}_lr{lr}_entropy{use_entropy}'
+#writer = SummaryWriter(comment=comment)
 
 # Transition - the representation of a single transition
 """
@@ -74,22 +74,21 @@ class DeepActorCriticAgent(mp.Process):
         self.lr = lr
         self.use_entropy = use_entropy
 
-        self.env = CarlaEnv(scenario=scenario,  port=port, action_space=self.action_type, camera=self.camera_type,
-                            res_x=80, res_y=80, manual_control=False)
+        env = CarlaEnv(scenario=scenario, spawn_point=False, terminal_point=False, mp_density=25, port=port,
+                       action_space=self.action_type, camera=self.camera_type, resX=80, resY=80, manual_control=False)
 
-        self.environment = self.env  # Carla env
+        self.environment = env  # Carla env
         self.trajectory = []  # Contains the trajectory of the agent as a sequence of transitions
         self.rewards = []  # Contains the rewards obtained from the env at every step
         self.policy = self.discrete_policy  # discrete or continuous
 
         self.best_mean_reward = - float("inf")  # Agent's personal best mean episode reward
         self.best_reward = - float("inf")
-        self.chase_time = []
         self.global_step_num = 0
         self.log = ColoredPrint()
+
         # For continuous policy
-        self.mu = 0
-        self.sigma = 0
+        self.mu, self.sigma = 0, 0
         # For discrete policy
         self.logits = 0
 
@@ -124,11 +123,11 @@ class DeepActorCriticAgent(mp.Process):
         value = self.critic(obs)
         # Clamp each dim of mu based on the (low,high) limits of that action dim
         [mu[:, i].clamp_(-1, 1) for i in range(self.action_shape)]
-        sigma = torch.nn.Softplus()(sigma).squeeze() + 1e-7  # Let sigma be (smoothly) + ve
+        sigma = torch.nn.Softplus()(sigma).squeeze() + 1e-7  # Let sigma be (smoothly) +ve
         self.mu = mu.to(torch.device("cuda"))
         self.sigma = sigma.to(torch.device("cuda"))
         self.value = value.to(torch.device("cuda"))
-        if len(self.mu.shape) == 0:  # See if mu is a scalar
+        if len(self.mu.shape) == 0: # See if mu is a scalar
             self.mu.unsqueeze_(0)
 
         self.action_distribution = MultivariateNormal(self.mu, torch.eye(self.action_shape).to(device) * self.sigma,
@@ -147,6 +146,7 @@ class DeepActorCriticAgent(mp.Process):
         action = action_distribution.sample()
 
         log_prob_a = action_distribution.log_prob(action)
+
         action = self.process_action(action)
         # Store the n-step trajectory while training. Skip storing the trajectories in test mode
         self.trajectory.append(Transition(obs, self.value, action, log_prob_a))  # Construct the trajectory
@@ -190,7 +190,6 @@ class DeepActorCriticAgent(mp.Process):
         """
         Calculates the critic and actor losses using the td_targets and self.trajectory
         :param td_targets:
-        :param trajectory:
         :return:
         """
         n_step_trajectory = Transition(*zip(*trajectory))
@@ -198,7 +197,7 @@ class DeepActorCriticAgent(mp.Process):
         log_prob_a_batch = n_step_trajectory.log_prob_a
         actor_losses, critic_losses, advantages = [], [], []
         for td_target, critic_prediction, log_p_a in zip(td_targets, v_s_batch, log_prob_a_batch):
-            writer.add_scalar("Value", critic_prediction, self.global_step_num)
+            #writer.add_scalar("Value", critic_prediction, self.global_step_num)
             td_err = td_target - critic_prediction  # td_err is an unbiased estimated of Advantage
             advantages.append(td_err)
             result = - log_p_a * td_err
@@ -214,9 +213,9 @@ class DeepActorCriticAgent(mp.Process):
         critic_loss = torch.stack(critic_losses).mean()
         advantage = torch.stack(advantages).mean()
 
-        writer.add_scalar("actor_loss", actor_loss, self.global_step_num)
-        writer.add_scalar("critic_loss", critic_loss, self.global_step_num)
-        writer.add_scalar("Advantage", advantage, self.global_step_num)
+        #writer.add_scalar("actor_loss", actor_loss, self.global_step_num)
+        #writer.add_scalar("critic_loss", critic_loss, self.global_step_num)
+        #writer.add_scalar("Advantage", advantage, self.global_step_num)
         # writer.add_scalar("log_prob_actions_batch_mean", sum(log_prob_a_batch)/len(log_prob_a_batch), self.global_step_num)
         # writer.add_scalar("v_s_batch", sum(v_s_batch)/len(v_s_batch), self.global_step_num)
         # writer.add_scalar("td_targets", sum(td_targets)/len(td_targets), self.global_step_num)
@@ -246,11 +245,10 @@ class DeepActorCriticAgent(mp.Process):
             self.load(load_model)
 
         episode_rewards = []  # Every episode's reward
-        effective_chase_times = []
         prev_checkpoint_mean_ep_rew = self.best_mean_reward
         num_improved_episodes_before_checkpoint = 0  # To keep track of the num of ep with higher perf to save model
 
-        for episode in range(1000000):
+        for episode in range(100000):
             # Get a single frame form the environment - from a spawn point
             state_rgb = self.environment.reset()
             state_rgb = state_rgb / 255.0  # resize the tensor to [0, 1]
@@ -282,13 +280,13 @@ class DeepActorCriticAgent(mp.Process):
 
                 state_rgb = new_state
                 self.global_step_num += 1
-                writer.add_scalar("reward", reward, self.global_step_num)
+                #writer.add_scalar("reward", reward, self.global_step_num)
 
             if self.action_type == 'discrete':
                 print(str(actions_counter))
 
             episode_rewards.append(ep_reward)
-            # The best reward
+
             if ep_reward > self.best_reward:
                 self.best_reward = ep_reward
             if np.mean(episode_rewards) > prev_checkpoint_mean_ep_rew:
@@ -299,18 +297,18 @@ class DeepActorCriticAgent(mp.Process):
                 if not os.path.exists('improved_models'):
                     os.mkdir('improved_models')
                 save_path = os.getcwd() + '\improved_models'
-                file_name = f"{episode}_" + model_description
+                file_name = f"{episode}_a-b_{self.camera_type}_{self.action_type}_gamma-{self.gamma}_lr-{self.lr}"
                 cp_name = os.path.join(save_path, file_name)
-                self.save(cp_name)  # Save the model when it improves
+                self.save(cp_name) # Save the model when it improves
                 num_improved_episodes_before_checkpoint = 0
 
             if episode % 100 == 0:  # Save the model per 100 episodes
-                self.save(f"100_" + model_description)
+                self.save(f"100_a-b_{self.camera_type}_{self.action_type}_gamma-{self.gamma}_lr-{self.lr}")
             if episode % 250 == 0:
                 if not os.path.exists('models'):
                     os.mkdir('models')
                 save_path = os.getcwd() + '/models'
-                file_name = f"{episode}_" + model_description
+                file_name = f"{episode}_a-b_{self.camera_type}_{self.action_type}_gamma-{self.gamma}_lr-{self.lr}"
                 cp_name = os.path.join(save_path, file_name)
                 self.save(cp_name)
 
@@ -318,12 +316,7 @@ class DeepActorCriticAgent(mp.Process):
                                                                                              ep_reward,
                                                                                              np.mean(episode_rewards),
                                                                                              self.best_reward))
-            writer.add_scalar("ep_reward", ep_reward, episode)
-
-            effective_chase_times.append(self.env.effective_chase_per)
-            avg_chase_per = sum(effective_chase_times) / len(effective_chase_times)
-            writer.add_scalar("effective_chase%", self.env.effective_chase_per, episode)
-            writer.add_scalar("effective_chase%_mean", avg_chase_per, episode)
+            #writer.add_scalar("ep_reward", ep_reward, episode)
 
     def save(self, name):
         model_file_name = name + ".pth"
@@ -353,4 +346,4 @@ class DeepActorCriticAgent(mp.Process):
 if __name__ == "__main__":
     agent = DeepActorCriticAgent()
     agent.train()
-    writer.close()
+    # writer.close()

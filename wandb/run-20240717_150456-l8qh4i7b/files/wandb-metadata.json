@@ -1,0 +1,216 @@
+{
+    "os": "Linux-3.10.0-693.11.6.el7.x86_64-x86_64-with-glibc2.31",
+    "python": "3.10.14",
+    "heartbeatAt": "2024-07-17T13:04:57.416025",
+    "startedAt": "2024-07-17T13:04:56.693338",
+    "docker": null,
+    "cuda": null,
+    "args": [],
+    "state": "running",
+    "program": "/home/carla/client/AtoB/Autonomous-driving-in-Carla/A_to_B/a2c_rgb_try1.py",
+    "codePathLocal": "A_to_B/a2c_rgb_try1.py",
+    "codePath": "A_to_B/a2c_rgb_try1.py",
+    "git": {
+        "remote": "https://github.com/Michal-Kolomanski/Autonomous-driving-in-Carla",
+        "commit": "23c590d61ba4caca17678e7871f28c0b89b4f2b6"
+    },
+    "email": "czechowskip314@gmail.com",
+    "root": "/home/carla/client/AtoB/Autonomous-driving-in-Carla",
+    "host": "a01",
+    "username": "carla",
+    "executable": "/venv/bin/python",
+    "cpu_count": 16,
+    "cpu_count_logical": 32,
+    "cpu_freq": {
+        "current": 1839.4859375000003,
+        "min": 1200.0,
+        "max": 3200.0
+    },
+    "cpu_freq_per_core": [
+        {
+            "current": 2631.656,
+            "min": 1200.0,
+            "max": 3200.0
+        },
+        {
+            "current": 2400.0,
+            "min": 1200.0,
+            "max": 3200.0
+        },
+        {
+            "current": 2375.531,
+            "min": 1200.0,
+            "max": 3200.0
+        },
+        {
+            "current": 2400.0,
+            "min": 1200.0,
+            "max": 3200.0
+        },
+        {
+            "current": 2716.312,
+            "min": 1200.0,
+            "max": 3200.0
+        },
+        {
+            "current": 2543.906,
+            "min": 1200.0,
+            "max": 3200.0
+        },
+        {
+            "current": 1839.75,
+            "min": 1200.0,
+            "max": 3200.0
+        },
+        {
+            "current": 2910.843,
+            "min": 1200.0,
+            "max": 3200.0
+        },
+        {
+            "current": 1312.406,
+            "min": 1200.0,
+            "max": 3200.0
+        },
+        {
+            "current": 1378.687,
+            "min": 1200.0,
+            "max": 3200.0
+        },
+        {
+            "current": 1200.093,
+            "min": 1200.0,
+            "max": 3200.0
+        },
+        {
+            "current": 1233.468,
+            "min": 1200.0,
+            "max": 3200.0
+        },
+        {
+            "current": 1288.031,
+            "min": 1200.0,
+            "max": 3200.0
+        },
+        {
+            "current": 1262.531,
+            "min": 1200.0,
+            "max": 3200.0
+        },
+        {
+            "current": 1304.718,
+            "min": 1200.0,
+            "max": 3200.0
+        },
+        {
+            "current": 1298.062,
+            "min": 1200.0,
+            "max": 3200.0
+        },
+        {
+            "current": 2826.562,
+            "min": 1200.0,
+            "max": 3200.0
+        },
+        {
+            "current": 2391.937,
+            "min": 1200.0,
+            "max": 3200.0
+        },
+        {
+            "current": 1851.468,
+            "min": 1200.0,
+            "max": 3200.0
+        },
+        {
+            "current": 2400.0,
+            "min": 1200.0,
+            "max": 3200.0
+        },
+        {
+            "current": 2747.718,
+            "min": 1200.0,
+            "max": 3200.0
+        },
+        {
+            "current": 2794.312,
+            "min": 1200.0,
+            "max": 3200.0
+        },
+        {
+            "current": 1798.875,
+            "min": 1200.0,
+            "max": 3200.0
+        },
+        {
+            "current": 2709.937,
+            "min": 1200.0,
+            "max": 3200.0
+        },
+        {
+            "current": 1280.531,
+            "min": 1200.0,
+            "max": 3200.0
+        },
+        {
+            "current": 1289.906,
+            "min": 1200.0,
+            "max": 3200.0
+        },
+        {
+            "current": 1235.343,
+            "min": 1200.0,
+            "max": 3200.0
+        },
+        {
+            "current": 1412.531,
+            "min": 1200.0,
+            "max": 3200.0
+        },
+        {
+            "current": 1494.281,
+            "min": 1200.0,
+            "max": 3200.0
+        },
+        {
+            "current": 1288.687,
+            "min": 1200.0,
+            "max": 3200.0
+        },
+        {
+            "current": 1300.781,
+            "min": 1200.0,
+            "max": 3200.0
+        },
+        {
+            "current": 1227.843,
+            "min": 1200.0,
+            "max": 3200.0
+        }
+    ],
+    "disk": {
+        "/": {
+            "total": 1833.6487045288086,
+            "used": 1108.525131225586
+        }
+    },
+    "gpu": "Tesla K80",
+    "gpu_count": 3,
+    "gpu_devices": [
+        {
+            "name": "Tesla K80",
+            "memory_total": 11997020160
+        },
+        {
+            "name": "Tesla K80",
+            "memory_total": 11997020160
+        },
+        {
+            "name": "Tesla K80",
+            "memory_total": 11997020160
+        }
+    ],
+    "memory": {
+        "total": 109.89730834960938
+    }
+}
