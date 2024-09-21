@@ -70,7 +70,7 @@ def reward_function(collision_history_list, invasion_counter, speed, route_dista
     Speed reward
     """
 
-    speed_reward = speed / 10 - 2  # 35km/h spinning in circles
+    speed_reward = speed / 10 - 2.2  # 35km/h spinning in circles
 
     """
     Distance reward
@@ -80,7 +80,7 @@ def reward_function(collision_history_list, invasion_counter, speed, route_dista
 
     else:
         route_distance_reward = -3 * (route_distance - 2)
-
+    print("terminal_state_reward: ", terminal_state_reward, "col_reward: ", col_reward, "speed_reward: ",speed_reward, "route_distance_reward: ", route_distance_reward, "inv_reward: ", inv_reward, "mp_static_reward: ", mp_static_reward)
     reward = terminal_state_reward + col_reward + speed_reward + route_distance_reward + inv_reward + mp_static_reward
 
     return reward, done

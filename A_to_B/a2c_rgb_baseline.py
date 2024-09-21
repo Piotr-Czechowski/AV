@@ -267,7 +267,7 @@ class DeepActorCriticAgent(mp.Process):
                 if self.action_type == 'discrete':
                     actions_counter[ac.ACTIONS_NAMES[self.environment.action_space[action]]] += 1
 
-                new_state, reward, done = self.environment.step(action)
+                new_state, reward, done, route_distance = self.environment.step(action)
                 new_state = new_state / 255  # resize the tensor to [0, 1]
 
                 self.rewards.append(reward)

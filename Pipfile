@@ -7,11 +7,12 @@ name = "pypi"
 opencv-python = "*"
 pygame = "*"
 numpy = "*"
-torch = "*"
+torch = "==1.8.1"
 #tensorboard = "*"
 setuptools = "==59.5.0"
 
 [dev-packages]
+ipykernel = "*"
 
 [requires]
-python_version = "3.7"
+python_version = "3.8"

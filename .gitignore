@@ -138,3 +138,12 @@ dmypy.json
 *.0
 *.pth
 .idea/.name
+
+__pycache__/
+# Ignore virtual environment directories
+venv/
+env/
+# Ignore Weights & Biases folder
+wandb/
+# Ignore specific Weights & Biases files
+*.wandb

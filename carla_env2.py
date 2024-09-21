@@ -314,6 +314,7 @@ class CarlaEnv:
 
         rgb_cam = self.world.spawn_actor(rgb_cam_bp, self.transform, attach_to=self.vehicle)
         self.actor_list.append(rgb_cam)
+
         rgb_cam.listen(lambda data: self.process_rgb_img(data))
 
     def process_rgb_img(self, image):
