@@ -39,7 +39,7 @@ serv_resx = settings.SERV_RESX
 serv_resy = settings.SERV_RESY
 
 def reload_world2(results_queue):
-    client = carla.Client('localhost', 2000)
+    client = carla.Client('server', 2000)
     old_world = client.get_world()
     if old_world is not None:
         prev_world_id = old_world.id
@@ -792,7 +792,7 @@ class CarlaEnv:
                 continue
             else:
                 # empty the queue
-                self.client = carla.Client('localhost', 2000)
+                self.client = carla.Client('server', 2000)
                 self.world = self.client.get_world()
                 results_queue.get()
                 break

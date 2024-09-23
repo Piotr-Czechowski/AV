@@ -54,7 +54,7 @@ class CarlaEnv:
         # -carla-port
         # -carla-world-port
         # -carla-rpc-port
-        self.client = carla.Client('localhost', port)
+        self.client = carla.Client('server', port)
         self.client.set_timeout(30.0)
 
         # Make sure that server and client versions are the same
