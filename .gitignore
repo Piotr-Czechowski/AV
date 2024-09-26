@@ -136,7 +136,6 @@ dmypy.json
 .idea/workspace.xml
 .idea/other.xml
 *.0
-*.pth
 .idea/.name
 
 __pycache__/
