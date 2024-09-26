@@ -118,6 +118,8 @@ class DeepActorCriticAgent(mp.Process):
         self.critic = DeepCritic(state_shape, critic_shape, device).to(device)
         self.actor_optimizer = torch.optim.Adam(self.actor.parameters(), lr=self.lr)
         self.critic_optimizer = torch.optim.Adam(self.critic.parameters(), lr=self.lr)
+        self.mean_reward = 0
+        self.episode = 0
 
     def multi_variate_gaussian_policy(self, obs):
         """
@@ -255,7 +257,9 @@ class DeepActorCriticAgent(mp.Process):
                        "critic": self.critic.state_dict(),
                        "critic_optimizer": self.critic_optimizer.state_dict(),
                        "best_mean_reward": self.best_mean_reward,
-                       "best_reward": self.best_reward}
+                       "best_reward": self.best_reward,
+                       "episode": self.episode,
+                       "mean_reward": self.mean_reward}
         torch.save(self_state, model_file_name)
         print("self's state is saved to", model_file_name)
 
@@ -268,29 +272,38 @@ class DeepActorCriticAgent(mp.Process):
         self.critic_optimizer.load_state_dict(self_state["critic_optimizer"])
         self.actor.to(device) #added
         self.critic.to(device) #added
-
+        try:
+            self.mean_reward = self_state["mean_reward"]
+        except:
+            pass
+        try:
+            self.episode = self_state["episode"]
+        except: 
+            pass
         self.best_mean_reward = self_state["best_mean_reward"]
         self.best_reward = self_state["best_reward"]
         print("Loaded Advantage Actor-Critic model state from", model_file_name,
               " which fetched a best mean reward of:", self.best_mean_reward,
               " and an all time best reward of:", self.best_reward)
         
-def handle_crash(results_queue, episode_idx, server_failed, mean_reward):
+def handle_crash(results_queue):
     wandb.init(
     # set the #wandb project where this run will be logged
     project="A_to_B",
     # create or extend already logged run:
     resume="allow",
-    id="run38",  
+    id="run39",  
 
     # track hyperparameters and run metadata
     config={
-    "name" : "run38_two_right_turns",
+    "name" : "run39_two_right_turns",
     "learning_rate": lr
     }
     )
 
     agent = DeepActorCriticAgent()
+    agent.mean_reward = 970
+    agent.episode = 15327
     if os.path.isfile(model_incr_load):
         print("model istnieje i jest wgrywany.")
         agent.load(model_incr_load)
@@ -303,7 +316,7 @@ def handle_crash(results_queue, episode_idx, server_failed, mean_reward):
     
     while 1:
         # with lock:
-        episode_idx.value += 1
+        agent.episode += 1
 
         state_rgb = agent.environment.reset()
         state_rgb = state_rgb / 255.0  # resize the tensor to [0, 1]
@@ -343,41 +356,41 @@ def handle_crash(results_queue, episode_idx, server_failed, mean_reward):
             print(str(actions_counter))
 
         episode_rewards.append(ep_reward)
-        mean_reward.value = (mean_reward.value * episode_idx.value + ep_reward)/(episode_idx.value + 1)
+        agent.mean_reward = (agent.mean_reward * agent.episode + ep_reward)/(agent.episode + 1)
         
         if ep_reward > agent.best_reward:
             agent.best_reward = ep_reward
         # if np.mean(episode_rewards) > prev_checkpoint_mean_ep_rew:
-        if mean_reward.value > prev_checkpoint_mean_ep_rew:
+        if agent.mean_reward > prev_checkpoint_mean_ep_rew:
             num_improved_episodes_before_checkpoint += 1
         if num_improved_episodes_before_checkpoint >= 3:
             # prev_checkpoint_mean_ep_rew = np.mean(episode_rewards)
             # agent.best_mean_reward = np.mean(episode_rewards)
-            prev_checkpoint_mean_ep_rew = mean_reward.value
-            agent.best_mean_reward = mean_reward.value
+            prev_checkpoint_mean_ep_rew = agent.mean_reward
+            agent.best_mean_reward = agent.mean_reward
             if not os.path.exists('improved_models'):
                 os.mkdir('improved_models')
             save_path = os.getcwd() + '/improved_models'
-            file_name = f"{episode_idx.value}_a-b_{agent.camera_type}_{agent.action_type}_gamma-{agent.gamma}_lr-{agent.lr}"
+            file_name = f"{agent.episode}_a-b_{agent.camera_type}_{agent.action_type}_gamma-{agent.gamma}_lr-{agent.lr}"
             cp_name = os.path.join(save_path, file_name)
             agent.save(cp_name) # Save the model when it improves
             num_improved_episodes_before_checkpoint = 0
         agent.save(model_incr_save)
-        if episode_idx.value % 100 == 0:  # Save the model per 100 episodes
+        if agent.episode % 100 == 0:  # Save the model per 100 episodes
             agent.save(f"100_a-b_{agent.camera_type}_{agent.action_type}_gamma-{agent.gamma}_lr-{agent.lr}")
-        if episode_idx.value % 250 == 0:
+        if agent.episode % 250 == 0:
             if not os.path.exists('models'):
                 os.mkdir('models')
             save_path = os.getcwd() + '/models'
-            file_name = f"{episode_idx.value}_a-b_{agent.camera_type}_{agent.action_type}_gamma-{agent.gamma}_lr-{agent.lr}"
+            file_name = f"{agent.episode}_a-b_{agent.camera_type}_{agent.action_type}_gamma-{agent.gamma}_lr-{agent.lr}"
             cp_name = os.path.join(save_path, file_name)
             agent.save(cp_name)
 
-        wandb.log({"episode": episode_idx.value, "reward": ep_reward, "learning_rate": agent.lr, "mean_reward": mean_reward.value})
-        print("Episode: {} \t ep_reward:{} \t mean_ep_rew:{}\t best_ep_reward:{}".format(episode_idx.value,
+        wandb.log({"episode": agent.episode, "reward": ep_reward, "learning_rate": agent.lr, "mean_reward": agent.mean_reward})
+        print("Episode: {} \t ep_reward:{} \t mean_ep_rew:{}\t best_ep_reward:{}".format(agent.episode,
                                                                                             ep_reward,
                                                                                             # np.mean(episode_rewards),
-                                                                                            mean_reward.value,
+                                                                                            agent.mean_reward,
                                                                                             agent.best_reward))        
     #wandb.finish()
     del world
@@ -389,20 +402,14 @@ if __name__ == "__main__":
     mp.set_start_method('spawn')
     results_queue = mp.Queue()
     manager = mp.Manager()
-    episode_idx = manager.Value('i', 5988)
     # lock = manager.Lock()
-    server_failed = manager.Value('i', 0)
-    mean_reward = manager.Value('d', 365)
     while 1:   
-        p = mp.Process(target=handle_crash, args=(results_queue, episode_idx, server_failed, mean_reward))
+        p = mp.Process(target=handle_crash, args=(results_queue,))
         p.start()
         p.join()
         if results_queue.empty():
-            server_failed.value += 1
             # with lock:
-            print(f'Process failed for episode {episode_idx.value} .')
-            print(f'Process failed for the {server_failed.value} time.')
-
+            print(f'Process failed.')
             # try to remove 'core.*' files
             for core_file in glob.glob(os.path.join(os.getcwd(), 'core.*')):
                os.remove(core_file)
@@ -414,5 +421,3 @@ if __name__ == "__main__":
             # empty the queue
             results_queue.get()
             # with lock:
-            episode_idx += 1
-
