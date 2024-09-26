@@ -297,6 +297,14 @@ def handle_crash(results_queue):
         agent.episode += 1
 
         state_rgb = agent.environment.reset()
+                # SET SYNCHRONOUS MODE
+        agent.environment.settings = agent.environment.world.get_settings()
+        agent.environment.settings.synchronous_mode = True
+        agent.environment.settings.fixed_delta_seconds = 0.1
+        agent.environment.settings.max_substep_delta_time = 0.01
+        agent.environment.settings.max_substeps = 10
+        agent.environment.world.apply_settings(agent.environment.settings)
+
         state_rgb = state_rgb / 255.0  # resize the tensor to [0, 1]
 
         done = False
@@ -309,6 +317,7 @@ def handle_crash(results_queue):
             actions_counter[action] = 0
 
         while not done:
+            agent.environment.world.tick()
             action = agent.get_action(state_rgb)
             if agent.action_type == 'discrete':
                 actions_counter[ac.ACTIONS_NAMES[agent.environment.action_space[action]]] += 1

@@ -39,27 +39,6 @@ tp_reward = settings.REWARD_FROM_TP
 serv_resx = settings.SERV_RESX
 serv_resy = settings.SERV_RESY
 
-# def reload_world2(results_queue):
-#     client = carla.Client('localhost', 2000)
-#     old_world = client.get_world()
-#     if old_world is not None:
-#         prev_world_id = old_world.id
-#         del old_world
-#     else:
-#         prev_world_id = None
-#     print("Load world:")
-#     client.load_world('Town03')
-#     print("Get world:")
-#     tries = 3
-#     world = client.get_world()
-#     while prev_world_id == world.id and tries > 0:
-#         tries -= 1
-#         time.sleep(1)
-#         world = client.get_world()
-
-#     del world
-#     del client
-#     results_queue.put(1)
 
 def start_carla_server(args):
     return subprocess.Popen(f'CarlaUE4.exe ' + args, cwd=settings.CARLA_PATH, shell=True)
@@ -106,8 +85,9 @@ class CarlaEnv:
             self.log.warn(f"Client version: {client_ver}, Server version: {server_ver}")
 
         self.world = self.client.load_world('Town03')
-        # self.world = self.client.get_world()
-        self.settings = self.world.get_settings()
+
+
+
         self.camera_type = camera
         self.blueprint_library = self.world.get_blueprint_library()
         self.map = self.world.get_map()
@@ -788,33 +768,9 @@ class CarlaEnv:
         """
         Rest variables at the end of each episode
         """
-        # self.world = self.client.get_world()
         self.destroy_agents()
         self.actor_list = []
 
-        # results_queue = mp.Queue()
-        # while 1:
-        #     p = mp.Process(target=reload_world2, args=(results_queue,))
-        #     p.start()
-        #     p.join()
-
-
-        #             # Get a single frame form the environment - from a spawn point
-        #     if results_queue.empty():
-        #         print(f'Process failed')
-        #         # try to remove 'core.*' files
-        #         for core_file in glob.glob(os.path.join(os.getcwd(), 'core.*')):
-        #             os.remove(core_file)
-
-        #         time.sleep(float(os.getenv('CARLA_SERVER_START_PERIOD', '30.0')))
-        #         continue
-        #     else:
-        #         # empty the queue
-        #         self.client = carla.Client('localhost', 2000)
-        #         self.world = self.client.get_world()
-        #         results_queue.get()
-        #         break
-        # print("Env is clear")
 
         old_world = self.client.get_world()
         if old_world is not None:
@@ -822,8 +778,18 @@ class CarlaEnv:
             del old_world
         else:
             prev_world_id = None
+        
 
-        self.client.load_world('Town03')
+        self.world = self.client.load_world('Town03')
+
+        # # SET SYNCHRONOUS MODE
+        # self.settings = self.world.get_settings()
+        # self.settings.synchronous_mode = True
+        # self.settings.fixed_delta_seconds = 0.1
+        # self.settings.max_substep_delta_time = 0.01
+        # self.settings.max_substeps = 10
+        # self.world.apply_settings(self.settings)
+        # self.client.reload_world(False)
 
         tries = 3
         self.world = self.client.get_world()
@@ -884,8 +850,8 @@ class CarlaEnv:
         self.add_line_invasion_sensor()
 
         self.vehicle.apply_control(carla.VehicleControl(throttle=1.0, brake=1.0))
-        time.sleep(2) # added PC
-        time.sleep(0.5)
+        # time.sleep(2) # added PC
+        # time.sleep(0.5)
 
         while self.front_camera is None:
             time.sleep(0.01)
@@ -910,9 +876,10 @@ class CarlaEnv:
         else:
             self.car_control_discrete(action)
 
-        if sleep_time:
-            # How many actions per sec?
-            time.sleep(sleep_time)
+        #COMMENT OUT if SYNCHROUNOUS MODE
+        # if sleep_time:
+        #     # How many actions per sec?
+        #     time.sleep(sleep_time)
 
         _, vehicle_location = self.calculate_distance()
 
