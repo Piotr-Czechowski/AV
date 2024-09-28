@@ -18,7 +18,7 @@ from collections import namedtuple
 import torch
 import torch.nn.functional as F
 import torch.multiprocessing as mp
-#import ##wandb
+import wandb
 import settings
 from torch.distributions.categorical import Categorical
 from torch.distributions.multivariate_normal import MultivariateNormal
@@ -287,7 +287,7 @@ class DeepActorCriticAgent(mp.Process):
               " and an all time best reward of:", self.best_reward)
         
 def handle_crash(results_queue):
-    ##wandb.init(
+    wandb.init(
     # set the ###wandb project where this run will be logged
     project="A_to_B",
     # create or extend already logged run:
@@ -299,11 +299,11 @@ def handle_crash(results_queue):
     "name" : "run39_two_right_turns",
     "learning_rate": lr
     }
-    #)
+    )
 
     agent = DeepActorCriticAgent()
-    agent.mean_reward = 970
-    agent.episode = 15327
+    agent.mean_reward = 0
+    agent.episode = 0
     if os.path.isfile(model_incr_load):
         print("model istnieje i jest wgrywany.")
         agent.load(model_incr_load)
@@ -361,30 +361,31 @@ def handle_crash(results_queue):
         if ep_reward > agent.best_reward:
             agent.best_reward = ep_reward
         # if np.mean(episode_rewards) > prev_checkpoint_mean_ep_rew:
-        if agent.mean_reward > prev_checkpoint_mean_ep_rew:
-            num_improved_episodes_before_checkpoint += 1
-        if num_improved_episodes_before_checkpoint >= 3:
-            # prev_checkpoint_mean_ep_rew = np.mean(episode_rewards)
-            # agent.best_mean_reward = np.mean(episode_rewards)
-            prev_checkpoint_mean_ep_rew = agent.mean_reward
-            agent.best_mean_reward = agent.mean_reward
-            if not os.path.exists('improved_models'):
-                os.mkdir('improved_models')
-            save_path = os.getcwd() + '/improved_models'
-            file_name = f"{agent.episode}_a-b_{agent.camera_type}_{agent.action_type}_gamma-{agent.gamma}_lr-{agent.lr}"
-            cp_name = os.path.join(save_path, file_name)
-            agent.save(cp_name) # Save the model when it improves
-            num_improved_episodes_before_checkpoint = 0
+        # if agent.mean_reward > prev_checkpoint_mean_ep_rew:
+        #     num_improved_episodes_before_checkpoint += 1
+        # if num_improved_episodes_before_checkpoint >= 3:
+        #     # prev_checkpoint_mean_ep_rew = np.mean(episode_rewards)
+        #     # agent.best_mean_reward = np.mean(episode_rewards)
+        #     prev_checkpoint_mean_ep_rew = agent.mean_reward
+        #     agent.best_mean_reward = agent.mean_reward
+        #     if not os.path.exists('improved_models'):
+        #         os.mkdir('improved_models')
+        #     save_path = os.getcwd() + '/improved_models'
+        #     file_name = f"{agent.episode}_a-b_{agent.camera_type}_{agent.action_type}_gamma-{agent.gamma}_lr-{agent.lr}"
+        #     cp_name = os.path.join(save_path, file_name)
+            # agent.save(cp_name) # Save the model when it improves
+            # num_improved_episodes_before_checkpoint = 0
         agent.save(model_incr_save)
-        if agent.episode % 100 == 0:  # Save the model per 100 episodes
-            agent.save(f"100_a-b_{agent.camera_type}_{agent.action_type}_gamma-{agent.gamma}_lr-{agent.lr}")
-        if agent.episode % 250 == 0:
-            if not os.path.exists('models'):
-                os.mkdir('models')
-            save_path = os.getcwd() + '/models'
-            file_name = f"{agent.episode}_a-b_{agent.camera_type}_{agent.action_type}_gamma-{agent.gamma}_lr-{agent.lr}"
-            cp_name = os.path.join(save_path, file_name)
-            agent.save(cp_name)
+        wandb.log({"reward": ep_reward})
+        # if agent.episode % 100 == 0:  # Save the model per 100 episodes
+        #     agent.save(f"100_a-b_{agent.camera_type}_{agent.action_type}_gamma-{agent.gamma}_lr-{agent.lr}")
+        # if agent.episode % 250 == 0:
+        #     if not os.path.exists('models'):
+        #         os.mkdir('models')
+        #     save_path = os.getcwd() + '/models'
+        #     file_name = f"{agent.episode}_a-b_{agent.camera_type}_{agent.action_type}_gamma-{agent.gamma}_lr-{agent.lr}"
+        #     cp_name = os.path.join(save_path, file_name)
+        #     agent.save(cp_name)
 
         ##wandb.log({"episode": episode_idx.value, "reward": ep_reward, "learning_rate": agent.lr, "mean_reward": mean_reward.value})
         print("ep_reward:{} \t mean_ep_rew:{}\t best_ep_reward:{}".format(ep_reward,

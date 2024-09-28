@@ -280,8 +280,8 @@ class DeepActorCriticAgent(mp.Process):
 def handle_crash(results_queue):
 
     agent = DeepActorCriticAgent()
-    agent.mean_reward = 970
-    agent.episode = 15327
+    agent.mean_reward = 0
+    agent.episode = 0
     if os.path.isfile(model_incr_load):
         print("model istnieje i jest wgrywany.")
         agent.load(model_incr_load)
