@@ -2,7 +2,7 @@ import torch
 SHOULD_USE_CUDA = 'cuda' if torch.cuda.is_available() else 'cpu'
 
 # Global params
-PORT = 2000  # Port on which the server is running
+PORT = 3000  # Port on which the server is running
 ACTION_TYPE = 'discrete'  # 'discrete' or 'continuous'
 CAMERA_TYPE = 'rgb'  # 'rgb' or 'semantic'
 GAMMA = 0.9  # Discount factor
@@ -19,7 +19,7 @@ SLEEP_BETWEEN_ACTIONS = 0.2  # How many sec sleep between consecutive actions? E
 SHOW_CAM = False  # Vehicle's camera preview
 SERV_RESX = 640  # Server X resolution
 SERV_RESY = 480  # Server Y resolution
-SCENARIO = [7]  # List of scenarios on which the model is trained
+SCENARIO = [3]  # List of scenarios on which the model is trained
 
 """ 
 Specify scenario parameter or spawn_point and terminal_point parameters

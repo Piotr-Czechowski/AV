@@ -70,7 +70,7 @@ class CarlaEnv:
         # Run the server on 127.0.0.1/port
         #start_carla_server(f'-windowed -carla-server -fps=60 -ResX={serv_resx} -ResY={serv_resy} -quality-level=Low '
         #                   f'-carla-world-port={port}')
-        self.client = carla.Client("server", port)
+        self.client = carla.Client("localhost", port)
         self.client.set_timeout(30.0)
         
         #for debugging

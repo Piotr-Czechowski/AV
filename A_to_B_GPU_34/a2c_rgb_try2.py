@@ -18,7 +18,7 @@ from collections import namedtuple
 import torch
 import torch.nn.functional as F
 import torch.multiprocessing as mp
-# import wandb
+import wandb
 import settings
 from torch.distributions.categorical import Categorical
 from torch.distributions.multivariate_normal import MultivariateNormal
@@ -278,7 +278,19 @@ class DeepActorCriticAgent(mp.Process):
               " and an all time best reward of:", self.best_reward)
         
 def handle_crash(results_queue):
+    wandb.init(
+    # set the ###wandb project where this run will be logged
+    project="A_to_B",
+    # create or extend already logged run:
+    resume="allow",
+    id="run_synchronous_1",  
 
+    # track hyperparameters and run metadata
+    config={
+    "name" : "run_synchronous_1",
+    "learning_rate": lr
+    }
+    )
     agent = DeepActorCriticAgent()
     agent.mean_reward = 0
     agent.episode = 0
@@ -345,6 +357,8 @@ def handle_crash(results_queue):
         if ep_reward > agent.best_reward:
             agent.best_reward = ep_reward
         agent.save(model_incr_save)
+        wandb.log({"reward": ep_reward, "episode": agent.episode})
+
         print("Episode: {} \t ep_reward:{} \t mean_ep_rew:{}\t best_ep_reward:{}".format(agent.episode,
                                                                                             ep_reward,
                                                                                             agent.mean_reward,
