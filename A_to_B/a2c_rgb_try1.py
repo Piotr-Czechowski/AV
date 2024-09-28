@@ -387,11 +387,9 @@ def handle_crash(results_queue):
             agent.save(cp_name)
 
         ##wandb.log({"episode": episode_idx.value, "reward": ep_reward, "learning_rate": agent.lr, "mean_reward": mean_reward.value})
-        print("Episode: {} \t ep_reward:{} \t mean_ep_rew:{}\t best_ep_reward:{}".format(                                                                                            ep_reward,
-                                                                                            # np.mean(episode_rewards),
-                                                                                            agent.mean_reward,
-                                                                                            agent.best_reward))        
-    ###wandb.finish()
+        print("ep_reward:{} \t mean_ep_rew:{}\t best_ep_reward:{}".format(ep_reward,
+                                                                            agent.mean_reward,
+                                                                            agent.best_reward))        
     del world
     del client
     results_queue.put(1)
