@@ -286,7 +286,7 @@ class DeepActorCriticAgent(mp.Process):
               " which fetched a best mean reward of:", self.best_mean_reward,
               " and an all time best reward of:", self.best_reward)
         
-def handle_crash(results_queue, episode_idx, server_failed, mean_reward):
+def handle_crash(results_queue):
     ##wandb.init(
     # set the ###wandb project where this run will be logged
     project="A_to_B",
@@ -387,8 +387,7 @@ def handle_crash(results_queue, episode_idx, server_failed, mean_reward):
             agent.save(cp_name)
 
         ##wandb.log({"episode": episode_idx.value, "reward": ep_reward, "learning_rate": agent.lr, "mean_reward": mean_reward.value})
-        print("Episode: {} \t ep_reward:{} \t mean_ep_rew:{}\t best_ep_reward:{}".format(episode_idx.value,
-                                                                                            ep_reward,
+        print("Episode: {} \t ep_reward:{} \t mean_ep_rew:{}\t best_ep_reward:{}".format(                                                                                            ep_reward,
                                                                                             # np.mean(episode_rewards),
                                                                                             agent.mean_reward,
                                                                                             agent.best_reward))        
