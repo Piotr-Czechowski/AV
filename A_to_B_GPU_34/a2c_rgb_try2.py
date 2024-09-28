@@ -47,8 +47,8 @@ port = settings.PORT
 action_type = settings.ACTION_TYPE
 camera_type = settings.CAMERA_TYPE
 load_model = settings.LOAD_MODEL
-model_incr_load = 'A_to_B_GPU_34/PC_models/currently_trained/scenario7.pth'
-model_incr_save = 'A_to_B_GPU_34/PC_models/currently_trained/scenario7'
+model_incr_load = 'A_to_B_GPU_34/PC_models/currently_trained/scenario1_synchronous.pth'
+model_incr_save = 'A_to_B_GPU_34/PC_models/currently_trained/scenario1_synchronous'
 
 gamma = settings.GAMMA
 lr = settings.LR
