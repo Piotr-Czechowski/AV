@@ -38,6 +38,8 @@ mp_reward = settings.REWARD_FROM_MP
 tp_reward = settings.REWARD_FROM_TP
 serv_resx = settings.SERV_RESX
 serv_resy = settings.SERV_RESY
+port = settings.PORT
+
 
 
 def start_carla_server(args):
@@ -63,7 +65,7 @@ class CarlaEnv:
     """
     Create Carla environment
     """
-    def __init__(self, scenario, action_space='discrete', resX=80, resY=80, camera='rgb', port=2000,
+    def __init__(self, scenario, action_space='discrete', resX=80, resY=80, camera='rgb', port=port,
                  manual_control=False, spawn_point=False, terminal_point=False, mp_density=25):
         # Run the server on 127.0.0.1/port
         #start_carla_server(f'-windowed -carla-server -fps=60 -ResX={serv_resx} -ResY={serv_resy} -quality-level=Low '
