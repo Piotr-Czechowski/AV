@@ -361,7 +361,7 @@ def handle_crash(results_queue):
         if ep_reward > agent.best_reward:
             agent.best_reward = ep_reward
         agent.save(model_incr_save)
-        wandb.log({"reward": ep_reward, "episode": agent.episode})
+        wandb.log({"reward": ep_reward, "episode": agent.episode, "mean_reward": agent.mean_reward})
 
         print("Episode: {} \t ep_reward:{} \t mean_ep_rew:{}\t best_ep_reward:{}".format(agent.episode,
                                                                                             ep_reward,
