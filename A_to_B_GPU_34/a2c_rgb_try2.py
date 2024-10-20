@@ -47,8 +47,8 @@ port = settings.PORT
 action_type = settings.ACTION_TYPE
 camera_type = settings.CAMERA_TYPE
 load_model = settings.LOAD_MODEL
-model_incr_load = 'A_to_B_GPU_34/PC_models/currently_trained/scenario3_synchronous_1.pth'
-model_incr_save = 'A_to_B_GPU_34/PC_models/currently_trained/scenario3_synchronous_1'
+model_incr_load = 'A_to_B_GPU_34/PC_models/currently_trained/synchr_sc3_3_start_sc_3.pth'
+model_incr_save = 'A_to_B_GPU_34/PC_models/currently_trained/synchr_sc3_3_start_sc_3'
 
 gamma = settings.GAMMA
 lr = settings.LR
@@ -283,11 +283,11 @@ def handle_crash(results_queue):
     project="A_to_B",
     # create or extend already logged run:
     resume="allow",
-    id="run_synchronous_4",  
+    id="run_synchronous_sc3_3_start_sc_3",  
 
     # track hyperparameters and run metadata
     config={
-    "name" : "run_synchronous_4",
+    "name" : "run_synchronous_sc3_3_start_sc_3",
     "learning_rate": lr
     }
     )
@@ -329,8 +329,10 @@ def handle_crash(results_queue):
             actions_counter[action] = 0
         perform_actions=0
         while not done:
+            perform_actions +=1  #perform every 0.2 seconds
             agent.environment.world.tick()
-            if perform_actions%2==1:
+            if perform_actions%3==1:
+                print(perform_actions)
                 action = agent.get_action(state_rgb)
                 if agent.action_type == 'discrete':
                     actions_counter[ac.ACTIONS_NAMES[agent.environment.action_space[action]]] += 1
@@ -345,18 +347,15 @@ def handle_crash(results_queue):
                 if step_num >= 5 or done:
                     actor_loss, critic_loss, actor_lr, critic_lr = agent.optimize(new_state, done)
                     step_num = 0
-
                 state_rgb = new_state
                 agent.global_step_num += 1
-                perform_actions = 0
-            perform_actions +=1  #perform every 0.2 seconds
                 
 
         if agent.action_type == 'discrete':
             print(str(actions_counter))
 
         episode_rewards.append(ep_reward)
-        agent.mean_reward = (agent.mean_reward * agent.episode + ep_reward)/(agent.episode + 1)
+        agent.mean_reward = (agent.mean_reward * (min(100, agent.episode)-1) + ep_reward)/min(100, agent.episode) #mean reward from last 100 episodes
         
         if ep_reward > agent.best_reward:
             agent.best_reward = ep_reward
