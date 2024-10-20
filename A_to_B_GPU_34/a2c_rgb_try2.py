@@ -18,7 +18,7 @@ from collections import namedtuple
 import torch
 import torch.nn.functional as F
 import torch.multiprocessing as mp
-import wandb
+#import ##wandb
 import settings
 from torch.distributions.categorical import Categorical
 from torch.distributions.multivariate_normal import MultivariateNormal
@@ -278,8 +278,8 @@ class DeepActorCriticAgent(mp.Process):
               " and an all time best reward of:", self.best_reward)
         
 def handle_crash(results_queue):
-    wandb.init(
-    # set the ###wandb project where this run will be logged
+    ##wandb.init(
+    # set the #####wandb project where this run will be logged
     project="A_to_B",
     # create or extend already logged run:
     resume="allow",
@@ -290,7 +290,7 @@ def handle_crash(results_queue):
     "name" : "run_synchronous_sc3_3_start_sc_3",
     "learning_rate": lr
     }
-    )
+    #)
     agent = DeepActorCriticAgent()
     agent.mean_reward = 0
     agent.episode = 0
@@ -330,8 +330,7 @@ def handle_crash(results_queue):
         perform_actions=0
         while not done:
             perform_actions +=1  #perform every 0.2 seconds
-            agent.environment.world.tick()
-            if perform_actions%3==1:
+            if perform_actions%2==1:
                 print(perform_actions)
                 action = agent.get_action(state_rgb)
                 if agent.action_type == 'discrete':
@@ -349,6 +348,9 @@ def handle_crash(results_queue):
                     step_num = 0
                 state_rgb = new_state
                 agent.global_step_num += 1
+            else:
+                agent.environment.world.tick()
+
                 
 
         if agent.action_type == 'discrete':
@@ -360,7 +362,7 @@ def handle_crash(results_queue):
         if ep_reward > agent.best_reward:
             agent.best_reward = ep_reward
         agent.save(model_incr_save)
-        wandb.log({"reward": ep_reward, "episode": agent.episode, "mean_reward": agent.mean_reward})
+        ##wandb.log({"reward": ep_reward, "episode": agent.episode, "mean_reward": agent.mean_reward})
 
         print("Episode: {} \t ep_reward:{} \t mean_ep_rew:{}\t best_ep_reward:{}".format(agent.episode,
                                                                                             ep_reward,

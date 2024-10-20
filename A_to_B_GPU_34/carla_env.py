@@ -11,6 +11,7 @@ import settings
 import torch.multiprocessing as mp
 from utils import ColoredPrint
 from ACTIONS import ACTIONS as ac
+import queue
 
 # try:
 #     sys.path.append(glob.glob(settings.CARLA_EGG_PATH % (
@@ -319,7 +320,9 @@ class CarlaEnv:
         rgb_cam = self.world.spawn_actor(rgb_cam_bp, self.transform, attach_to=self.vehicle)
         self.actor_list.append(rgb_cam)
         # remove_pictures()
-        rgb_cam.listen(lambda data: self.process_rgb_img(data))
+        self.image_queue = queue.Queue()
+        rgb_cam.listen(self.image_queue.put)
+        # rgb_cam.listen(lambda data: self.process_rgb_img(data))
         # rgb_cam.listen(lambda data: data.save_to_disk('A_to_B/camera_rgb_outputs/%06d.png' % data.frame) )
 
 
@@ -855,14 +858,16 @@ class CarlaEnv:
         # time.sleep(2) # added PC
         # time.sleep(0.5)
 
-        while self.front_camera is None:
-            time.sleep(0.01)
+        # while self.front_camera is None:
+        #     time.sleep(0.01)
 
         self.vehicle.apply_control(carla.VehicleControl(brake=0.0))
 
         # PC
         # results_queue.put(1)
         # # A frame from the spawn point
+        image = self.image_queue.get()
+        self.process_rgb_img(image)
         return self.front_camera
 
     def step(self, action):
@@ -878,6 +883,9 @@ class CarlaEnv:
         else:
             self.car_control_discrete(action)
 
+        #       TUTAJ MUSI BYĆ TICK
+        self.world.tick()
+        
         #COMMENT OUT if SYNCHROUNOUS MODE
         # if sleep_time:
         #     # How many actions per sec?
@@ -914,6 +922,9 @@ class CarlaEnv:
 
         if self.step_counter >= how_many_steps:
             self.done = True
+
+        image = self.image_queue.get()
+        self.process_rgb_img(image)
 
         return self.front_camera, reward, self.done, route_distance
 
