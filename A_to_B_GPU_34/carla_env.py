@@ -804,6 +804,7 @@ class CarlaEnv:
             location = spawn_point.location
             self.world.debug.draw_string(location, str(i), draw_shadow=False, color=carla.Color(r=0, g=255, b=0), life_time=120.0)
 
+        self.world.tick()
         while prev_world_id == self.world.id and tries > 0:
             tries -= 1
             time.sleep(1)
@@ -866,6 +867,8 @@ class CarlaEnv:
         # PC
         # results_queue.put(1)
         # # A frame from the spawn point
+        self.world.tick()
+
         image = self.image_queue.get()
         self.process_rgb_img(image)
         return self.front_camera
