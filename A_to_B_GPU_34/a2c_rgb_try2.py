@@ -18,7 +18,7 @@ from collections import namedtuple
 import torch
 import torch.nn.functional as F
 import torch.multiprocessing as mp
-import wandb
+#import #wandb
 import settings
 from torch.distributions.categorical import Categorical
 from torch.distributions.multivariate_normal import MultivariateNormal
@@ -47,8 +47,8 @@ port = settings.PORT
 action_type = settings.ACTION_TYPE
 camera_type = settings.CAMERA_TYPE
 load_model = settings.LOAD_MODEL
-model_incr_load = 'A_to_B_GPU_34/PC_models/currently_trained/synchr_sc3_8_start_sc_3.pth'
-model_incr_save = 'A_to_B_GPU_34/PC_models/currently_trained/synchr_sc3_8_start_sc_3'
+model_incr_load = 'A_to_B_GPU_34/PC_models/currently_trained/synchr_sc3_9_start_sc_3.pth'
+model_incr_save = 'A_to_B_GPU_34/PC_models/currently_trained/synchr_sc3_9_start_sc_3'
 
 gamma = settings.GAMMA
 lr = settings.LR
@@ -278,19 +278,19 @@ class DeepActorCriticAgent(mp.Process):
               " and an all time best reward of:", self.best_reward)
         
 def handle_crash(results_queue):
-    wandb.init(
-    # set the ##wandb project where this run will be logged
+    #wandb.init(
+    # set the ###wandb project where this run will be logged
     project="A_to_B",
     # create or extend already logged run:
     resume="allow",
-    id="run_synchronous_sc3_8_start_sc_3",  
+    id="run_synchronous_sc3_9_start_sc_3",  
 
     # track hyperparameters and run metadata
     config={
-    "name" : "run_synchronous_sc3_8_start_sc_3",
+    "name" : "run_synchronous_sc3_9_start_sc_3",
     "learning_rate": lr
     }
-    )
+    #)
     agent = DeepActorCriticAgent()
     agent.mean_reward = 0
     agent.episode = 0
@@ -335,8 +335,11 @@ def handle_crash(results_queue):
                 action = agent.get_action(state_rgb)
                 if agent.action_type == 'discrete':
                     actions_counter[ac.ACTIONS_NAMES[agent.environment.action_space[action]]] += 1
-
-                new_state, reward, done, route_distance = agent.environment.step(action)
+                agent.environment.step_apply_action(action)
+                agent.environment.world.tick()
+            else:
+                agent.environment.world.tick()
+                new_state, reward, done, route_distance = agent.environment.step()
                 new_state = new_state / 255  # resize the tensor to [0, 1]
                 agent.rewards.append(reward)
                 ep_reward += reward
@@ -347,13 +350,6 @@ def handle_crash(results_queue):
                     step_num = 0
                 state_rgb = new_state
                 agent.global_step_num += 1
-            else:
-                agent.environment.world.tick()
-                image = agent.environment.image_queue.get()
-                agent.environment.process_rgb_img(image)
-                state_rgb = agent.environment.front_camera
-                state_rgb = state_rgb / 255
-                
 
                 
 
@@ -366,7 +362,7 @@ def handle_crash(results_queue):
         if ep_reward > agent.best_reward:
             agent.best_reward = ep_reward
         agent.save(model_incr_save)
-        wandb.log({"reward": ep_reward, "episode": agent.episode, "mean_reward": agent.mean_reward})
+        #wandb.log({"reward": ep_reward, "episode": agent.episode, "mean_reward": agent.mean_reward})
 
         print("Episode: {} \t ep_reward:{} \t mean_ep_rew:{}\t best_ep_reward:{}".format(agent.episode,
                                                                                             ep_reward,

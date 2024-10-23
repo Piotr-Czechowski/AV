@@ -872,13 +872,8 @@ class CarlaEnv:
         image = self.image_queue.get()
         self.process_rgb_img(image)
         return self.front_camera
-
-    def step(self, action):
-        """
-        Method which creates an episode as a set of steps
-        :param action: car's action
-        :return:
-        """
+    
+    def step_apply_action(self, action):
         self.step_counter += 1
 
         if self.action_space == 'continuous':
@@ -886,8 +881,19 @@ class CarlaEnv:
         else:
             self.car_control_discrete(action)
 
-        #       TUTAJ MUSI BYĆ TICK
-        self.world.tick()
+    def step(self):
+        """
+        Method which creates an episode as a set of steps
+        :param action: car's action
+        :return:
+        """
+        # self.step_counter += 1
+
+        # if self.action_space == 'continuous':
+        #     self.car_control_continuous(action)
+        # else:
+        #     self.car_control_discrete(action)
+
         
         #COMMENT OUT if SYNCHROUNOUS MODE
         # if sleep_time:
