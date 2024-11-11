@@ -2,7 +2,7 @@ import torch
 SHOULD_USE_CUDA = 'cuda' if torch.cuda.is_available() else 'cpu'
 
 # Global params
-PORT = 3000  # Port on which the server is running
+PORT = 2010  # Port on which the server is running
 ACTION_TYPE = 'discrete'  # 'discrete' or 'continuous'
 CAMERA_TYPE = 'rgb'  # 'rgb' or 'semantic'
 GAMMA = 0.9  # Discount factor
@@ -37,10 +37,10 @@ after switch_scenario episodes there will be next scenario from the list
 """
 
 # Rewards
-REWARD_FROM_TP = 500  # Static reward from arriving to the terminal point
-REWARD_FROM_MP = 100  # Static reward from arriving to the middle point
-REWARD_FROM_COL = -200  # Static reward from a collision
-REWARD_FROM_INV = -50  # Static reward from a line invasion
+REWARD_FROM_TP = 10  # Static reward from arriving to the terminal point
+REWARD_FROM_MP = 10  # Static reward from arriving to the middle point
+REWARD_FROM_COL = -10  # Static reward from a collision
+REWARD_FROM_INV = -5  # Static reward from a line invasion
 # Speed and distance rewards are in the utils.py/reward_function
 
 ACTIONS = ['forward', 'forward_left', 'forward_right', 'brake', 'brake_left', 'brake_right']

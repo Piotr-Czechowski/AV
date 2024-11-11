@@ -47,8 +47,8 @@ port = settings.PORT
 action_type = settings.ACTION_TYPE
 camera_type = settings.CAMERA_TYPE
 load_model = settings.LOAD_MODEL
-model_incr_load = 'A_to_B_GPU_34/PC_models/currently_trained/synchr_sc3_9_start_sc_3.pth'
-model_incr_save = 'A_to_B_GPU_34/PC_models/currently_trained/synchr_sc3_9_start_sc_3'
+model_incr_load = 'A_to_B_GPU_34/PC_models/currently_trained/synchr_sc3_20_start_sc_3.pth'
+model_incr_save = 'A_to_B_GPU_34/PC_models/currently_trained/synchr_sc3_20_start_sc_3'
 
 gamma = settings.GAMMA
 lr = settings.LR
@@ -283,11 +283,11 @@ def handle_crash(results_queue):
     project="A_to_B",
     # create or extend already logged run:
     resume="allow",
-    id="run_synchronous_sc3_9_start_sc_3",  
+    id="run_synchronous_sc3_20_start_sc_3",  
 
     # track hyperparameters and run metadata
     config={
-    "name" : "run_synchronous_sc3_9_start_sc_3",
+    "name" : "run_synchronous_sc3_20_start_sc_3",
     "learning_rate": lr
     }
     #)
