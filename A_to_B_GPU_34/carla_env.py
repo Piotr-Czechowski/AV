@@ -31,6 +31,7 @@ from utils import reward_function
 from A_to_B_GPU_34.carla_navigation.global_route_planner import GlobalRoutePlanner
 from A_to_B_GPU_34.carla_navigation.global_route_planner_dao import GlobalRoutePlannerDAO
 from settings import SHOW_CAM
+from state_observer import StateObserver
 
 # Global settings
 how_many_steps = settings.STEP_COUNTER
@@ -150,6 +151,8 @@ class CarlaEnv:
         self.preview_camera = None
         self.preview_camera_enabled = False
         self.done = False
+
+        self.state_observer = StateObserver()
 
     def create_scenario(self, sp, tp, mp_d):
         if sp and tp:
@@ -828,7 +831,7 @@ class CarlaEnv:
         self.is_junction = False
         self.done = False
 
-    def reset(self):
+    def reset(self, episode, save_image=False):
         """
         Rest environment at the end of each episode
         :return:
@@ -869,7 +872,12 @@ class CarlaEnv:
         # # A frame from the spawn point
         self.world.tick()
 
+
         image = self.image_queue.get()
+
+        if save_image:
+            self.state_observer.save_to_disk(image, episode, 0)
+        
         self.process_rgb_img(image)
         return self.front_camera
     
@@ -881,7 +889,7 @@ class CarlaEnv:
         else:
             self.car_control_discrete(action)
 
-    def step(self):
+    def step(self, episode, step, save_image=False):
         """
         Method which creates an episode as a set of steps
         :param action: car's action
@@ -933,6 +941,9 @@ class CarlaEnv:
             self.done = True
 
         image = self.image_queue.get()
+        if save_image:
+            self.state_observer.save_to_disk(image, episode, step)
+
         self.process_rgb_img(image)
 
         return self.front_camera, reward, self.done, route_distance
