@@ -788,7 +788,14 @@ class CarlaEnv:
             prev_world_id = None
         
 
-        self.world = self.client.load_world('Town03')
+        self.world = self.client.reload_world()
+
+        self.settings = self.world.get_settings()
+        self.settings.synchronous_mode = True
+        self.settings.fixed_delta_seconds = 0.1
+        self.settings.max_substep_delta_time = 0.01
+        self.settings.max_substeps = 10
+        self.world.apply_settings(self.settings)
 
         # # SET SYNCHRONOUS MODE
         # self.settings = self.world.get_settings()
@@ -810,7 +817,7 @@ class CarlaEnv:
         self.world.tick()
         while prev_world_id == self.world.id and tries > 0:
             tries -= 1
-            time.sleep(1)
+            self.world.tick()
             self.world = self.client.get_world()
         # self.world = self.client.reload_world()
 

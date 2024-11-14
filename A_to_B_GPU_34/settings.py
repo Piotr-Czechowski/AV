@@ -39,8 +39,8 @@ after switch_scenario episodes there will be next scenario from the list
 # Rewards
 REWARD_FROM_TP = 10  # Static reward from arriving to the terminal point
 REWARD_FROM_MP = 10  # Static reward from arriving to the middle point
-REWARD_FROM_COL = -10  # Static reward from a collision
-REWARD_FROM_INV = -5  # Static reward from a line invasion
+REWARD_FROM_COL = 0  # Static reward from a collision
+REWARD_FROM_INV = 0  # Static reward from a line invasion
 # Speed and distance rewards are in the utils.py/reward_function
 
 ACTIONS = ['forward', 'forward_left', 'forward_right', 'brake', 'brake_left', 'brake_right']

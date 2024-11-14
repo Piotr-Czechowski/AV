@@ -47,8 +47,8 @@ port = settings.PORT
 action_type = settings.ACTION_TYPE
 camera_type = settings.CAMERA_TYPE
 load_model = settings.LOAD_MODEL
-model_incr_load = 'A_to_B_GPU_34/PC_models/currently_trained/synchr_sc3_21_start_sc_3.pth'
-model_incr_save = 'A_to_B_GPU_34/PC_models/currently_trained/synchr_sc3_21_start_sc_3'
+model_incr_load = 'A_to_B_GPU_34/PC_models/currently_trained/synchr_sc3_27_start_sc_3.pth'
+model_incr_save = 'A_to_B_GPU_34/PC_models/currently_trained/synchr_sc3_27_start_sc_3'
 
 gamma = settings.GAMMA
 lr = settings.LR
@@ -283,11 +283,11 @@ def handle_crash(results_queue):
     project="A_to_B",
     # create or extend already logged run:
     resume="allow",
-    id="run_synchronous_sc3_21_start_sc_3",  
+    id="run_synchronous_sc3_27_start_sc_3",  
 
     # track hyperparameters and run metadata
     config={
-    "name" : "run_synchronous_sc3_21_start_sc_3",
+    "name" : "run_synchronous_sc3_27_start_sc_3",
     "learning_rate": lr
     }
     )
@@ -309,12 +309,12 @@ def handle_crash(results_queue):
         # with lock:
         agent.episode += 1
                 # SET SYNCHRONOUS MODE
-        agent.environment.settings = agent.environment.world.get_settings()
-        agent.environment.settings.synchronous_mode = True
-        agent.environment.settings.fixed_delta_seconds = 0.1
-        agent.environment.settings.max_substep_delta_time = 0.01
-        agent.environment.settings.max_substeps = 10
-        agent.environment.world.apply_settings(agent.environment.settings)
+        # agent.environment.settings = agent.environment.world.get_settings()
+        # agent.environment.settings.synchronous_mode = True
+        # agent.environment.settings.fixed_delta_seconds = 0.1
+        # agent.environment.settings.max_substep_delta_time = 0.01
+        # agent.environment.settings.max_substeps = 10
+        # agent.environment.world.apply_settings(agent.environment.settings)
 
         save_image = True if agent.episode in episodes_to_save_images else False
         state_rgb = agent.environment.reset(save_image=save_image, episode = agent.episode)
@@ -344,7 +344,7 @@ def handle_crash(results_queue):
                 
                 save_image = True if agent.episode in episodes_to_save_images else False
                 new_state, reward, done, route_distance = agent.environment.step(save_image=save_image, episode=agent.episode, step=perform_actions/2)
-                
+                wandb.log({"step_reward": reward, "step": perform_actions/2})
                 new_state = new_state / 255.0  # resize the tensor to [0, 1]
                 agent.rewards.append(reward)
                 ep_reward += reward
