@@ -47,8 +47,8 @@ port = settings.PORT
 action_type = settings.ACTION_TYPE
 camera_type = settings.CAMERA_TYPE
 load_model = settings.LOAD_MODEL
-model_incr_load = 'A_to_B_GPU_34/PC_models/currently_trained/synchr_sc3_27_start_sc_3.pth'
-model_incr_save = 'A_to_B_GPU_34/PC_models/currently_trained/synchr_sc3_27_start_sc_3'
+model_incr_load = 'A_to_B_GPU_34/PC_models/currently_trained/synchr_sc3_28_start_sc_3.pth'
+model_incr_save = 'A_to_B_GPU_34/PC_models/currently_trained/synchr_sc3_28_start_sc_3'
 
 gamma = settings.GAMMA
 lr = settings.LR
@@ -283,11 +283,11 @@ def handle_crash(results_queue):
     project="A_to_B",
     # create or extend already logged run:
     resume="allow",
-    id="run_synchronous_sc3_27_start_sc_3",  
+    id="run_synchronous_sc3_28_start_sc_3",  
 
     # track hyperparameters and run metadata
     config={
-    "name" : "run_synchronous_sc3_27_start_sc_3",
+    "name" : "run_synchronous_sc3_28_start_sc_3",
     "learning_rate": lr
     }
     )
@@ -303,7 +303,7 @@ def handle_crash(results_queue):
     episode_rewards = []  # Every episode's reward
     prev_checkpoint_mean_ep_rew = agent.best_mean_reward
     num_improved_episodes_before_checkpoint = 0  # To keep track of the num of ep with higher perf to save model
-    episodes_to_save_images = (7685, 7686, 7687, 7688)
+    episodes_to_save_images = (5566, 5567, 5568, 5569)
 
     while 1:
         # with lock:
@@ -329,32 +329,40 @@ def handle_crash(results_queue):
         # Calculate how many each action was taken
         for action in ac.ACTIONS_NAMES.values():
             actions_counter[action] = 0
-        perform_actions=0
+        episode_step=0
         while not done:
-            perform_actions +=1  #perform every 0.2 seconds
-            if perform_actions%2==1:
+            episode_step += 1
+
+            # perform_actions +=1  #perform every 0.2 seconds
+            # if perform_actions%2==1:
                 # print(perform_actions)
-                action = agent.get_action(state_rgb)
-                if agent.action_type == 'discrete':
-                    actions_counter[ac.ACTIONS_NAMES[agent.environment.action_space[action]]] += 1
-                agent.environment.step_apply_action(action)
-                agent.environment.world.tick()
-            else:
-                agent.environment.world.tick()
-                
-                save_image = True if agent.episode in episodes_to_save_images else False
-                new_state, reward, done, route_distance = agent.environment.step(save_image=save_image, episode=agent.episode, step=perform_actions/2)
-                wandb.log({"step_reward": reward, "step": perform_actions/2})
-                new_state = new_state / 255.0  # resize the tensor to [0, 1]
-                agent.rewards.append(reward)
-                ep_reward += reward
-                step_num += 1
-                print("Step number: ", step_num, "reward: ", reward, "ep_reward: ", ep_reward)
-                if step_num >= 5 or done:
-                    actor_loss, critic_loss, actor_lr, critic_lr = agent.optimize(new_state, done)
-                    step_num = 0
-                state_rgb = new_state
-                agent.global_step_num += 1
+            action = agent.get_action(state_rgb)
+            agent.environment.state_observer.action = action # To print action on the frame
+            agent.environment.state_observer.episode_step = episode_step # To print action on the frame
+
+
+            if agent.action_type == 'discrete':
+                actions_counter[ac.ACTIONS_NAMES[agent.environment.action_space[action]]] += 1
+            agent.environment.step_apply_action(action)
+        # else:
+            agent.environment.world.tick()
+            agent.environment.world.tick()
+            
+            save_image = True if agent.episode in episodes_to_save_images else False
+            new_state, reward, done, route_distance = agent.environment.step(save_image=save_image, episode=agent.episode, step=episode_step)
+            agent.environment.state_observer.reward = reward
+
+            wandb.log({"step_reward": reward, "step": episode_step})
+            new_state = new_state / 255.0  # resize the tensor to [0, 1]
+            agent.rewards.append(reward)
+            ep_reward += reward
+            step_num += 1
+            print("Step number: ", step_num, "reward: ", reward, "ep_reward: ", ep_reward)
+            if step_num >= 5 or done:
+                actor_loss, critic_loss, actor_lr, critic_lr = agent.optimize(new_state, done)
+                step_num = 0
+            state_rgb = new_state
+            agent.global_step_num += 1
 
                 
 
