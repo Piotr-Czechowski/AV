@@ -75,7 +75,7 @@ def reward_function(collision_history_list, invasion_counter, speed, route_dista
     """
     Distance reward
     """
-    if route_distance < 2:
+    if route_distance < 1:
         route_distance_reward = 1
 
     else:
