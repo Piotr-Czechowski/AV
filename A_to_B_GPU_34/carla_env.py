@@ -865,18 +865,32 @@ class CarlaEnv:
         self.add_collision_sensor()
         self.add_line_invasion_sensor()
 
-        self.vehicle.apply_control(carla.VehicleControl(throttle=1.0, brake=1.0))
+        # self.vehicle.apply_control(carla.VehicleControl(throttle=1.0, brake=1.0))
         # time.sleep(2) # added PC
         # time.sleep(0.5)
 
         # while self.front_camera is None:
         #     time.sleep(0.01)
 
-        self.vehicle.apply_control(carla.VehicleControl(brake=0.0))
+        # self.vehicle.apply_control(carla.VehicleControl(brake=0.0))
 
         # PC
         # results_queue.put(1)
         # # A frame from the spawn point
+        # while not self.image_queue.empty():
+        #     _ = self.image_queue.get()
+
+        # to render properly path on the road. Otherwise it doesn't shine
+        self.world.tick()
+        self.world.tick()    
+        self.world.tick()
+        self.world.tick()
+        self.world.tick()
+        self.world.tick()
+
+        while not self.image_queue.empty():
+            _ = self.image_queue.get()
+
         self.world.tick()
 
 
@@ -947,7 +961,7 @@ class CarlaEnv:
         if self.step_counter >= how_many_steps:
             self.done = True
 
-        image = self.image_queue.get()
+        image1 = self.image_queue.get()
         image = self.image_queue.get() #2 frames are put on the queue between two consecutive steps
 
         if save_image:

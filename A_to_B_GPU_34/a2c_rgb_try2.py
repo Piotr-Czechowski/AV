@@ -47,8 +47,8 @@ port = settings.PORT
 action_type = settings.ACTION_TYPE
 camera_type = settings.CAMERA_TYPE
 load_model = settings.LOAD_MODEL
-model_incr_load = 'A_to_B_GPU_34/PC_models/currently_trained/synchr_sc3_28_start_sc_3.pth'
-model_incr_save = 'A_to_B_GPU_34/PC_models/currently_trained/synchr_sc3_28_start_sc_3'
+model_incr_load = 'A_to_B_GPU_34/PC_models/currently_trained/synchr_sc3_29_start_sc_3.pth'
+model_incr_save = 'A_to_B_GPU_34/PC_models/currently_trained/synchr_sc3_29_start_sc_3'
 
 gamma = settings.GAMMA
 lr = settings.LR
@@ -283,11 +283,11 @@ def handle_crash(results_queue):
     project="A_to_B",
     # create or extend already logged run:
     resume="allow",
-    id="run_synchronous_sc3_28_start_sc_3",  
+    id="run_synchronous_sc3_29_start_sc_3",  
 
     # track hyperparameters and run metadata
     config={
-    "name" : "run_synchronous_sc3_28_start_sc_3",
+    "name" : "run_synchronous_sc3_29_start_sc_3",
     "learning_rate": lr
     }
     )
@@ -303,7 +303,7 @@ def handle_crash(results_queue):
     episode_rewards = []  # Every episode's reward
     prev_checkpoint_mean_ep_rew = agent.best_mean_reward
     num_improved_episodes_before_checkpoint = 0  # To keep track of the num of ep with higher perf to save model
-    episodes_to_save_images = (5566, 5567, 5568, 5569)
+    episodes_to_save_images = (1670, 1671, 1672, 1673)
 
     while 1:
         # with lock:
@@ -315,6 +315,7 @@ def handle_crash(results_queue):
         # agent.environment.settings.max_substep_delta_time = 0.01
         # agent.environment.settings.max_substeps = 10
         # agent.environment.world.apply_settings(agent.environment.settings)
+
 
         save_image = True if agent.episode in episodes_to_save_images else False
         state_rgb = agent.environment.reset(save_image=save_image, episode = agent.episode)
@@ -345,6 +346,9 @@ def handle_crash(results_queue):
                 actions_counter[ac.ACTIONS_NAMES[agent.environment.action_space[action]]] += 1
             agent.environment.step_apply_action(action)
         # else:
+            while not agent.environment.image_queue.empty():
+                _ = agent.environment.image_queue.get()
+
             agent.environment.world.tick()
             agent.environment.world.tick()
             
