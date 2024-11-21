@@ -895,9 +895,11 @@ class CarlaEnv:
 
 
         image = self.image_queue.get()
+        self.state_observer.image = image
 
-        if save_image:
-            self.state_observer.save_to_disk(image, episode, 0)
+
+        # if save_image:
+        #     self.state_observer.save_to_disk(image, episode, 0)
         
         self.process_rgb_img(image)
         return self.front_camera
@@ -963,9 +965,11 @@ class CarlaEnv:
 
         image1 = self.image_queue.get()
         image = self.image_queue.get() #2 frames are put on the queue between two consecutive steps
+        self.state_observer.image = image
 
-        if save_image:
-            self.state_observer.save_to_disk(image, episode, step)
+
+        # if save_image:
+        #     self.state_observer.save_to_disk(image, episode, step)
 
         self.process_rgb_img(image)
 

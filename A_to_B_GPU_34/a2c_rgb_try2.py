@@ -47,8 +47,8 @@ port = settings.PORT
 action_type = settings.ACTION_TYPE
 camera_type = settings.CAMERA_TYPE
 load_model = settings.LOAD_MODEL
-model_incr_load = 'A_to_B_GPU_34/PC_models/currently_trained/synchr_sc3_29_start_sc_3.pth'
-model_incr_save = 'A_to_B_GPU_34/PC_models/currently_trained/synchr_sc3_29_start_sc_3'
+model_incr_load = 'A_to_B_GPU_34/PC_models/currently_trained/synchr_sc3_35_start_sc_7.pth'
+model_incr_save = 'A_to_B_GPU_34/PC_models/currently_trained/synchr_sc3_35_start_sc_7'
 
 gamma = settings.GAMMA
 lr = settings.LR
@@ -179,7 +179,7 @@ class DeepActorCriticAgent(mp.Process):
         return self.action_distribution
 
     def calculate_n_step_return(self, n_step_rewards, final_state, done, gamma):
-        """
+        """A_to_B_GPU_34/PC_models/currently_trained/synchr_sc3_30_start_sc_3.pth
         Calculates the n-step return for each state in the input-trajectory/n_step_transitions
         :param n_step_rewards: List of rewards for each step
         :param final_state: Final state in this n_step_transition/trajectory
@@ -283,11 +283,11 @@ def handle_crash(results_queue):
     project="A_to_B",
     # create or extend already logged run:
     resume="allow",
-    id="run_synchronous_sc3_29_start_sc_3",  
+    id="run_synchronous_sc7_35_start_sc_7",  
 
     # track hyperparameters and run metadata
     config={
-    "name" : "run_synchronous_sc3_29_start_sc_3",
+    "name" : "run_synchronous_sc7_35_start_sc_7",
     "learning_rate": lr
     }
     )
@@ -303,7 +303,7 @@ def handle_crash(results_queue):
     episode_rewards = []  # Every episode's reward
     prev_checkpoint_mean_ep_rew = agent.best_mean_reward
     num_improved_episodes_before_checkpoint = 0  # To keep track of the num of ep with higher perf to save model
-    episodes_to_save_images = (1670, 1671, 1672, 1673)
+    episodes_to_save_images = (2773, 2774, 2775, 2776)
 
     while 1:
         # with lock:
@@ -318,6 +318,9 @@ def handle_crash(results_queue):
 
 
         save_image = True if agent.episode in episodes_to_save_images else False
+        
+        agent.environment.state_observer.reset()
+
         state_rgb = agent.environment.reset(save_image=save_image, episode = agent.episode)
 
         state_rgb = state_rgb / 255.0  # resize the tensor to [0, 1]
@@ -338,8 +341,13 @@ def handle_crash(results_queue):
             # if perform_actions%2==1:
                 # print(perform_actions)
             action = agent.get_action(state_rgb)
-            agent.environment.state_observer.action = action # To print action on the frame
-            agent.environment.state_observer.episode_step = episode_step # To print action on the frame
+            if save_image:
+                agent.environment.state_observer.action = action # To print action on the frame
+                agent.environment.state_observer.step = episode_step # To print action on the frame
+                agent.environment.state_observer.episode = agent.episode
+                agent.environment.state_observer.save_to_disk()
+                agent.environment.state_observer.draw_related_values()
+                agent.environment.state_observer.save_together()
 
 
             if agent.action_type == 'discrete':

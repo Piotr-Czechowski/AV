@@ -1,3 +1,4 @@
+import os
 from PIL import Image, ImageDraw, ImageFont
 import cv2
 import numpy as np
@@ -8,10 +9,11 @@ class StateObserver:
         self.snapshot_date = None
         self.action = None
         self.reward = None
-        self.episode_step = None
         self.image = None
+        self.episode = None
+        self.step = None
 
-    def save_to_disk(self, image, episode, step):
+    def save_to_disk(self):
         # # Convert the image to a format that OpenCV can work with (BGR format)
         # img_array = np.frombuffer(image.raw_data, dtype=np.uint8)
         # img_array = img_array.reshape((image.height, image.width, 4))  # RGBA format
@@ -26,10 +28,11 @@ class StateObserver:
 
         # # Put text on the image
         # cv2.putText(img, text, position, font, font_scale, color, thickness)
-        self.image = image
-        self.image.save_to_disk(f"A_to_B_GPU_34/images/{episode}/{int(step)}.jpeg")
+        self.image.save_to_disk(f"A_to_B_GPU_34/images/{self.episode}/{int(self.step)}.jpeg")
+        # self.episode = self.episode
+        # self.step = self.step
 
-    def draw_related_values(self, episode, step):
+    def draw_related_values(self, episode=None, step=None):
         # Tworzenie obrazu image2 o wymiarach 80x80 (kolor niebieski)
         image_sub = np.zeros((80, 80, 3), dtype=np.uint8)
         image_sub[:] = (255, 0, 0)  # Kolor niebieski w formacie BGR
@@ -39,16 +42,54 @@ class StateObserver:
         # Dodawanie tekstu "Image1" na obraz image1
         if self.reward:
             cv2.putText(image_sub, "Reward:", (3, 10), font, 0.3, (255, 255, 255), 1, cv2.LINE_AA)
-            cv2.putText(image_sub, f"{self.reward}", (60, 10), font, 0.3, (255, 255, 255), 1, cv2.LINE_AA)
+            cv2.putText(image_sub, f"{self.reward}", (3, 20), font, 0.3, (255, 255, 255), 1, cv2.LINE_AA)
 
         # Dodawanie tekstu "Image2" na obraz image2
         cv2.putText(image_sub, "Action:", (3, 30), font, 0.3, (255, 255, 255), 1, cv2.LINE_AA)
-        cv2.putText(image_sub, f"{self.action}", (60, 30), font, 0.3, (255, 255, 255), 1, cv2.LINE_AA)
+        cv2.putText(image_sub, f"{self.action}", (3, 40), font, 0.3, (255, 255, 255), 1, cv2.LINE_AA)
 
 
         cv2.putText(image_sub, "Timnestamp:", (3, 50), font, 0.3, (255, 255, 255), 1, cv2.LINE_AA)
         cv2.putText(image_sub, f"{self.image.timestamp}", (3, 60), font, 0.3, (255, 255, 255), 1, cv2.LINE_AA)
 
-        image_sub = np.vstack((image_sub,))
+        self.image_sub = np.vstack((image_sub,))
 
-        cv2.imwrite(f"A_to_B_GPU_34/images/{episode}/{int(step)}_s.jpeg", image_sub)
+        cv2.imwrite(f"A_to_B_GPU_34/images/{self.episode}/{int(self.step)}_s.jpeg", image_sub)
+
+    def save_together(self):
+        
+        # Wczytanie dwóch obrazów JPG
+        image1 = cv2.imread(f"A_to_B_GPU_34/images/{self.episode}/{int(self.step)}.jpeg")
+        image2 = cv2.imread(f"A_to_B_GPU_34/images/{self.episode}/{int(self.step)}_s.jpeg")
+
+        # Sprawdzanie, czy obrazy zostały poprawnie wczytane
+        if image1 is None or image2 is None:
+            raise ValueError("Nie udało się wczytać jednego z obrazów. Upewnij się, że pliki istnieją.")
+
+        # Dopasowanie szerokości obrazów, jeśli jest różna
+        if image1.shape[1] != image2.shape[1]:
+            width = min(image1.shape[1], image2.shape[1])  # Minimalna szerokość
+            image1 = cv2.resize(image1, (width, int(image1.shape[0] * width / image1.shape[1])))
+            image2 = cv2.resize(image2, (width, int(image2.shape[0] * width / image2.shape[1])))
+
+        # Łączenie obrazów w pionie (góra-dół)
+        combined_image = np.vstack((image1, image2))
+
+        # Zapis i wyświetlenie połączonego obrazu
+        try:
+            os.mkdir("A_to_B_GPU_34/images/combined")
+        except FileExistsError:
+            pass
+        try:
+            os.mkdir(f"A_to_B_GPU_34/images/combined/{self.episode}")
+        except FileExistsError:
+            pass
+        cv2.imwrite(f"A_to_B_GPU_34/images/combined/{self.episode}/{int(self.step)}_combined.jpeg", combined_image)
+    
+    def reset(self):
+        self.snapshot_date = None
+        self.action = None
+        self.reward = None
+        self.image = None
+        self.episode = None
+        self.step = None
