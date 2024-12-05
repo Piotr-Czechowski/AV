@@ -1,25 +1,27 @@
 import glob
 import os
+import queue
 import random
 import sys
 import time
 import math
 import torch
 import pickle
-import pygame
-import threading
+# import pygame
+# import threading
 
 import settings
 from utils import ColoredPrint, reward_function, Timer
 from ACTIONS import ACTIONS as ac
+from state_observer import StateObserver
 
-try:
-    sys.path.append(glob.glob(settings.CARLA_EGG_PATH % (
-        sys.version_info.major,
-        sys.version_info.minor,
-        'win-amd64' if os.name == 'nt' else 'linux-x86_64'))[0])
-except IndexError:
-    pass
+# try:
+#     sys.path.append(glob.glob(settings.CARLA_EGG_PATH % (
+#         sys.version_info.major,
+#         sys.version_info.minor,
+#         'win-amd64' if os.name == 'nt' else 'linux-x86_64'))[0])
+# except IndexError:
+#     pass
 
 import carla
 from carla import ColorConverter as cc
@@ -49,12 +51,12 @@ class CarlaEnv:
     def __init__(self, scenario, action_space='discrete',  camera='rgb', res_x=80, res_y=80, port=2000,
                  manual_control=False):
         # Run the server on 127.0.0.1/port
-        start_carla_server(f'-windowed -carla-server -carla-rpc-port={port} -ResX={serv_resx} -ResY={serv_resy} '
-                           f'-quality-level=Low -fps={fps}')
+        # start_carla_server(f'-windowed -carla-server -carla-rpc-port={port} -ResX={serv_resx} -ResY={serv_resy} '
+                        #    f'-quality-level=Low -fps={fps}')
         # -carla-port
         # -carla-world-port
         # -carla-rpc-port
-        self.client = carla.Client('server', port)
+        self.client = carla.Client("localhost", port)
         self.client.set_timeout(30.0)
 
         # Make sure that server and client versions are the same
@@ -67,8 +69,7 @@ class CarlaEnv:
         else:
             self.log.warn(f"Client version: {client_ver}, Server version: {server_ver}")
 
-        self.client.load_world('Town03')
-        self.world = self.client.get_world()
+        self.world = self.client.load_world('Town03')
         self.settings = self.world.get_settings()
         self.camera_type = camera
         self.blueprint_library = self.world.get_blueprint_library()  # List of available agents with attributes
@@ -85,18 +86,22 @@ class CarlaEnv:
         sp - spawn point
         """
         self.a_sp, self.b_sp, self.ride_history = self.create_scenario()
-        self.a_sp_loc, self.b_sp_loc = self.a_sp.location, self.b_sp.location
 
-        self.spectator = self.set_spectator()  # Set the spectator
+        # self.history_frame_number = 0
+        self.a_sp_loc, self.b_sp_loc = self.a_sp.location, self.b_sp.location
+        
+
+        self.set_spectator()  # Set the spectator
         self.action_space = self.create_action_space(action_space)  # Environment possible actions
         self.actor_list = []  # List of all actors in the environment
         self.transform = carla.Transform(carla.Location(x=2.5, z=0.7))  # Location of attached sensors to the vehicle
         self.manual_control = manual_control
 
+        # self.ride_iterator = None
         self.b_vehicle = self.spawn_car('carlacola', self.b_sp)  # Chased car
         self.prev_b_vehicle_loc = 0  # Previous location of the chased car. Used for drawing a route
-        if not manual_control:
-            self.a_vehicle = self.spawn_car('model3', self.a_sp)  # Car which is chasing
+        # if not manual_control:
+        self.a_vehicle = self.spawn_car('model3', self.a_sp)  # Car which is chasing
 
         # Manages the basic movement of a vehicle using typical driving controls
         self.control = carla.VehicleControl()
@@ -109,14 +114,17 @@ class CarlaEnv:
         self.show_cam = show_cam
         self.front_camera = None
 
-        self.clock = pygame.time.Clock()  # Controls FPS of pygame client
+        # self.clock = pygame.time.Clock()  # Controls FPS of pygame client
         self.collision_history_list = []  # Variables which have to reset at the end of each episode
         self.step_counter = 0  # The number of steps in one episode
         self.thread = None  # Vehicle B movement thread
         self.done = False  # A flag which ends the episode
-        self.episode_timer = Timer()  # Episode's timer
-        self.effective_chase_timer = Timer()  # Measures the time of being from 5m to 25m around the chased car
+        # self.episode_timer = Timer()  # Episode's timer
+        # self.effective_chase_timer = Timer()  # Measures the time of being from 5m to 25m around the chased car
         self.effective_chase_per = 0  # Effective chase / whole duration * 100%
+        self.ride_history = []
+
+        self.state_observer = StateObserver()
 
     def create_scenario(self):
         """
@@ -124,7 +132,7 @@ class CarlaEnv:
         """
         if self.scenario == 1:
             # Short straight
-            ride_file = 'drives/ride1.p'
+            ride_file = 'Chase/drives/ride1.p'
             ride_history, b_sp_loc, b_sp_rot = self.load_ride(ride_file)
             b_sp_loc.z += 0.01  # without that there is a collision with the map
             b_sp = carla.Transform(b_sp_loc, b_sp_rot)
@@ -133,14 +141,14 @@ class CarlaEnv:
             a_sp_loc.x -= 10  # Spawn behind the chased car
             a_sp = carla.Transform(a_sp_loc, b_sp_rot)
 
-            for i in range(len(ride_history) - 300):  # Make the ride shorter
-                ride_history.pop()
+            # for i in range(len(ride_history) - 300):  # Make the ride shorter
+            #     ride_history.pop()
 
             return a_sp, b_sp, ride_history
 
         elif self.scenario == 2:
             # Long straight
-            ride_file = 'drives/ride1.p'
+            ride_file = 'Chase/drives/ride1.p'
             ride_history, b_sp_loc, b_sp_rot = self.load_ride(ride_file)
             b_sp_loc.z += 0.01  # without that there is a collision with the map
             b_sp = carla.Transform(b_sp_loc, b_sp_rot)
@@ -153,7 +161,7 @@ class CarlaEnv:
 
         elif self.scenario == 3:
             # Turn left
-            ride_file = 'drives/ride7.p'
+            ride_file = 'Chase/drives/ride7.p'
             ride_history, b_sp_loc, b_sp_rot = self.load_ride(ride_file)
             b_sp_loc.z += 0.01  # without that there is a collision with the map
 
@@ -169,7 +177,7 @@ class CarlaEnv:
 
         elif self.scenario == 4:
             # Slow turn left
-            ride_file = 'drives/ride9.p'
+            ride_file = 'Chase/drives/ride9.p'
             ride_history, b_sp_loc, b_sp_rot = self.load_ride(ride_file)
             b_sp_loc.z += 0.01  # without that there is a collision with the map
 
@@ -185,7 +193,7 @@ class CarlaEnv:
 
         elif self.scenario == 5:
             # Turn right
-            ride_file = 'drives/ride14.p'
+            ride_file = 'Chase/drives/ride14.p'
             ride_history, b_sp_loc, b_sp_rot = self.load_ride(ride_file)
             b_sp_loc.z += 0.01  # without that there is a collision with the map
 
@@ -209,7 +217,9 @@ class CarlaEnv:
         :param filepath: pickle file
         :return: full ride hisotry and a spawn point for a chased vehicle
         """
-        ride_history = pickle.load(open(filepath, 'rb'))
+        # ride_history = pickle.load(open(filepath, 'rb'))
+        with open(filepath, 'rb') as file:  # Konstrukcja "with" zapewnia zamknięcie pliku
+            ride_history = pickle.load(file)
 
         sp = ride_history[0]
         b_sp_loc = carla.Location(sp[0], sp[1], sp[2])
@@ -217,7 +227,9 @@ class CarlaEnv:
 
         return ride_history, b_sp_loc, b_sp_rot
 
-    def set_spectator(self):
+    # def set_spectator(self):
+    def set_spectator(self, d=6.4):
+
         """
         Get specator's camera angles
         :param d: constant
@@ -250,7 +262,7 @@ class CarlaEnv:
         roll - leaning your vision (e.g. from | to ->)
         """
         self.spectator.set_transform(carla.Transform(spectator_coordinates, rotation))
-
+        
         return self.spectator
 
     def spawn_car(self, model_name, spawn_point):
@@ -259,9 +271,9 @@ class CarlaEnv:
         :return: vehicle
         """
         bp = self.blueprint_library.filter(model_name)[0]
+        # bp.set_attribute('role_name', 'ego')
         vehicle = self.world.try_spawn_actor(bp, spawn_point)
         self.actor_list.append(vehicle)
-
         return vehicle
 
     def create_action_space(self, action_space):
@@ -289,7 +301,8 @@ class CarlaEnv:
 
         rgb_cam = self.world.spawn_actor(rgb_cam_bp, self.transform, attach_to=vehicle)
         self.actor_list.append(rgb_cam)
-        rgb_cam.listen(lambda data: self.process_rgb_img(data))
+        self.image_queue = queue.Queue()
+        rgb_cam.listen(self.image_queue.put)
 
     def process_rgb_img(self, image):
         """
@@ -383,16 +396,16 @@ class CarlaEnv:
         self.control.hand_brake = False
         self.control.reverse = False
         self.control.manual_gear_shift = False
-        vehicle.apply_control(self.control)
+        self.a_vehicle.apply_control(self.control)
 
-    def car_control_discrete(self, action, vehicle):
+    def car_control_discrete(self, action):
         self.control.throttle = ac.ACTION_CONTROL[self.action_space[action]][0]
         self.control.brake = ac.ACTION_CONTROL[self.action_space[action]][1]
         self.control.steer = ac.ACTION_CONTROL[self.action_space[action]][2]
         self.control.hand_brake = False
         self.control.reverse = False
         self.control.manual_gear_shift = False
-        vehicle.apply_control(self.control)
+        self.a_vehicle.apply_control(self.control)
 
     @staticmethod
     def calculate_distance(a_location, b_location):
@@ -445,19 +458,19 @@ class CarlaEnv:
         """
         Teleports a chased vehicle to the next location from the file
         """
-        for frame in self.ride_history:
-            if not self.done:
-                if self.scenario == 5:
-                    time.sleep(0.03)
-                else:
-                    time.sleep(0.07)
-                self.draw_movement(self.b_vehicle)
-                self.prev_b_vehicle_loc = self.b_vehicle.get_transform().location
-                new_loc = carla.Location(frame[0], frame[1], frame[2])
-                new_rotation = carla.Rotation(frame[3], frame[4], frame[5])
+        # for frame in self.ride_history:
+        #     if not self.done:
+        #         if self.scenario == 5:
+        #             time.sleep(0.03)
+        #         else:
+        #             time.sleep(0.07)
+        #         self.draw_movement(self.b_vehicle)
+        #         self.prev_b_vehicle_loc = self.b_vehicle.get_transform().location
+        #         new_loc = carla.Location(frame[0], frame[1], frame[2])
+        #         new_rotation = carla.Rotation(frame[3], frame[4], frame[5])
 
-                new_point = carla.Transform(new_loc, new_rotation)
-                self.b_vehicle.set_transform(new_point)
+        #         new_point = carla.Transform(new_loc, new_rotation)
+        #         self.b_vehicle.set_transform(new_point)
 
     def reload_world(self):
         """
@@ -465,39 +478,89 @@ class CarlaEnv:
         """
         self.destroy_agents()
         self.actor_list = []
+
+
+        old_world = self.client.get_world()
+        if old_world is not None:
+            prev_world_id = old_world.id
+            del old_world
+        else:
+            prev_world_id = None
+
+        # if not self.manual_control:
+        self.world=self.client.reload_world()
+
+        self.settings = self.world.get_settings()
+        self.settings.synchronous_mode = True
+        self.settings.fixed_delta_seconds = 0.1
+        self.settings.max_substep_delta_time = 0.01
+        self.settings.max_substeps = 10
+        self.world.apply_settings(self.settings)
+
+        tries = 3
+        self.world = self.client.get_world()
+
+        # spawn_points = self.world.get_map().get_spawn_points()
+        # for i, spawn_point in enumerate(spawn_points):
+        #     location = spawn_point.location
+        #     self.world.debug.draw_string(location, str(i), draw_shadow=False, color=carla.Color(r=0, g=255, b=0), life_time=120.0)
+
+        # self.world.tick()
+        while prev_world_id == self.world.id and tries > 0:
+            tries -= 1
+            self.world.tick()
+            self.world = self.client.get_world()
+
         self.collision_history_list = []
         self.prev_b_vehicle_loc = None
         self.step_counter = 0
         self.done = False
         self.front_camera = None
-        self.episode_timer = Timer()
-        self.effective_chase_timer = Timer()
+        # self.episode_timer = Timer()
+        # self.effective_chase_timer = Timer()
         self.effective_chase_per = 0
-
-        if not self.manual_control:
-            self.world = self.client.reload_world()
+        # self.ride_history.clear()
+        self.history_frame_number = 0
 
     def reset(self, vehicle_for_mc=None):
         """
         Rest environment at the end of each episode
         :return: self.front_camera - an 80x80 image from the spawn point
         """
-        if self.manual_control:
-            self.a_vehicle = vehicle_for_mc
+        # if self.manual_control:
+        #     self.a_vehicle = vehicle_for_mc
 
-        if self.step_counter > 0:  # Omit the first iteration
-            self.thread.join()
+        # if self.step_counter > 0:  # Omit the first iteration
+        #     # self.thread.join()
+        #     pass
 
         self.reload_world()  # Reset variables
-
         self.scenario = random.choice(self.scenario_list)  # Get random scenario
         self.a_sp, self.b_sp, self.ride_history = self.create_scenario()
+        # self.b_sp = self.map.get_spawn_points()[3]
+
+        self.b_vehicle = self.spawn_car('carlacola', self.b_sp)  # Chased car
+        self.a_vehicle = self.spawn_car('model3', self.a_sp)  # Car which is chasing
+
+        # self.ride_iterator = iter(self.ride_history)
+        self.no_more_b_vehicle_points = False
+        self.b_vehicle_frame = self.ride_history[0]
+        
+        new_loc = carla.Location(self.b_vehicle_frame[0], self.b_vehicle_frame[1], self.b_vehicle_frame[2])
+        new_rotation = carla.Rotation(self.b_vehicle_frame[3], self.b_vehicle_frame[4], self.b_vehicle_frame[5])
+
+        new_point = carla.Transform(new_loc, new_rotation)
+        self.b_vehicle.set_transform(new_point)
+        self.world.tick()
+        self.prev_b_vehicle_loc = self.b_vehicle.get_transform().location
+
+
+        
         self.a_sp_loc, self.b_sp_loc = self.a_sp.location, self.b_sp.location
         self.spectator = self.set_spectator() # Set the spectator
 
-        self.b_vehicle = self.spawn_car('carlacola', self.b_sp)  # Chased car
-        if not self.manual_control:
-            self.a_vehicle = self.spawn_car('model3', self.a_sp)  # Car which is chasing
+        # self.b_vehicle = self.spawn_car('carlacola', self.b_sp)  # Chased car
+        # self.a_vehicle = self.spawn_car('model3', self.a_sp)  # Car which is chasing
 
         if self.camera_type == 'rgb':
             self.add_rgb_camera(self.a_vehicle)
@@ -506,69 +569,134 @@ class CarlaEnv:
         else:
             self.log.err(f"Wrong camera type. Pick rgb or semantic, not: {self.camera_type}")
 
-        self.add_collision_sensor(self.a_vehicle)
-        self.a_vehicle.apply_control(carla.VehicleControl(throttle=1.0, brake=1.0))
-        time.sleep(0.5)
+        # self.add_collision_sensor(self.a_vehicle)
+        # self.a_vehicle.apply_control(carla.VehicleControl(throttle=1.0, brake=1.0))
+        # time.sleep(0.5)
 
-        while self.front_camera is None:
-            time.sleep(0.01)
+        # while self.front_camera is None:
+        #     time.sleep(0.01)
+        self.world.tick()
+        self.world.tick()    
+        self.world.tick()
+        self.world.tick()
+        self.world.tick()
+        self.world.tick()
 
-        self.a_vehicle.apply_control(carla.VehicleControl(brake=0.0))
+        # self.a_vehicle.apply_control(carla.VehicleControl(brake=0.0))
+        while not self.image_queue.empty():
+            _ = self.image_queue.get()
 
+        self.world.tick()
+        image = self.image_queue.get()
+        self.state_observer.image = image
+
+        self.process_rgb_img(image)
         return self.front_camera
-
-    def step(self, action, vehicle_for_mc=None):
-        """
-        Method which creates an episode as a set of steps
-        :param action: car's action
-        :param vehicle_for_mc: carla.Vehicle class used only in human_performance_test.py
-        :return:
-        """
-        self.clock.tick(fps)  # Pygame's FPS
-
-        if not self.manual_control:
-            if self.action_space == 'continuous':
-                self.car_control_continuous(action, self.a_vehicle)
-            else:  # Discrete
-                self.car_control_discrete(action, self.a_vehicle)
+    
+    def step_apply_action(self, action, vehicle_for_mc=None):
+        self.step_counter += 1
+        if self.action_space == 'continuous':
+            self.car_control_continuous(action)
         else:
-            self.a_vehicle = vehicle_for_mc
+            self.car_control_discrete(action)
+        #?????????????????
+        # if not self.manual_control:#?????????????????
+        #     if self.action_space == 'continuous':
+        #         self.car_control_continuous(action)
+        #     else:
+        #         self.car_control_discrete(action)
+        # else:
+        #     self.a_vehicle = vehicle_for_mc
 
-        if self.step_counter == 0:  # Only the first step
-            # Apply chased vehicle movement async
-            self.thread = threading.Thread(target=self.chased_vehicle_movement, args=(), kwargs={}, daemon=True)
-            self.thread.start()
-            self.episode_timer.start()
-            # Assumption that the chase is starting at point where the chasing car is 5-25m behind
-            self.effective_chase_timer.start()
+    def step(self):
+        """
+        # Method which creates an episode as a set of steps
+        # :param action: car's action
+        # :param vehicle_for_mc: carla.Vehicle class used only in human_performance_test.py
+        # :return:
+        # """
+        # # self.clock.tick(fps)  # Pygame's FPS #??????
+
+        # # if not self.manual_control:
+        # #     if self.action_space == 'continuous':
+        # #         self.car_control_continuous(action, self.a_vehicle)
+        # #     else:  # Discrete
+        # #         self.car_control_discrete(action, self.a_vehicle)
+        # # else:
+        # #     self.a_vehicle = vehicle_for_mc
+
+        # if self.step_counter == 0:  # Only the first step
+        #     # Apply chased vehicle movement async
+        #     # self.thread = threading.Thread(target=self.chased_vehicle_movement, args=(), kwargs={}, daemon=True)
+        #     # self.thread.start()
+        #     # self.episode_timer.start()
+        #     # Assumption that the chase is starting at point where the chasing car is 5-25m behind
+        #     # self.effective_chase_timer.start()
+        #     pass
 
         self.step_counter += 1
 
-        if sleep_time:
-            # How many actions per sec?
-            time.sleep(sleep_time)
+        # # if self.no_more_b_vehicle_points == False:
+        # #     try:
+        # #         self.b_vehicle_frame = next(self.ride_iterator)
+        # #         self.b_vehicle_frame = next(self.ride_iterator)
+        # #         self.draw_movement(self.b_vehicle)
+        # #         self.prev_b_vehicle_loc = self.b_vehicle.get_transform().location
+        # #         new_loc = carla.Location(self.b_vehicle_frame[0], self.b_vehicle_frame[1], self.b_vehicle_frame[2])
+        # #         new_rotation = carla.Rotation(self.b_vehicle_frame[3], self.b_vehicle_frame[4], self.b_vehicle_frame[5])
+
+        # #         new_point = carla.Transform(new_loc, new_rotation)
+        # #         self.b_vehicle.set_transform(new_point)
+        # #     except StopIteration:
+        # #         self.no_more_b_vehicle_points = True
+        # #         del self.ride_iterator
+        # #         del self.b_vehicle_frame
+        # # else:
+        # #     pass
+        #     # self.world.tick()
+        if self.history_frame_number < len(self.ride_history):
+            self.b_vehicle_frame = self.ride_history[self.history_frame_number]
+            new_loc = carla.Location(self.b_vehicle_frame[0], self.b_vehicle_frame[1], self.b_vehicle_frame[2])
+            new_rotation = carla.Rotation(self.b_vehicle_frame[3], self.b_vehicle_frame[4], self.b_vehicle_frame[5])
+
+            new_point = carla.Transform(new_loc, new_rotation)
+            self.b_vehicle.set_transform(new_point)
+            self.history_frame_number += 3
+            self.draw_movement(self.b_vehicle)
+            self.prev_b_vehicle_loc = self.b_vehicle.get_transform().location
+
 
         a_location, b_location = self.draw_movement(self.a_vehicle), self.b_vehicle.get_location()
         ab_distance = round(self.calculate_distance(a_location, b_location), 3)
 
-        if 5 <= ab_distance <= 25:  # 5m-25m effective chase
-            if self.effective_chase_timer.paused:
-                self.effective_chase_timer.resume()
-        else:
-            if not self.effective_chase_timer.paused:
-                self.effective_chase_timer.pause()
+        # # if 5 <= ab_distance <= 25:  # 5m-25m effective chase
+        # #     if self.effective_chase_timer.paused:
+        # #         self.effective_chase_timer.resume()
+        # # else:
+        # #     if not self.effective_chase_timer.paused:
+        # #         self.effective_chase_timer.pause()
 
-        # Done from a collision or a distnace
-        reward, self.done = reward_function(self.collision_history_list, ab_distance=ab_distance,
-                                            timer=self.episode_timer.get())
+        # # Done from a collision or a distnace
+        reward, self.done = reward_function(self.collision_history_list, ab_distance=ab_distance)
+        # reward, self.done = reward_function(self.collision_history_list, ab_distance=2,
+        #                                     timer=0) # timer=self.episode_timer.get())
 
-        if not self.thread.is_alive():
-            self.done = True  # The end of the episode
+        # if not self.thread.is_alive():
+            # self.done = True  # The end of the episode
+
+
+        image1 = self.image_queue.get()
+        image = self.image_queue.get() #2 frames are put on the queue between two consecutive steps
+        self.state_observer.image = image
 
         if self.done:
             """ Calculate effective chase time"""
-            self.effective_chase_per = self.effective_chase_timer.get() / self.episode_timer.get() * 100
+            # self.effective_chase_per = self.effective_chase_timer.get() / self.episode_timer.get() * 100
+            print("Done")
 
+        self.process_rgb_img(image)
+
+        # return self.front_camera, reward, self.done
         return self.front_camera, reward, self.done
 
     def destroy_agents(self):

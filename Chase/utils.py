@@ -95,7 +95,7 @@ class ColoredPrint:
         return self
 
 
-def reward_function(collision_history_list, ab_distance, timer):
+def reward_function(collision_history_list, ab_distance, timer=0):
     """
     Distance reward
     """
@@ -103,7 +103,7 @@ def reward_function(collision_history_list, ab_distance, timer):
 
     if reward_num == 1:
         col_reward = -1
-        timer_reward = round(1/14 * timer, 3)
+        # timer_reward = round(1/14 * timer, 3)
 
         if 5 <= ab_distance <= 25:
             route_distance_reward = 1
@@ -112,7 +112,7 @@ def reward_function(collision_history_list, ab_distance, timer):
 
     elif reward_num == 2:
         col_reward = -10
-        timer_reward = round(1/11 * timer, 3)
+        # timer_reward = round(1/11 * timer, 3)
 
         if 5 <= ab_distance <= 25:
             route_distance_reward = 1
@@ -121,7 +121,7 @@ def reward_function(collision_history_list, ab_distance, timer):
 
     elif reward_num == 3:
         col_reward = -10
-        timer_reward = round(1/3 * timer, 3)
+        # timer_reward = round(1/3 * timer, 3)
 
         route_distance_reward = round(-1/6 * ab_distance + 4, 3)
 
@@ -139,7 +139,7 @@ def reward_function(collision_history_list, ab_distance, timer):
 
     if ab_distance >= 60:
         done = True
-
+    timer_reward = 0
     reward = round(col_reward + route_distance_reward + timer_reward, 3)
 
     return reward, done
