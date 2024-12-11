@@ -151,6 +151,7 @@ class CarlaEnv:
         self.preview_camera = None
         self.preview_camera_enabled = False
         self.done = False
+        self.speed = 0
 
         self.state_observer = StateObserver()
 
@@ -837,6 +838,7 @@ class CarlaEnv:
         self.preview_camera_enabled = False
         self.is_junction = False
         self.done = False
+        self.speed = 0
 
     def reset(self, episode, save_image=False):
         """
@@ -897,12 +899,15 @@ class CarlaEnv:
         image = self.image_queue.get()
         self.state_observer.image = image
 
-
+        scalar_tensor = torch.tensor(self.speed, dtype=torch.float32).view(1, 1)  # Dodanie wymiaru [batch_size=1, 1]
+        batch_size = 1
+        scalar_tensor = scalar_tensor.expand(batch_size, -1)  # Powielenie scalaru na cały batch
+        speed_tensor = scalar_tensor.to("cuda")
         # if save_image:
         #     self.state_observer.save_to_disk(image, episode, 0)
         
         self.process_rgb_img(image)
-        return self.front_camera
+        return self.front_camera, speed_tensor
     
     def step_apply_action(self, action):
         self.step_counter += 1
@@ -931,11 +936,15 @@ class CarlaEnv:
         #     # How many actions per sec?
         #     time.sleep(sleep_time)
 
-        _, vehicle_location = self.calculate_distance()
+        distance_from_goal, vehicle_location = self.calculate_distance()
 
         route_distance = self.calculate_route_distance(vehicle_location)
-        speed = self.calculate_speed()
-        print("Speed: ", speed)
+        self.speed = self.calculate_speed()
+        scalar_tensor = torch.tensor(self.speed, dtype=torch.float32).view(1, 1)  # Dodanie wymiaru [batch_size=1, 1]
+        batch_size = 1
+        scalar_tensor = scalar_tensor.expand(batch_size, -1)  # Powielenie scalaru na cały batch
+        speed_tensor = scalar_tensor.to("cuda")  # Przenieś tensor na GPU
+
         static_reward_from_mp = mp_reward
         mp_static_reward, self.done = self.static_reward_mp(vehicle_location, static_reward_from_mp)
                 
@@ -954,7 +963,7 @@ class CarlaEnv:
         # Reset the history
         self.invasion_history_list = []
 
-        reward, done = reward_function(self.collision_history_list, invasion_counter, speed, route_distance,
+        reward, done = reward_function(self.collision_history_list, invasion_counter, self.speed, route_distance,
                                              mp_static_reward, terminal_state_reward)
 
         # Terminal state obtained or collision
@@ -973,7 +982,7 @@ class CarlaEnv:
 
         self.process_rgb_img(image)
 
-        return self.front_camera, reward, self.done, route_distance
+        return self.front_camera, reward, self.done, route_distance, speed_tensor, distance_from_goal
 
     def destroy_agents(self):
         """

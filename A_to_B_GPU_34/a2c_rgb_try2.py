@@ -47,8 +47,8 @@ port = settings.PORT
 action_type = settings.ACTION_TYPE
 camera_type = settings.CAMERA_TYPE
 load_model = settings.LOAD_MODEL
-model_incr_load = 'A_to_B_GPU_34/PC_models/currently_trained/synchr_sc3_35_start_sc_7.pth'
-model_incr_save = 'A_to_B_GPU_34/PC_models/currently_trained/synchr_sc3_35_start_sc_7'
+model_incr_load = 'A_to_B_GPU_34/PC_models/currently_trained/synchr_sc3_39_start_sc_7_w_speed.pth'
+model_incr_save = 'A_to_B_GPU_34/PC_models/currently_trained/synchr_sc3_39_start_sc_7_w_speed'
 
 gamma = settings.GAMMA
 lr = settings.LR
@@ -149,8 +149,8 @@ class DeepActorCriticAgent(mp.Process):
         action = action.to(torch.device("cuda"))
         return action.cpu().numpy().squeeze(0)  # Convert to numpy ndarray, squeeze and remove the batch dimension
 
-    def get_action(self, obs):
-        action_distribution = self.policy(obs)  # Call to self.policy(obs) also populates self.value with V(obs)
+    def get_action(self, obs, speed):
+        action_distribution = self.policy(obs, speed)  # Call to self.policy(obs) also populates self.value with V(obs)
         action = action_distribution.sample()
 
         log_prob_a = action_distribution.log_prob(action)
@@ -160,14 +160,14 @@ class DeepActorCriticAgent(mp.Process):
         self.trajectory.append(Transition(obs, self.value, action, log_prob_a))  # Construct the trajectory
         return action
 
-    def discrete_policy(self, obs):
+    def discrete_policy(self, obs, speed):
         """
         Calculates a discrete/categorical distribution over actions given observations
         :param obs: self's observation
         :return: policy, a distribution over actions for the given observation
         """
-        logits = self.actor(obs)
-        value = self.critic(obs)
+        logits = self.actor(obs, speed)
+        value = self.critic(obs, speed)
         self.logits = logits.to(torch.device("cuda"))
         self.value = value.to(torch.device("cuda"))
         """
@@ -178,7 +178,7 @@ class DeepActorCriticAgent(mp.Process):
         self.action_distribution = Categorical(logits=self.logits)
         return self.action_distribution
 
-    def calculate_n_step_return(self, n_step_rewards, final_state, done, gamma):
+    def calculate_n_step_return(self, n_step_rewards, final_state, done, gamma, final_speed):
         """A_to_B_GPU_34/PC_models/currently_trained/synchr_sc3_30_start_sc_3.pth
         Calculates the n-step return for each state in the input-trajectory/n_step_transitions
         :param n_step_rewards: List of rewards for each step
@@ -188,7 +188,7 @@ class DeepActorCriticAgent(mp.Process):
         """
         g_t_n_s = []
         with torch.no_grad():
-            g_t_n = torch.tensor([[0]]).float().to(device) if done else self.critic(final_state)
+            g_t_n = torch.tensor([[0]]).float().to(device) if done else self.critic(final_state, final_speed)
             for r_t in n_step_rewards[::-1]:  # Reverse order; From r_tpn to r_t
                 g_t_n = torch.tensor(r_t).float() + gamma * g_t_n
                 g_t_n_s.insert(0, g_t_n)  # n-step returns inserted to the left to maintain correct index order
@@ -223,8 +223,8 @@ class DeepActorCriticAgent(mp.Process):
 
         return actor_loss, critic_loss
 
-    def optimize(self, final_state_rgb, done):
-        td_targets = self.calculate_n_step_return(self.rewards, final_state_rgb, done, self.gamma)
+    def optimize(self, final_state_rgb, done, final_speed):
+        td_targets = self.calculate_n_step_return(self.rewards, final_state_rgb, done, self.gamma, final_speed)
         actor_loss, critic_loss = self.calculate_loss(self.trajectory, td_targets)
 
         self.actor_optimizer.zero_grad()
@@ -283,11 +283,11 @@ def handle_crash(results_queue):
     project="A_to_B",
     # create or extend already logged run:
     resume="allow",
-    id="run_synchronous_sc7_35_start_sc_7",  
+    id="run_synchronous_sc7_39_start_sc_7_w_speed",  
 
     # track hyperparameters and run metadata
     config={
-    "name" : "run_synchronous_sc7_35_start_sc_7",
+    "name" : "run_synchronous_sc7_39_start_sc_7_w_speed",
     "learning_rate": lr
     }
     )
@@ -304,7 +304,8 @@ def handle_crash(results_queue):
     prev_checkpoint_mean_ep_rew = agent.best_mean_reward
     num_improved_episodes_before_checkpoint = 0  # To keep track of the num of ep with higher perf to save model
     episodes_to_save_images = (2773, 2774, 2775, 2776)
-
+    max_speed = 0
+    distance_from_goal = 0
     while 1:
         # with lock:
         agent.episode += 1
@@ -321,9 +322,10 @@ def handle_crash(results_queue):
         
         agent.environment.state_observer.reset()
 
-        state_rgb = agent.environment.reset(save_image=save_image, episode = agent.episode)
+        state_rgb, speed_tensor = agent.environment.reset(save_image=save_image, episode = agent.episode)
 
         state_rgb = state_rgb / 255.0  # resize the tensor to [0, 1]
+        speed_tensor = speed_tensor/50.0
 
         done = False
         ep_reward = 0.0 
@@ -340,7 +342,9 @@ def handle_crash(results_queue):
             # perform_actions +=1  #perform every 0.2 seconds
             # if perform_actions%2==1:
                 # print(perform_actions)
-            action = agent.get_action(state_rgb)
+            if speed_tensor.item() > max_speed:
+                max_speed = speed_tensor.item()
+            action = agent.get_action(state_rgb, speed_tensor)
             if save_image:
                 agent.environment.state_observer.action = action # To print action on the frame
                 agent.environment.state_observer.step = episode_step # To print action on the frame
@@ -361,17 +365,18 @@ def handle_crash(results_queue):
             agent.environment.world.tick()
             
             save_image = True if agent.episode in episodes_to_save_images else False
-            new_state, reward, done, route_distance = agent.environment.step(save_image=save_image, episode=agent.episode, step=episode_step)
+            new_state, reward, done, route_distance, speed_tensor, distance_from_goal = agent.environment.step(save_image=save_image, episode=agent.episode, step=episode_step)
             agent.environment.state_observer.reward = reward
 
             wandb.log({"step_reward": reward, "step": episode_step})
             new_state = new_state / 255.0  # resize the tensor to [0, 1]
+            speed_tensor = speed_tensor / 50.0
             agent.rewards.append(reward)
             ep_reward += reward
             step_num += 1
             print("Step number: ", step_num, "reward: ", reward, "ep_reward: ", ep_reward)
             if step_num >= 5 or done:
-                actor_loss, critic_loss, actor_lr, critic_lr = agent.optimize(new_state, done)
+                actor_loss, critic_loss, actor_lr, critic_lr = agent.optimize(new_state, done, speed_tensor)
                 step_num = 0
             state_rgb = new_state
             agent.global_step_num += 1
@@ -387,12 +392,14 @@ def handle_crash(results_queue):
         if ep_reward > agent.best_reward:
             agent.best_reward = ep_reward
         agent.save(model_incr_save)
-        wandb.log({"reward": ep_reward, "episode": agent.episode, "mean_reward": agent.mean_reward})
+        wandb.log({"reward": ep_reward, "episode": agent.episode, "mean_reward": agent.mean_reward, "max_speed": max_speed, "distance_from_goal": distance_from_goal})
 
-        print("Episode: {} \t ep_reward:{} \t mean_ep_rew:{}\t best_ep_reward:{}".format(agent.episode,
+        print("Episode: {} \t ep_reward:{} \t mean_ep_rew:{}\t best_ep_reward:{} max_speed: {} distance_from_goal: {}".format(agent.episode,
                                                                                             ep_reward,
                                                                                             agent.mean_reward,
-                                                                                            agent.best_reward))        
+                                                                                            agent.best_reward, 
+                                                                                            max_speed,
+                                                                                            distance_from_goal))        
     del world
     del client
     results_queue.put(1)

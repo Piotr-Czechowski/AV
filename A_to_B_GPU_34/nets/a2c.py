@@ -70,9 +70,17 @@ class DiscreteActor(torch.nn.Module):
                                           torch.nn.ReLU())
         self.layer4 = torch.nn.Sequential(torch.nn.Linear(64 * 7 * 7, 512),
                                           torch.nn.ReLU())
-        self.logits = torch.nn.Linear(512, actor_shape)
+        # self.logits = torch.nn.Linear(512, actor_shape)
+        self.scalar_layer = torch.nn.Sequential(
+                    torch.nn.Linear(1, 64),
+                    torch.nn.ReLU()
+                    )
+        
+        self.logits = torch.nn.Linear(512+64, actor_shape)
+        # self.attention_layer = torch.nn.MultiheadAttention(512+64, 2)
+        # self.logits = torch.nn.Linear(2, actor_shape)
 
-    def forward(self, x):
+    def forward(self, x, scalar):
         """
         Forward pass through the Actor network. Takes batch_size x observations as input and produces mu and sigma
         as the outputs
@@ -86,7 +94,14 @@ class DiscreteActor(torch.nn.Module):
         x = self.layer3(x)
         x = x.view(x.shape[0], -1)
         x = self.layer4(x)
-        logits = self.logits(x)
+        # logits = self.logits(x)
+        scalar = scalar.to(self.device).view(-1, 1)
+        scalar_features = self.scalar_layer(scalar)
+        combined = torch.cat([x, scalar_features], dim=1)
+        
+        logits = self.logits(combined)
+        # attention = self.attention_layer(combined)
+        # logits = self.logits(attention)
         return logits
 
 
@@ -109,9 +124,19 @@ class Critic(torch.nn.Module):
                                           torch.nn.ReLU())
         self.layer4 = torch.nn.Sequential(torch.nn.Linear(64 * 7 * 7, 512),
                                           torch.nn.ReLU())
-        self.critic = torch.nn.Linear(512, critic_shape)
+        # self.critic = torch.nn.Linear(512, critic_shape)
 
-    def forward(self, x):
+        self.scalar_layer = torch.nn.Sequential(
+                    torch.nn.Linear(1, 64),
+                    torch.nn.ReLU()
+                    )
+
+        self.critic = torch.nn.Linear(512+64, critic_shape)
+        # self.attention_layer = torch.nn.MultiheadAttention(512+64, 2)
+        # self.critic = torch.nn.Linear(2, critic_shape)
+
+
+    def forward(self, x, scalar):
         """
         Forward pass through the Critic network. Takes batch_size x observations as input and produces the value
         estimate as the output
@@ -125,7 +150,14 @@ class Critic(torch.nn.Module):
         x = self.layer3(x)
         x = x.view(x.shape[0], -1)
         x = self.layer4(x)
-        critic = self.critic(x)
+        scalar = scalar.to(self.device).view(-1, 1)
+        scalar_features = self.scalar_layer(scalar)
+        combined = torch.cat([x, scalar_features], dim=1)
+        
+        critic = self.critic(combined)
+        # attention = self.attention_layer(combined)
+        # critic = self.critic(attention)
+
         return critic
 
 
