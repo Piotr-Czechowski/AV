@@ -34,7 +34,7 @@ class StateObserver:
 
     def draw_related_values(self, episode=None, step=None):
         # Tworzenie obrazu image2 o wymiarach 80x80 (kolor niebieski)
-        image_sub = np.zeros((80, 80, 3), dtype=np.uint8)
+        image_sub = np.zeros((256, 256, 3), dtype=np.uint8)
         image_sub[:] = (255, 0, 0)  # Kolor niebieski w formacie BGR
 
         # Dodawanie tekstu "Image1" na obraz image1

@@ -44,8 +44,8 @@ port = settings.PORT
 action_type = settings.ACTION_TYPE
 camera_type = settings.CAMERA_TYPE
 load_model = settings.LOAD_MODEL
-model_incr_load = 'Chase/PC_models/currently_trained/synchr_sc3_35_start_sc_7.pth'
-model_incr_save = 'Chase/PC_models/currently_trained/synchr_sc3_35_start_sc_7'
+model_incr_load = 'Chase/PC_models/currently_trained/chase_no_speed_2.pth'
+model_incr_save = 'Chase/PC_models/currently_trained/chase_no_speed_2'
 
 
 gamma = settings.GAMMA
@@ -377,11 +377,11 @@ def handle_crash(results_queue):
     project="Chase_synchr",
     # create or extend already logged run:
     resume="allow",
-    id="run_synchronous_1",  
+    id="run_synchronous_4",  
 
     # track hyperparameters and run metadata
     config={
-    "name" : "run_synchronous_1",
+    "name" : "run_synchronous_4",
     "learning_rate": lr
     }
     )
@@ -400,7 +400,7 @@ def handle_crash(results_queue):
     prev_checkpoint_mean_ep_rew = agent.best_mean_reward
     num_improved_episodes_before_checkpoint = 0  # To keep track of the num of ep with higher perf to save model
 
-    episodes_to_save_images = (29022, 29023, 29024, 29025)
+    episodes_to_save_images = (1, 100, 1000, 2000)
 
     while 1:
         # Get a single frame form the environment - from a spawn point

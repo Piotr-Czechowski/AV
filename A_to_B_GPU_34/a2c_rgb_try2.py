@@ -27,7 +27,7 @@ from carla_env import CarlaEnv
 import carla
 
 # For RGB
-from nets.a2c import Actor as DeepActor  # Continuous
+# from nets.a2c import Actor as DeepActor  # Continuous
 from nets.a2c import DiscreteActor as DeepDiscreteActor  # Separate actor
 from nets.a2c import Critic as DeepCritic  # Separate critic
 
@@ -47,8 +47,8 @@ port = settings.PORT
 action_type = settings.ACTION_TYPE
 camera_type = settings.CAMERA_TYPE
 load_model = settings.LOAD_MODEL
-model_incr_load = 'A_to_B_GPU_34/PC_models/currently_trained/synchr_sc3_39_start_sc_7_w_speed.pth'
-model_incr_save = 'A_to_B_GPU_34/PC_models/currently_trained/synchr_sc3_39_start_sc_7_w_speed'
+model_incr_load = 'A_to_B_GPU_34/PC_models/currently_trained/synchr_200_rgb_camera_light_turns_2.pth'
+model_incr_save = 'A_to_B_GPU_34/PC_models/currently_trained/synchr_200_rgb_camera_light_turns_2'
 
 gamma = settings.GAMMA
 lr = settings.LR
@@ -80,8 +80,10 @@ class DeepActorCriticAgent(mp.Process):
         self.lr = lr
         self.use_entropy = use_entropy
 
+        # env = CarlaEnv(scenario=scenario, spawn_point=False, terminal_point=False, mp_density=25, port=port,
+        #                     action_space=self.action_type, camera=self.camera_type, resX=80, resY=80, manual_control=False)
         env = CarlaEnv(scenario=scenario, spawn_point=False, terminal_point=False, mp_density=25, port=port,
-                       action_space=self.action_type, camera=self.camera_type, resX=80, resY=80, manual_control=False)
+                       action_space=self.action_type, camera=self.camera_type, resX=200, resY=200, manual_control=False)
 
         self.environment = env  # Carla env
         self.trajectory = []  # Contains the trajectory of the self as a sequence of transitions
@@ -101,23 +103,25 @@ class DeepActorCriticAgent(mp.Process):
         self.value = 0
         self.action_distribution = None
 
-        state_shape = [80, 80, 3]
+        # state_shape = [80, 80, 3]
+        state_shape = [200, 200, 3]
+
         critic_shape = 1
 
         if self.action_type == 'discrete':
             self.action_shape = len(ac.ACTIONS_NAMES)
             self.policy = self.discrete_policy
             self.actor = DeepDiscreteActor(state_shape, self.action_shape, device).to(device)
-        elif self.action_type == 'continuous':
-            self.action_shape = 2
-            self.policy = self.multi_variate_gaussian_policy
-            self.actor = DeepActor(state_shape, self.action_shape, device).to(device)
+        # elif self.action_type == 'continuous':
+        #     self.action_shape = 2
+        #     self.policy = self.multi_variate_gaussian_policy
+            # self.actor = DeepActor(state_shape, self.action_shape, device).to(device)
         else:
             self.log.err(f"Wrong action type: {self.action_type}, choose discrete or continuous")
 
         self.critic = DeepCritic(state_shape, critic_shape, device).to(device)
-        self.actor_optimizer = torch.optim.Adam(self.actor.parameters(), lr=self.lr)
-        self.critic_optimizer = torch.optim.Adam(self.critic.parameters(), lr=self.lr)
+        self.actor_optimizer = torch.optim.Adam(self.actor.parameters(), lr=self.lr, weight_decay=1e-2)
+        self.critic_optimizer = torch.optim.Adam(self.critic.parameters(), lr=self.lr, weight_decay=1e-2)
         self.mean_reward = 0
         self.episode = 0
 
@@ -283,11 +287,11 @@ def handle_crash(results_queue):
     project="A_to_B",
     # create or extend already logged run:
     resume="allow",
-    id="run_synchronous_sc7_39_start_sc_7_w_speed",  
+    id="synchr_200_rgb_camera_4",  
 
     # track hyperparameters and run metadata
     config={
-    "name" : "run_synchronous_sc7_39_start_sc_7_w_speed",
+    "name" : "synchr_200_rgb_camera_4",
     "learning_rate": lr
     }
     )
@@ -303,7 +307,7 @@ def handle_crash(results_queue):
     episode_rewards = []  # Every episode's reward
     prev_checkpoint_mean_ep_rew = agent.best_mean_reward
     num_improved_episodes_before_checkpoint = 0  # To keep track of the num of ep with higher perf to save model
-    episodes_to_save_images = (2773, 2774, 2775, 2776)
+    episodes_to_save_images = (100, 300, 600, 2000)
     max_speed = 0
     distance_from_goal = 0
     while 1:
@@ -362,6 +366,7 @@ def handle_crash(results_queue):
                 _ = agent.environment.image_queue.get()
 
             agent.environment.world.tick()
+            agent.environment.step_apply_action(action)
             agent.environment.world.tick()
             
             save_image = True if agent.episode in episodes_to_save_images else False

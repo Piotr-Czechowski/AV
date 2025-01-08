@@ -101,7 +101,7 @@ class CarlaEnv:
         self.b_vehicle = self.spawn_car('carlacola', self.b_sp)  # Chased car
         self.prev_b_vehicle_loc = 0  # Previous location of the chased car. Used for drawing a route
         # if not manual_control:
-        self.a_vehicle = self.spawn_car('model3', self.a_sp)  # Car which is chasing
+        self.a_vehicle = self.spawn_car('model3', self.a_sp, ego=True)  # Car which is chasing
 
         # Manages the basic movement of a vehicle using typical driving controls
         self.control = carla.VehicleControl()
@@ -125,6 +125,7 @@ class CarlaEnv:
         self.ride_history = []
 
         self.state_observer = StateObserver()
+        self.previous_step_distance = 100
 
     def create_scenario(self):
         """
@@ -265,13 +266,14 @@ class CarlaEnv:
         
         return self.spectator
 
-    def spawn_car(self, model_name, spawn_point):
+    def spawn_car(self, model_name, spawn_point, ego=False):
         """
         Spawn a car
         :return: vehicle
         """
         bp = self.blueprint_library.filter(model_name)[0]
-        # bp.set_attribute('role_name', 'ego')
+        if ego:
+            bp.set_attribute('role_name', 'ego')
         vehicle = self.world.try_spawn_actor(bp, spawn_point)
         self.actor_list.append(vehicle)
         return vehicle
@@ -521,6 +523,10 @@ class CarlaEnv:
         self.effective_chase_per = 0
         # self.ride_history.clear()
         self.history_frame_number = 0
+        self.previous_step_distance = 100
+        self.a_previous_location = None
+        self.b_previous_location = None
+
 
     def reset(self, vehicle_for_mc=None):
         """
@@ -540,7 +546,7 @@ class CarlaEnv:
         # self.b_sp = self.map.get_spawn_points()[3]
 
         self.b_vehicle = self.spawn_car('carlacola', self.b_sp)  # Chased car
-        self.a_vehicle = self.spawn_car('model3', self.a_sp)  # Car which is chasing
+        self.a_vehicle = self.spawn_car('model3', self.a_sp, ego=True)  # Car which is chasing
 
         # self.ride_iterator = iter(self.ride_history)
         self.no_more_b_vehicle_points = False
@@ -662,12 +668,17 @@ class CarlaEnv:
             new_point = carla.Transform(new_loc, new_rotation)
             self.b_vehicle.set_transform(new_point)
             self.history_frame_number += 3
-            self.draw_movement(self.b_vehicle)
+            # self.draw_movement(self.b_vehicle) # Comment and try to chase without this shinig movement line
             self.prev_b_vehicle_loc = self.b_vehicle.get_transform().location
 
 
         a_location, b_location = self.draw_movement(self.a_vehicle), self.b_vehicle.get_location()
         ab_distance = round(self.calculate_distance(a_location, b_location), 3)
+        if self.a_previous_location is None:
+            self.a_previous_location = a_location
+            self.b_previous_location = b_location
+
+        apb_distance = round(self.calculate_distance(self.a_previous_location, b_location), 3) #distance between b and previous a
 
         # # if 5 <= ab_distance <= 25:  # 5m-25m effective chase
         # #     if self.effective_chase_timer.paused:
@@ -677,7 +688,10 @@ class CarlaEnv:
         # #         self.effective_chase_timer.pause()
 
         # # Done from a collision or a distnace
-        reward, self.done = reward_function(self.collision_history_list, ab_distance=ab_distance)
+        reward, self.done = reward_function(self.collision_history_list, ab_distance=ab_distance, apb_distance=apb_distance, ab_previous_distance=self.previous_step_distance, a_location=a_location, b_location=b_location, a_previous_location=self.a_previous_location, b_previous_location=self.b_previous_location)
+        self.previous_step_distance = ab_distance
+        self.a_previous_location = a_location
+        self.b_previous_location = b_location
         # reward, self.done = reward_function(self.collision_history_list, ab_distance=2,
         #                                     timer=0) # timer=self.episode_timer.get())
 

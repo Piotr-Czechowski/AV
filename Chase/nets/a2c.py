@@ -71,6 +71,12 @@ class DiscreteActor(torch.nn.Module):
         self.layer4 = torch.nn.Sequential(torch.nn.Linear(64 * 7 * 7, 512),
                                           torch.nn.ReLU())
         self.logits = torch.nn.Linear(512, actor_shape)
+        # self.scalar_layer = torch.nn.Sequential(
+        #             torch.nn.Linear(1, 64),
+        #             torch.nn.ReLU()
+        #             )
+        
+        # self.logits = torch.nn.Linear(512+64, actor_shape)
 
     def forward(self, x):
         """
@@ -87,6 +93,11 @@ class DiscreteActor(torch.nn.Module):
         x = x.view(x.shape[0], -1)
         x = self.layer4(x)
         logits = self.logits(x)
+        # scalar = scalar.to(self.device).view(-1, 1)
+        # scalar_features = self.scalar_layer(scalar)
+        # combined = torch.cat([x, scalar_features], dim=1)
+        
+        # logits = self.logits(combined)
         return logits
 
 
@@ -110,6 +121,12 @@ class Critic(torch.nn.Module):
         self.layer4 = torch.nn.Sequential(torch.nn.Linear(64 * 7 * 7, 512),
                                           torch.nn.ReLU())
         self.critic = torch.nn.Linear(512, critic_shape)
+        # self.scalar_layer = torch.nn.Sequential(
+        #             torch.nn.Linear(1, 64),
+        #             torch.nn.ReLU()
+        #             )
+
+        # self.critic = torch.nn.Linear(512+64, critic_shape)
 
     def forward(self, x):
         """
@@ -126,6 +143,12 @@ class Critic(torch.nn.Module):
         x = x.view(x.shape[0], -1)
         x = self.layer4(x)
         critic = self.critic(x)
+
+        # scalar = scalar.to(self.device).view(-1, 1)
+        # scalar_features = self.scalar_layer(scalar)
+        # combined = torch.cat([x, scalar_features], dim=1)
+        
+        # critic = self.critic(combined)
         return critic
 
 

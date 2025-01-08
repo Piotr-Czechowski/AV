@@ -95,52 +95,62 @@ class ColoredPrint:
         return self
 
 
-def reward_function(collision_history_list, ab_distance, timer=0):
+def reward_function(collision_history_list, ab_distance, apb_distance, ab_previous_distance, a_location, b_location, a_previous_location, b_previous_location, timer=0, ):
     """
     Distance reward
     """
     reward_num = settings.REWARD_NUMBER
+    done = False
+    # ab_distance = round(self.calculate_distance(a_location, b_location), 3)
 
-    if reward_num == 1:
-        col_reward = -1
-        # timer_reward = round(1/14 * timer, 3)
-
-        if 5 <= ab_distance <= 25:
-            route_distance_reward = 1
-        else:
-            route_distance_reward = 0
-
-    elif reward_num == 2:
-        col_reward = -10
-        # timer_reward = round(1/11 * timer, 3)
-
-        if 5 <= ab_distance <= 25:
-            route_distance_reward = 1
-        else:
-            route_distance_reward = -1
-
-    elif reward_num == 3:
-        col_reward = -10
-        # timer_reward = round(1/3 * timer, 3)
-
-        route_distance_reward = round(-1/6 * ab_distance + 4, 3)
-
+    route_distance_reward = 0
+    if ab_previous_distance > ab_distance:
+        route_distance_reward = 1
+    elif apb_distance > ab_distance:
+        route_distance_reward = 1
     else:
-        col_reward = -1
-        timer_reward = round(1/12 * timer, 3)
+        route_distance_reward = -1
+        # route_distance_reward = -1
 
-        route_distance_reward = round(-0.038 * ab_distance + 1, 3)
+    # if reward_num == 1:
+    #     # col_reward = -1
+    #     # timer_reward = round(1/14 * timer, 3)
+
+    #     if 5 <= ab_distance <= 25:
+    #         route_distance_reward = 1
+    #     else:
+    #         route_distance_reward = 0
+
+    # elif reward_num == 2:
+    #     col_reward = -10
+    #     # timer_reward = round(1/11 * timer, 3)
+
+    #     if 5 <= ab_distance <= 25:
+    #         route_distance_reward = 1
+    #     else:
+    #         route_distance_reward = -1
+
+    # elif reward_num == 3:
+    #     col_reward = -10
+    #     # timer_reward = round(1/3 * timer, 3)
+
+    #     route_distance_reward = round(-1/6 * ab_distance + 4, 3)
+
+    # else:
+    #     col_reward = -1
+    #     # timer_reward = round(1/12 * timer, 3)
+
+    #     route_distance_reward = round(-0.038 * ab_distance + 1, 3)
 
     if len(collision_history_list) != 0:
         done = True  # There was a collision end the episode
-    else:
-        done = False
-        col_reward = 0
 
-    if ab_distance >= 60:
+
+    if ab_distance >= 40:
         done = True
-    timer_reward = 0
-    reward = round(col_reward + route_distance_reward + timer_reward, 3)
+    # timer_reward = 0
+    # reward = round(col_reward + route_distance_reward + timer_reward, 3)
+    reward = route_distance_reward
 
     return reward, done
 

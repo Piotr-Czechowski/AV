@@ -43,7 +43,9 @@ REWARD_FROM_COL = 0  # Static reward from a collision
 REWARD_FROM_INV = 0  # Static reward from a line invasion
 # Speed and distance rewards are in the utils.py/reward_function
 
-ACTIONS = ['forward', 'forward_left', 'forward_right', 'brake', 'brake_left', 'brake_right']
+# ACTIONS = ['forward', 'forward_left', 'forward_right', 'brake', 'brake_left', 'brake_right']
+
+ACTIONS = ['forward', 'forward_left', 'forward_right', 'brake', 'brake_left', 'brake_right', 'forward_slight_left','forward_slight_right','brake_slight_left','brake_slight_right',]
 
 CARLA_PATH = r''  # provide your carla exec path
 CARLA_EGG_PATH = r''  # Provide your carla egg path

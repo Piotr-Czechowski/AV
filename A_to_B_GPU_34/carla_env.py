@@ -67,7 +67,7 @@ class CarlaEnv:
     """
     Create Carla environment
     """
-    def __init__(self, scenario, action_space='discrete', resX=80, resY=80, camera='rgb', port=port,
+    def __init__(self, scenario, action_space='discrete', resX=200, resY=200, camera='rgb', port=port,
                  manual_control=False, spawn_point=False, terminal_point=False, mp_density=25):
         # Run the server on 127.0.0.1/port
         #start_carla_server(f'-windowed -carla-server -fps=60 -ResX={serv_resx} -ResY={serv_resy} -quality-level=Low '
@@ -190,7 +190,8 @@ class CarlaEnv:
 
         elif self.scenario == 7:
             # Long straight line and 2 right turns
-            self.spawn_point = self.map.get_spawn_points()[57]
+            # self.spawn_point = self.map.get_spawn_points()[57]
+            self.spawn_point = self.map.get_spawn_points()[130]
             # self.spawn_point = carla.Transform(sp.location, sp.rotation)
             self.goal_point = 122
         else:
@@ -298,6 +299,8 @@ class CarlaEnv:
 
         tesla = self.blueprint_library.filter('model3')[0]
         tesla.set_attribute('role_name', 'ego')
+        self.spawn_point.location.x -= 9
+
         self.vehicle = self.world.try_spawn_actor(tesla, self.spawn_point)
         self.actor_list.append(self.vehicle)
 
@@ -432,7 +435,7 @@ class CarlaEnv:
                 b = j[0]
                 g = j[1]
                 r = j[2]
-                normalized = (r + g * 256 + b * 256 * 256) / (256 * 256 * 256 - 1)
+                normalized = (r + g * 200 + b * 200 * 200) / (200 * 200 * 200 - 1)
                 in_meters = 1000 * normalized
                 gray_depth_img.append(in_meters)
 
@@ -737,6 +740,7 @@ class CarlaEnv:
         self.control.reverse = False
         self.control.manual_gear_shift = False
         self.vehicle.apply_control(self.control)
+        # i = 4 #just for debuggging
 
     def calculate_route_distance(self, current_location):
         # route_distance - distance to the blue route
@@ -883,6 +887,7 @@ class CarlaEnv:
         #     _ = self.image_queue.get()
 
         # to render properly path on the road. Otherwise it doesn't shine
+        self.step_apply_action(0)
         self.world.tick()
         self.world.tick()    
         self.world.tick()
