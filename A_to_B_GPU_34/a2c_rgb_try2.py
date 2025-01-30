@@ -307,7 +307,7 @@ def handle_crash(results_queue):
     episode_rewards = []  # Every episode's reward
     prev_checkpoint_mean_ep_rew = agent.best_mean_reward
     num_improved_episodes_before_checkpoint = 0  # To keep track of the num of ep with higher perf to save model
-    episodes_to_save_images = (1, 2, 3, 4)
+    episodes_to_save_images = (1, 2, 3, 4, 10)
     max_speed = 0
     distance_from_goal = 0
     while 1:
