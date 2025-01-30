@@ -400,7 +400,7 @@ def handle_crash(results_queue):
     prev_checkpoint_mean_ep_rew = agent.best_mean_reward
     num_improved_episodes_before_checkpoint = 0  # To keep track of the num of ep with higher perf to save model
 
-    episodes_to_save_images = (1, 100, 1000, 2000)
+    episodes_to_save_images = (1, 2, 3, 4)
 
     while 1:
         # Get a single frame form the environment - from a spawn point
