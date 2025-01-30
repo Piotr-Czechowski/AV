@@ -191,9 +191,10 @@ class CarlaEnv:
         elif self.scenario == 7:
             # Long straight line and 2 right turns
             # self.spawn_point = self.map.get_spawn_points()[57]
-            self.spawn_point = self.map.get_spawn_points()[130]
+            self.spawn_point = self.map.get_spawn_points()[192]
             # self.spawn_point = carla.Transform(sp.location, sp.rotation)
-            self.goal_point = 122
+            self.goal_point = 153
+
         else:
             self.log.err(f"Invalid params: scenario: {self.scenario} or sp: {sp}, tp:{tp},"
                          f" mp_d:{mp_d}")
@@ -266,7 +267,7 @@ class CarlaEnv:
         else:
             # self.goal_location_loc = way_points[self.goal_point].transform.location
             # self.goal_location_trans = way_points[self.goal_point].transform
-            self.goal_location_loc = carla.Location(x=-6.5, y=-44, z=0.0)
+            self.goal_location_loc = carla.Location(x=93.757156, y=-132.76296, z=8.305596)
             self.goal_location_trans = carla.Transform(self.goal_location_loc)
 
         self.route = planner.trace_route(self.spawn_point_loc, self.goal_location_loc)
@@ -299,7 +300,7 @@ class CarlaEnv:
 
         tesla = self.blueprint_library.filter('model3')[0]
         tesla.set_attribute('role_name', 'ego')
-        self.spawn_point.location.x -= 9
+        # self.spawn_point.location.x -= 9
 
         self.vehicle = self.world.try_spawn_actor(tesla, self.spawn_point)
         self.actor_list.append(self.vehicle)

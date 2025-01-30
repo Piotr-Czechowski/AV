@@ -47,8 +47,10 @@ port = settings.PORT
 action_type = settings.ACTION_TYPE
 camera_type = settings.CAMERA_TYPE
 load_model = settings.LOAD_MODEL
-model_incr_load = 'A_to_B_GPU_34/PC_models/currently_trained/synchr_200_rgb_camera_light_turns_2.pth'
-model_incr_save = 'A_to_B_GPU_34/PC_models/currently_trained/synchr_200_rgb_camera_light_turns_2'
+# model_incr_load = 'A_to_B_GPU_34/PC_models/currently_trained/synchr_200_rgb_camera_light_turns_2.pth'
+# model_incr_save = 'A_to_B_GPU_34/PC_models/currently_trained/synchr_200_rgb_camera_light_turns_2'
+model_incr_load = 'A_to_B_GPU_34\PC_models\currently_trained\synchr_200_rgb_camera_light_turns_2.pth'
+model_incr_save = 'A_to_B_GPU_34\PC_models\currently_trained\synchr_200_rgb_camera_light_turns_2'
 
 gamma = settings.GAMMA
 lr = settings.LR
@@ -285,6 +287,7 @@ def handle_crash(results_queue):
     wandb.init(
     # set the ##wandb project where this run will be logged
     project="A_to_B",
+    mode='offline',
     # create or extend already logged run:
     resume="allow",
     id="synchr_200_rgb_camera_4",  
