@@ -4,7 +4,7 @@ SHOULD_USE_CUDA = 'cuda' if torch.cuda.is_available() else 'cpu'
 # Global params
 PORT = 2000  # Port on which the server is running
 ACTION_TYPE = 'discrete'  # 'discrete' or 'continuous'
-CAMERA_TYPE = 'rgb'  # 'rgb' or 'semantic'
+CAMERA_TYPE = 'semantic'  # 'rgb' or 'semantic'
 GAMMA = 0.9  # Discount factor
 LR = 1e-4  # Learning rate
 USE_ENTROPY = True  # Entropy is a measure of chaos in a system

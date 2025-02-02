@@ -67,7 +67,7 @@ class CarlaEnv:
     """
     Create Carla environment
     """
-    def __init__(self, scenario, action_space='discrete', resX=200, resY=200, camera='rgb', port=port,
+    def __init__(self, scenario, action_space='discrete', resX=200, resY=200, camera='semantic', port=port,
                  manual_control=False, spawn_point=False, terminal_point=False, mp_density=25):
         # Run the server on 127.0.0.1/port
         #start_carla_server(f'-windowed -carla-server -fps=60 -ResX={serv_resx} -ResY={serv_resy} -quality-level=Low '
@@ -364,14 +364,18 @@ class CarlaEnv:
         Original images are totally black
         """
         semantic_cam_bp = self.blueprint_library.find('sensor.camera.semantic_segmentation')
+        # semantic_cam_bp = carla.sensor.Camera('MyCamera', PostProcessing='SemanticSegmentation')
         semantic_cam_bp.set_attribute('image_size_x', f'{self.resX}')
         semantic_cam_bp.set_attribute('image_size_y', f'{self.resY}')
         semantic_cam_bp.set_attribute('fov', '110')
 
         semantic_cam_sensor = self.world.spawn_actor(semantic_cam_bp, self.transform, attach_to=self.vehicle)
 
-        semantic_cam_sensor.listen(lambda data: self.process_semantic_img(data))
+        # semantic_cam_sensor.listen(lambda data: self.process_semantic_img(data))
         self.actor_list.append(semantic_cam_sensor)
+
+        self.image_queue = queue.Queue()
+        semantic_cam_sensor.listen(self.image_queue.put)
 
     def process_semantic_img(self, image):
         """
@@ -379,6 +383,8 @@ class CarlaEnv:
         :param image: raw data from the semantic camera
         """
         image.convert(cc.CityScapesPalette)
+        # image.convert(carla.ColorConverter.CityScapesPalette)
+        # image = image.to_array() 
         image = np.array(image.raw_data)
         image = image.reshape((self.resX, self.resY, 4))
         image = image[:, :, :3]
@@ -388,6 +394,7 @@ class CarlaEnv:
             # noinspection PyUnresolvedReferences
             cv2.waitKey(1)
 
+        # self.front_camera = torch.from_numpy(image).permute(2, 0, 1).unsqueeze(0).float()
         self.front_camera = torch.Tensor(image).view(3, self.resX, self.resY).unsqueeze(0).float()
 
     def add_depth_camera(self):
@@ -911,7 +918,8 @@ class CarlaEnv:
         # if save_image:
         #     self.state_observer.save_to_disk(image, episode, 0)
         
-        self.process_rgb_img(image)
+        # self.process_rgb_img(image)
+        self.process_semantic_img(image)
         return self.front_camera, speed_tensor
     
     def step_apply_action(self, action):
@@ -985,8 +993,8 @@ class CarlaEnv:
         # if save_image:
         #     self.state_observer.save_to_disk(image, episode, step)
 
-        self.process_rgb_img(image)
-
+        # self.process_rgb_img(image)
+        self.process_semantic_img(image)
         return self.front_camera, reward, self.done, route_distance, speed_tensor, distance_from_goal
 
     def destroy_agents(self):
