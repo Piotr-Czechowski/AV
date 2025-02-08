@@ -385,3 +385,6 @@ class GlobalRoutePlanner(object):
                             break
 
         return route_trace
+    
+    def trace_route_2(starting_point, intersection_decision):
+        pass

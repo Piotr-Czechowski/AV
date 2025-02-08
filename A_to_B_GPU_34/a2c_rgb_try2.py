@@ -47,8 +47,8 @@ port = settings.PORT
 action_type = settings.ACTION_TYPE
 camera_type = settings.CAMERA_TYPE
 load_model = settings.LOAD_MODEL
-model_incr_load = 'A_to_B_GPU_34/PC_models/currently_trained/synchr_200_rgb_camera_light_turns_2.pth'
-model_incr_save = 'A_to_B_GPU_34/PC_models/currently_trained/synchr_200_rgb_camera_light_turns_2'
+model_incr_load = 'A_to_B_GPU_34/PC_models/currently_trained/synchr_200_semantic_camera_3.pth'
+model_incr_save = 'A_to_B_GPU_34/PC_models/currently_trained/synchr_200_semantic_camera_3'
 
 gamma = settings.GAMMA
 lr = settings.LR
@@ -287,11 +287,11 @@ def handle_crash(results_queue):
     project="A_to_B",
     # create or extend already logged run:
     resume="allow",
-    id="synchr_200_rgb_camera_4",  
+    id="synchr_200_semantic_camera_3",  
 
     # track hyperparameters and run metadata
     config={
-    "name" : "synchr_200_rgb_camera_4",
+    "name" : "synchr_200_semantic_camera_3",
     "learning_rate": lr
     }
     )
@@ -307,7 +307,7 @@ def handle_crash(results_queue):
     episode_rewards = []  # Every episode's reward
     prev_checkpoint_mean_ep_rew = agent.best_mean_reward
     num_improved_episodes_before_checkpoint = 0  # To keep track of the num of ep with higher perf to save model
-    episodes_to_save_images = (1, 2, 3, 4, 10)
+    episodes_to_save_images = (3412, 3413, 4000, 4500, 5000)
     max_speed = 0
     distance_from_goal = 0
     while 1:

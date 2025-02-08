@@ -273,6 +273,8 @@ class CarlaEnv:
 
         # Delete duplicates (for some reason there are duplicates in self.route)
         _ = []
+        # decisions = [el2 for el1, el2 in self.route]
+        # decisions = [decisions[index] for index in range(len(decisions)) if index==0 or decisions[index] != decisions[index-1]]
         for i in range(len(self.route) - 1):
             current_point = self.route[i][0].transform
             next_point = self.route[i + 1][0].transform
@@ -287,7 +289,7 @@ class CarlaEnv:
 
         self.route = _
 
-        self._draw_optimal_route_lines(self.route)
+        self._draw_optimal_route_lines(self.route, draw=False)
 
         return self.goal_location_trans, self.goal_location_loc, self.route
 
@@ -493,7 +495,7 @@ class CarlaEnv:
         """
         self.invasion_history_list.append(invasion)
 
-    def _draw_optimal_route_lines(self, route):
+    def _draw_optimal_route_lines(self, route, draw):
         """
         Draw optimal route between initial point and terminal point
         :param route: list of tuples
@@ -523,8 +525,9 @@ class CarlaEnv:
                     self.is_junction = False
                     self.middle_goals.append(route[i][0])
 
-            self.world.debug.draw_line(route[i][0].transform.location, route[i + 1][0].transform.location,
-                                       thickness=0.3, color=carla.Color(0, 0, 255), life_time=-1)
+            if draw:
+                self.world.debug.draw_line(route[i][0].transform.location, route[i + 1][0].transform.location,
+                                         thickness=0.3, color=carla.Color(0, 0, 255), life_time=-1)
 
         # We do not need self.middle_goals to be Waypoint class anymore we can change that to transform class
         for i, mg in enumerate(self.middle_goals):
@@ -537,8 +540,9 @@ class CarlaEnv:
         # Add terminal point
         self.middle_goals.append(self.goal_location_trans)
 
-        self.world.debug.draw_line(route[-1][0].transform.location, self.middle_goals[-1].location,
-                                   thickness=0.3, color=carla.Color(0, 0, 255), life_time=-1)
+        if draw:
+            self.world.debug.draw_line(route[-1][0].transform.location, self.middle_goals[-1].location,
+                                       thickness=0.3, color=carla.Color(0, 0, 255), life_time=-1)
 
         # Add middle points to long lines (when the size of long line > middle_goals_density)
         add_middle_goals = []
@@ -590,7 +594,8 @@ class CarlaEnv:
 
         # Draw middle points
         for middle_goal in self.middle_goals:
-            self.world.debug.draw_point(middle_goal.location, size=0.15, life_time=-1)
+            if draw:
+                self.world.debug.draw_point(middle_goal.location, size=0.15, life_time=-1)
             # Static reward for mp
             # Add each middle point with counter 0 which indicates if middle point has already given a reward
             self.stat_reward_mp.append([middle_goal.location, 0])

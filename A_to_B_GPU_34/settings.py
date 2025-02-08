@@ -13,7 +13,7 @@ USE_ENTROPY = True  # Entropy is a measure of chaos in a system
 LOAD_MODEL = 'A_to_B_GPU_34/final_models/a-b_sc7_rgb_discrete_gamma-0.9_lr-0.0001.pth'
 LOAD_MODEL_PC = 'A_to_B_GPU_34/final_models/PC_MODEL'
 # If you do not want to load anything keep it empty
-STEP_COUNTER = 200  # How many steps in one episode?
+STEP_COUNTER = 800  # How many steps in one episode?
 SLEEP_BETWEEN_ACTIONS = 0.2  # How many sec sleep between consecutive actions? E.g: 0.2 gives 5 actions per 1 sec
 # Without sleeping there are a lot of actions and those actions do not have enough time to influence the world.
 SHOW_CAM = False  # Vehicle's camera preview
@@ -46,6 +46,7 @@ REWARD_FROM_INV = 0  # Static reward from a line invasion
 # ACTIONS = ['forward', 'forward_left', 'forward_right', 'brake', 'brake_left', 'brake_right']
 
 ACTIONS = ['forward', 'forward_left', 'forward_right', 'brake', 'brake_left', 'brake_right', 'forward_slight_left','forward_slight_right','brake_slight_left','brake_slight_right',]
+# ACTION_IND:  0            1               2             3          4              5                 6                    7                       8                    9
 
 CARLA_PATH = r''  # provide your carla exec path
 CARLA_EGG_PATH = r''  # Provide your carla egg path
