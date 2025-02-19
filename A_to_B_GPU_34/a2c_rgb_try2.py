@@ -307,7 +307,7 @@ def handle_crash(results_queue):
     episode_rewards = []  # Every episode's reward
     prev_checkpoint_mean_ep_rew = agent.best_mean_reward
     num_improved_episodes_before_checkpoint = 0  # To keep track of the num of ep with higher perf to save model
-    episodes_to_save_images = (3412, 3413, 4000, 4500, 5000)
+    episodes_to_save_images = (5249, 5250, 5251, 5252, 6000)
     max_speed = 0
     distance_from_goal = 0
     while 1:
@@ -340,6 +340,8 @@ def handle_crash(results_queue):
         for action in ac.ACTIONS_NAMES.values():
             actions_counter[action] = 0
         episode_step=0
+        manouvers = ["LEFT", "RIGHT","RIGHT", "RIGHT"]
+        i = 0
         while not done:
             episode_step += 1
 
@@ -348,6 +350,17 @@ def handle_crash(results_queue):
                 # print(perform_actions)
             if speed_tensor.item() > max_speed:
                 max_speed = speed_tensor.item()
+
+            #manouver
+            on_junction, left_junction = agent.environment.planner.on_junction(agent.environment.vehicle.get_location())
+            # manouver = "S" # S - straight, R - right, L - left
+            if left_junction:
+                print(f"Vehicle left junction")
+                i += 1
+            else:
+                print("Vehicle didn't leave junction")
+            print(f"Current manouver: Go {manouvers[i]}")
+
             action = agent.get_action(state_rgb, speed_tensor)
             if save_image:
                 agent.environment.state_observer.action = action # To print action on the frame

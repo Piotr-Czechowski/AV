@@ -155,6 +155,8 @@ class CarlaEnv:
 
         self.state_observer = StateObserver()
 
+        self.planner = None
+
     def create_scenario(self, sp, tp, mp_d):
         if sp and tp:
             # Usage of spawn_point and terminal_point
@@ -244,8 +246,8 @@ class CarlaEnv:
         # Plan a route to the destination
         way_points = self.map.generate_waypoints(2.0)
         dao = GlobalRoutePlannerDAO(self.map, 2.0)
-        planner = GlobalRoutePlanner(dao)
-        planner.setup()
+        self.planner = GlobalRoutePlanner(dao)
+        self.planner.setup()
 
         if self.scenario == 1:
             self.goal_location_loc = carla.Location(x=50, y=203.913498, z=0.275307)
@@ -269,7 +271,7 @@ class CarlaEnv:
             self.goal_location_loc = carla.Location(x=-6.5, y=-44, z=0.0)
             self.goal_location_trans = carla.Transform(self.goal_location_loc)
 
-        self.route = planner.trace_route(self.spawn_point_loc, self.goal_location_loc)
+        self.route = self.planner.trace_route(self.spawn_point_loc, self.goal_location_loc)
 
         # Delete duplicates (for some reason there are duplicates in self.route)
         _ = []
