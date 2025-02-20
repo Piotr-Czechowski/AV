@@ -127,7 +127,7 @@ class CarlaEnv:
 
         self.manual_control = manual_control
         if not manual_control:
-            self.vehicle = self.spawn_car()
+            self.vehicle = self.spawn_car(True)
 
         # Manages the basic movement of a vehicle using typical driving controls
         self.control = carla.VehicleControl()
@@ -295,7 +295,7 @@ class CarlaEnv:
 
         return self.goal_location_trans, self.goal_location_loc, self.route
 
-    def spawn_car(self):
+    def spawn_car(self, randomly=False):
         """
         Spawn a car
         :return: vehicle
@@ -303,8 +303,12 @@ class CarlaEnv:
 
         tesla = self.blueprint_library.filter('model3')[0]
         tesla.set_attribute('role_name', 'ego')
-        self.spawn_point.location.x -= 9
-
+        if randomly:
+            self.spawn_point = random.choice(self.route)[0].transform
+        else:
+            self.spawn_point.location.x -= 9
+        self.spawn_point.location.z = 2.0 # żeby nie był za nisko
+        
         self.vehicle = self.world.try_spawn_actor(tesla, self.spawn_point)
         self.actor_list.append(self.vehicle)
 
