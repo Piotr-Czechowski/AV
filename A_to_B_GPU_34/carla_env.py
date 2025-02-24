@@ -127,7 +127,7 @@ class CarlaEnv:
 
         self.manual_control = manual_control
         if not manual_control:
-            self.vehicle = self.spawn_car(True)
+            self.vehicle = self.spawn_car(False)
 
         # Manages the basic movement of a vehicle using typical driving controls
         self.control = carla.VehicleControl()
@@ -190,7 +190,7 @@ class CarlaEnv:
             # sp.location.y -= 20
             self.spawn_point = carla.Transform(sp.location, sp.rotation)
 
-        elif self.scenario == 7:
+        elif self.scenario in (7, 8):
             # Long straight line and 2 right turns
             # self.spawn_point = self.map.get_spawn_points()[57]
             self.spawn_point = self.map.get_spawn_points()[130]
@@ -264,7 +264,9 @@ class CarlaEnv:
         elif self.scenario in [4, 6]:
             self.goal_location_loc = carla.Location(x=-105.387177, y=-3.140184, z=0.0)
             self.goal_location_trans = carla.Transform(self.goal_location_loc)
-
+        elif self.scenario == 8:
+            self.goal_location_loc = carla.Location(x=74, y=-40, z=1.0)
+            self.goal_location_trans = carla.Transform(self.goal_location_loc)
         else:
             # self.goal_location_loc = way_points[self.goal_point].transform.location
             # self.goal_location_trans = way_points[self.goal_point].transform
@@ -876,7 +878,7 @@ class CarlaEnv:
 
         self.set_spectator()
         self.plan_the_route()
-        self.spawn_car()
+        self.spawn_car(False)
 
         if self.camera_type == 'rgb':
             self.add_rgb_camera()

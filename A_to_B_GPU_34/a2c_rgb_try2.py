@@ -47,8 +47,8 @@ port = settings.PORT
 action_type = settings.ACTION_TYPE
 camera_type = settings.CAMERA_TYPE
 load_model = settings.LOAD_MODEL
-model_incr_load = 'A_to_B_GPU_34/PC_models/currently_trained/synchr_200_semantic_camera_3.pth'
-model_incr_save = 'A_to_B_GPU_34/PC_models/currently_trained/synchr_200_semantic_camera_3'
+model_incr_load = 'A_to_B_GPU_34/PC_models/currently_trained/synchr_200_semantic_camera_6_img.pth'
+model_incr_save = 'A_to_B_GPU_34/PC_models/currently_trained/synchr_200_semantic_camera_6_img'
 
 gamma = settings.GAMMA
 lr = settings.LR
@@ -153,8 +153,8 @@ class DeepActorCriticAgent(mp.Process):
         action = action.to(torch.device("cuda"))
         return action.cpu().numpy().squeeze(0)  # Convert to numpy ndarray, squeeze and remove the batch dimension
 
-    def get_action(self, obs, speed):
-        action_distribution = self.policy(obs, speed)  # Call to self.policy(obs) also populates self.value with V(obs)
+    def get_action(self, obs, speed, manouver):
+        action_distribution = self.policy(obs, speed, manouver)  # Call to self.policy(obs) also populates self.value with V(obs)
         action = action_distribution.sample()
 
         log_prob_a = action_distribution.log_prob(action)
@@ -164,14 +164,14 @@ class DeepActorCriticAgent(mp.Process):
         self.trajectory.append(Transition(obs, self.value, action, log_prob_a))  # Construct the trajectory
         return action
 
-    def discrete_policy(self, obs, speed):
+    def discrete_policy(self, obs, speed, manouver):
         """
         Calculates a discrete/categorical distribution over actions given observations
         :param obs: self's observation
         :return: policy, a distribution over actions for the given observation
         """
-        logits = self.actor(obs, speed)
-        value = self.critic(obs, speed)
+        logits = self.actor(obs, speed, manouver)
+        value = self.critic(obs, speed, manouver)
         self.logits = logits.to(torch.device("cuda"))
         self.value = value.to(torch.device("cuda"))
         """
@@ -182,7 +182,7 @@ class DeepActorCriticAgent(mp.Process):
         self.action_distribution = Categorical(logits=self.logits)
         return self.action_distribution
 
-    def calculate_n_step_return(self, n_step_rewards, final_state, done, gamma, final_speed):
+    def calculate_n_step_return(self, n_step_rewards, final_state, done, gamma, final_speed, manouver):
         """A_to_B_GPU_34/PC_models/currently_trained/synchr_sc3_30_start_sc_3.pth
         Calculates the n-step return for each state in the input-trajectory/n_step_transitions
         :param n_step_rewards: List of rewards for each step
@@ -192,7 +192,7 @@ class DeepActorCriticAgent(mp.Process):
         """
         g_t_n_s = []
         with torch.no_grad():
-            g_t_n = torch.tensor([[0]]).float().to(device) if done else self.critic(final_state, final_speed)
+            g_t_n = torch.tensor([[0]]).float().to(device) if done else self.critic(final_state, final_speed, manouver)
             for r_t in n_step_rewards[::-1]:  # Reverse order; From r_tpn to r_t
                 g_t_n = torch.tensor(r_t).float() + gamma * g_t_n
                 g_t_n_s.insert(0, g_t_n)  # n-step returns inserted to the left to maintain correct index order
@@ -227,8 +227,8 @@ class DeepActorCriticAgent(mp.Process):
 
         return actor_loss, critic_loss
 
-    def optimize(self, final_state_rgb, done, final_speed):
-        td_targets = self.calculate_n_step_return(self.rewards, final_state_rgb, done, self.gamma, final_speed)
+    def optimize(self, final_state_rgb, done, final_speed, manouver):
+        td_targets = self.calculate_n_step_return(self.rewards, final_state_rgb, done, self.gamma, final_speed, manouver)
         actor_loss, critic_loss = self.calculate_loss(self.trajectory, td_targets)
 
         self.actor_optimizer.zero_grad()
@@ -287,11 +287,11 @@ def handle_crash(results_queue):
     project="A_to_B",
     # create or extend already logged run:
     resume="allow",
-    id="synchr_200_semantic_camera_3",  
+    id="synchr_200_semantic_camera_6_img",  
 
     # track hyperparameters and run metadata
     config={
-    "name" : "synchr_200_semantic_camera_3",
+    "name" : "synchr_200_semantic_camera_6_img",
     "learning_rate": lr
     }
     )
@@ -340,8 +340,11 @@ def handle_crash(results_queue):
         for action in ac.ACTIONS_NAMES.values():
             actions_counter[action] = 0
         episode_step=0
-        manouvers = ["LEFT", "RIGHT","RIGHT", "RIGHT"]
-        i = 0
+        manouvers = ["LEFT", "STRAIGHT","RIGHT", "STRAIGHT"]
+        manouvers_v= [ 0.1,     0.2,      0.3,       0.2]
+        i = 0        
+        manouver_tensor = torch.tensor([[manouvers_v[i]]]).to(device)
+
         while not done:
             episode_step += 1
 
@@ -357,11 +360,13 @@ def handle_crash(results_queue):
             if left_junction:
                 print(f"Vehicle left junction")
                 i += 1
+                manouver_tensor = torch.tensor([[manouvers_v[i]]]).to(device)
+
             else:
                 print("Vehicle didn't leave junction")
             print(f"Current manouver: Go {manouvers[i]}")
 
-            action = agent.get_action(state_rgb, speed_tensor)
+            action = agent.get_action(state_rgb, speed_tensor, manouver_tensor)
             if save_image:
                 agent.environment.state_observer.action = action # To print action on the frame
                 agent.environment.state_observer.step = episode_step # To print action on the frame
@@ -394,7 +399,7 @@ def handle_crash(results_queue):
             step_num += 1
             print("Step number: ", step_num, "reward: ", reward, "ep_reward: ", ep_reward)
             if step_num >= 5 or done:
-                actor_loss, critic_loss, actor_lr, critic_lr = agent.optimize(new_state, done, speed_tensor)
+                actor_loss, critic_loss, actor_lr, critic_lr = agent.optimize(new_state, done, speed_tensor, manouver_tensor)
                 step_num = 0
             state_rgb = new_state
             agent.global_step_num += 1
