@@ -822,6 +822,10 @@ class CarlaEnv:
         self.settings.max_substeps = 10
         self.world.apply_settings(self.settings)
 
+        # self.world = self.client.reload_world()
+
+
+
         # # SET SYNCHRONOUS MODE
         # self.settings = self.world.get_settings()
         # self.settings.synchronous_mode = True
