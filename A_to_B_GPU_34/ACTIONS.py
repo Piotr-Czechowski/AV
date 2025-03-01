@@ -47,10 +47,10 @@ class ACTIONS:
         3: [0, 1, 0],  # brake
         4: [0, 1, -0.5],  # brake left
         5: [0, 1, 0.5],  # brake right
-        6: [0.5, 0, -0.1], # forward slight left
-        7: [0.5, 0, 0.1], #forward slight right
-        8: [0, 1, -0.1], #brake slight left
-        9: [0, 1, 0.1], #brake slight right
+        6: [0.5, 0, -0.2], # forward slight left
+        7: [0.5, 0, 0.2], #forward slight right
+        8: [0, 1, -0.2], #brake slight left
+        9: [0, 1, 0.2], #brake slight right
 
     }
 
