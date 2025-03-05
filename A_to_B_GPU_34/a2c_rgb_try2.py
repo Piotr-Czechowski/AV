@@ -25,6 +25,7 @@ from torch.distributions.multivariate_normal import MultivariateNormal
 
 from carla_env import CarlaEnv
 import carla
+import wandb
 
 # For RGB
 # from nets.a2c import Actor as DeepActor  # Continuous
@@ -51,8 +52,8 @@ port = settings.PORT
 action_type = settings.ACTION_TYPE
 camera_type = settings.CAMERA_TYPE
 load_model = settings.LOAD_MODEL
-model_incr_load = 'A_to_B_GPU_34/PC_models/currently_trained/synchr_200_semantic_camera_6_8_img_speed.pth'
-model_incr_save = 'A_to_B_GPU_34/PC_models/currently_trained/synchr_200_semantic_camera_6_8_img_speed'
+model_incr_load = 'A_to_B_GPU_34/PC_models/currently_trained/synchr_200_semantic_camera_6_10_img_speed.pth'
+model_incr_save = 'A_to_B_GPU_34/PC_models/currently_trained/synchr_200_semantic_camera_6_10_img_speed'
 
 gamma = settings.GAMMA
 lr = settings.LR
@@ -251,10 +252,17 @@ class DeepActorCriticAgent(mp.Process):
 
         self.actor_optimizer.zero_grad()
         actor_loss.backward(retain_graph=True)
+        for name, param in self.actor.named_parameters():
+            if param.grad is not None:
+                wandb.log({f"gradients/actor/{name}": wandb.Histogram(param.grad.cpu().numpy())})
         self.actor_optimizer.step()
+
 
         self.critic_optimizer.zero_grad()
         critic_loss.backward()
+        for name, param in self.critic.named_parameters():
+            if param.grad is not None:
+                wandb.log({f"gradients/critic/{name}": wandb.Histogram(param.grad.cpu().numpy())})
         self.critic_optimizer.step()
         actor_lr = self.actor_optimizer.param_groups[0]['lr']
         critic_lr =self.critic_optimizer.param_groups[0]['lr']
@@ -305,7 +313,7 @@ def handle_crash(results_queue):
     project="A_to_B",
     # create or extend already logged run:
     resume="allow",
-    id="synchr_200_semantic_camera_6_8_img_speed",  
+    id="synchr_200_semantic_camera_6_10_img_speed",  
 
     # track hyperparameters and run metadata
     config={
@@ -313,7 +321,7 @@ def handle_crash(results_queue):
     "learning_rate": lr
     }
     )
-    wandb.run.notes = "Image + speed. Slight turns like:  9: [0, 1, 0.2], #brake slight right"
+    wandb.run.notes = "Image + speed. Slight turns like:  9: [0, 1, 0.2], #brake slight right. Gradients logged"
     agent = DeepActorCriticAgent()
     agent.mean_reward = 0
     agent.episode = 0
