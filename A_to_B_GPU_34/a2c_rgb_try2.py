@@ -52,8 +52,8 @@ port = settings.PORT
 action_type = settings.ACTION_TYPE
 camera_type = settings.CAMERA_TYPE
 load_model = settings.LOAD_MODEL
-model_incr_load = 'A_to_B_GPU_34/PC_models/currently_trained/synchr_200_semantic_camera_6_10_img_speed.pth'
-model_incr_save = 'A_to_B_GPU_34/PC_models/currently_trained/synchr_200_semantic_camera_6_10_img_speed'
+model_incr_load = 'A_to_B_GPU_34/PC_models/currently_trained/synchr_200_semantic_camera_6_11_img_speed.pth'
+model_incr_save = 'A_to_B_GPU_34/PC_models/currently_trained/synchr_200_semantic_camera_6_11_img_speed'
 
 gamma = settings.GAMMA
 lr = settings.LR
@@ -313,7 +313,7 @@ def handle_crash(results_queue):
     project="A_to_B",
     # create or extend already logged run:
     resume="allow",
-    id="synchr_200_semantic_camera_6_10_img_speed",  
+    id="synchr_200_semantic_camera_6_11_img_speed",  
 
     # track hyperparameters and run metadata
     config={
@@ -321,7 +321,7 @@ def handle_crash(results_queue):
     "learning_rate": lr
     }
     )
-    wandb.run.notes = "Image + speed. Slight turns like:  9: [0, 1, 0.2], #brake slight right. Gradients logged"
+    wandb.run.notes = "Image + speed. Dwie warstwy przetwarzające speed. 4 warstwy dla obrazu, jedna warstwa wspolna. Slight turns like:  9: [0, 1, 0.2], #brake slight right. Gradients logged"
     agent = DeepActorCriticAgent()
     agent.mean_reward = 0
     agent.episode = 0
@@ -418,6 +418,7 @@ def handle_crash(results_queue):
             agent.environment.world.tick()
             
             save_image = True if agent.episode in episodes_to_save_images else False
+
             new_state, reward, done, route_distance, speed_tensor, distance_from_goal = agent.environment.step(save_image=save_image, episode=agent.episode, step=episode_step)
             agent.environment.state_observer.reward = reward
 
@@ -427,7 +428,7 @@ def handle_crash(results_queue):
             agent.rewards.append(reward)
             ep_reward += reward
             step_num += 1
-            print("Step number: ", step_num, "reward: ", reward, "ep_reward: ", ep_reward)
+            # print("Step number: ", step_num, "reward: ", reward, "ep_reward: ", ep_reward)
             if step_num >= 5 or done:
                 # actor_loss, critic_loss, actor_lr, critic_lr = agent.optimize(new_state, done, speed_tensor, manouver_tensor)
                 actor_loss, critic_loss, actor_lr, critic_lr = agent.optimize(new_state, done, speed_tensor)
@@ -437,8 +438,8 @@ def handle_crash(results_queue):
 
                 
 
-        if agent.action_type == 'discrete':
-            print(str(actions_counter))
+        # if agent.action_type == 'discrete':
+        #     print(str(actions_counter))
 
         episode_rewards.append(ep_reward)
         agent.mean_reward = (agent.mean_reward * (min(100, agent.episode)-1) + ep_reward)/min(100, agent.episode) #mean reward from last 100 episodes
@@ -448,12 +449,12 @@ def handle_crash(results_queue):
         agent.save(model_incr_save)
         wandb.log({"reward": ep_reward, "episode": agent.episode, "mean_reward": agent.mean_reward, "max_speed": max_speed, "distance_from_goal": distance_from_goal})
 
-        print("Episode: {} \t ep_reward:{} \t mean_ep_rew:{}\t best_ep_reward:{} max_speed: {} distance_from_goal: {}".format(agent.episode,
-                                                                                            ep_reward,
-                                                                                            agent.mean_reward,
-                                                                                            agent.best_reward, 
-                                                                                            max_speed,
-                                                                                            distance_from_goal))        
+        # print("Episode: {} \t ep_reward:{} \t mean_ep_rew:{}\t best_ep_reward:{} max_speed: {} distance_from_goal: {}".format(agent.episode,
+        #                                                                                     ep_reward,
+        #                                                                                     agent.mean_reward,
+        #                                                                                     agent.best_reward, 
+        #                                                                                     max_speed,
+        #                                                                                     distance_from_goal))        
     del world
     del client
     results_queue.put(1)

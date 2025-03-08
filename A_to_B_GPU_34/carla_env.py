@@ -918,14 +918,16 @@ class CarlaEnv:
         self.world.tick()
         self.world.tick()
         self.world.tick()
-
         while not self.image_queue.empty():
             _ = self.image_queue.get()
 
         self.world.tick()
+        try:
+            image = self.image_queue.get()
+        except queue.Empty:
+            print("kolejka jest pusta")
+            image = None
 
-
-        image = self.image_queue.get()
         self.state_observer.image = image
 
         scalar_tensor = torch.tensor(self.speed, dtype=torch.float32).view(1, 1)  # Dodanie wymiaru [batch_size=1, 1]
@@ -1001,11 +1003,17 @@ class CarlaEnv:
 
         if self.step_counter >= how_many_steps:
             self.done = True
-
-        image1 = self.image_queue.get()
-        image = self.image_queue.get() #2 frames are put on the queue between two consecutive steps
+        try:
+            image1 = self.image_queue.get()
+        except queue.Empty:
+            print("Timeout: brak obrazu w kolejce")
+            image1 = None
+        try:
+            image = self.image_queue.get() #2 frames are put on the queue between two consecutive steps
+        except queue.Empty:
+            print("Timeout: brak obrazu w kolejce")
+            image = None
         self.state_observer.image = image
-
 
         # if save_image:
         #     self.state_observer.save_to_disk(image, episode, step)
