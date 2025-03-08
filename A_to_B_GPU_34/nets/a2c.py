@@ -75,10 +75,14 @@ class DiscreteActor(torch.nn.Module):
         self.layer4 = torch.nn.Sequential(torch.nn.Linear(64 * 22 * 22, 512),
                                           torch.nn.ReLU())
         
-        self.speed_layer = torch.nn.Sequential(
+        self.speed_layer1 = torch.nn.Sequential(
             torch.nn.Linear(1, 64),
             torch.nn.ReLU())
 
+        self.speed_layer2 = torch.nn.Sequential(
+            torch.nn.Linear(64, 64),
+            torch.nn.ReLU()
+        )
         # self.logits = torch.nn.Linear(512, actor_shape)
         self.logits = torch.nn.Linear(512+64, actor_shape) # camera+speed
 
@@ -102,16 +106,19 @@ class DiscreteActor(torch.nn.Module):
         x = self.layer3(x)
         x = x.view(x.shape[0], -1)
         x = self.layer4(x)
+        print("10")
 
         if speed is None and manouver is None:
             logits = self.logits(x)
         elif speed is not None and manouver is None:
             speed = speed.to(self.device).view(-1, 1)
-            speed_features = self.speed_layer(speed)
-            combined = torch.cat([x, speed_features], dim=1)
+            speed = self.speed_layer1(speed)
+            speed = self.speed_layer2(speed)
+            combined = torch.cat([x, speed], dim=1)
             logits = self.logits(combined)
         elif speed is not None and manouver is not None:
             pass
+        print("11")
 
         # scalar = scalar.to(self.device).view(-1, 1)
         # scalar_features = self.scalar_layer(scalar)
@@ -142,10 +149,15 @@ class Critic(torch.nn.Module):
                                           torch.nn.ReLU())
         self.layer4 = torch.nn.Sequential(torch.nn.Linear(64 * 22 * 22, 512),
                                           torch.nn.ReLU())
-        self.speed_layer = torch.nn.Sequential(
+        self.speed_layer1 = torch.nn.Sequential(
             torch.nn.Linear(1, 64),
             torch.nn.ReLU()
             )
+        
+        self.speed_layer2 = torch.nn.Sequential(
+            torch.nn.Linear(64, 64),
+            torch.nn.ReLU()
+        )
         # ----Last layers----
         # self.critic = torch.nn.Linear(512, critic_shape)
         self.critic = torch.nn.Linear(512+64, critic_shape)
@@ -175,8 +187,9 @@ class Critic(torch.nn.Module):
             critic = self.critic(x)
         elif speed is not None and manouver is None:
             speed = speed.to(self.device).view(-1, 1)
-            speed_features = self.speed_layer(speed)
-            combined = torch.cat([x, speed_features], dim=1)
+            speed = self.speed_layer1(speed)
+            speed = self.speed_layer2(speed)
+            combined = torch.cat([x, speed], dim=1)
             critic = self.critic(combined)
         elif speed is not None and manouver is not None:
             pass
