@@ -282,7 +282,7 @@ class DeepActorCriticAgent(mp.Process):
                        "episode": self.episode,
                        "mean_reward": self.mean_reward}
         torch.save(self_state, model_file_name)
-        print("self's state is saved to", model_file_name)
+        # print("self's state is saved to", model_file_name)
 
     def load(self, name):
         model_file_name = name
@@ -303,9 +303,9 @@ class DeepActorCriticAgent(mp.Process):
             pass
         self.best_mean_reward = self_state["best_mean_reward"]
         self.best_reward = self_state["best_reward"]
-        print("Loaded Advantage Actor-Critic model state from", model_file_name,
-              " which fetched a best mean reward of:", self.best_mean_reward,
-              " and an all time best reward of:", self.best_reward)
+        # print("Loaded Advantage Actor-Critic model state from", model_file_name,
+        #       " which fetched a best mean reward of:", self.best_mean_reward,
+        #       " and an all time best reward of:", self.best_reward)
         
 def handle_crash(results_queue):
     wandb.init(
@@ -326,7 +326,7 @@ def handle_crash(results_queue):
     agent.mean_reward = 0
     agent.episode = 0
     if os.path.isfile(model_incr_load):
-        print("model istnieje i jest wgrywany.")
+        # print("model istnieje i jest wgrywany.")
         agent.load(model_incr_load)
     else:
         print("model jeszcze nie istnieje.")
@@ -385,13 +385,14 @@ def handle_crash(results_queue):
             on_junction, left_junction = agent.environment.planner.on_junction(agent.environment.vehicle.get_location())
             # manouver = "S" # S - straight, R - right, L - left
             if left_junction:
-                print(f"Vehicle left junction")
+                # print(f"Vehicle left junction")
                 i += 1
                 manouver_tensor = torch.tensor([[manouvers_v[i]]]).to(device)
 
             else:
-                print("Vehicle didn't leave junction")
-            print(f"Current manouver: Go {manouvers[i]}")
+                # print("Vehicle didn't leave junction")
+                pass
+            # print(f"Current manouver: Go {manouvers[i]}")
 
             # action = agent.get_action(state_rgb)
             action = agent.get_action(state_rgb, speed_tensor)

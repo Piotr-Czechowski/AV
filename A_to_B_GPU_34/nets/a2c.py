@@ -106,7 +106,6 @@ class DiscreteActor(torch.nn.Module):
         x = self.layer3(x)
         x = x.view(x.shape[0], -1)
         x = self.layer4(x)
-        print("10")
 
         if speed is None and manouver is None:
             logits = self.logits(x)
@@ -118,7 +117,6 @@ class DiscreteActor(torch.nn.Module):
             logits = self.logits(combined)
         elif speed is not None and manouver is not None:
             pass
-        print("11")
 
         # scalar = scalar.to(self.device).view(-1, 1)
         # scalar_features = self.scalar_layer(scalar)
