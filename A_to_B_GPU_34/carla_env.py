@@ -67,7 +67,7 @@ class CarlaEnv:
     """
     Create Carla environment
     """
-    def __init__(self, scenario, action_space='discrete', resX=200, resY=200, camera='rgb', port=port,
+    def __init__(self, scenario, action_space='discrete', resX=200, resY=200, camera='semantic', port=port,
                  manual_control=False, spawn_point=False, terminal_point=False, mp_density=25):
         # Run the server on 127.0.0.1/port
         #start_carla_server(f'-windowed -carla-server -fps=60 -ResX={serv_resx} -ResY={serv_resy} -quality-level=Low '
@@ -127,7 +127,7 @@ class CarlaEnv:
 
         self.manual_control = manual_control
         if not manual_control:
-            self.vehicle = self.spawn_car()
+            self.vehicle = self.spawn_car(False)
 
         # Manages the basic movement of a vehicle using typical driving controls
         self.control = carla.VehicleControl()
@@ -154,6 +154,8 @@ class CarlaEnv:
         self.speed = 0
 
         self.state_observer = StateObserver()
+
+        self.planner = None
 
     def create_scenario(self, sp, tp, mp_d):
         if sp and tp:
@@ -188,7 +190,7 @@ class CarlaEnv:
             # sp.location.y -= 20
             self.spawn_point = carla.Transform(sp.location, sp.rotation)
 
-        elif self.scenario == 7:
+        elif self.scenario in (7, 8):
             # Long straight line and 2 right turns
             # self.spawn_point = self.map.get_spawn_points()[57]
             self.spawn_point = self.map.get_spawn_points()[130]
@@ -244,8 +246,8 @@ class CarlaEnv:
         # Plan a route to the destination
         way_points = self.map.generate_waypoints(2.0)
         dao = GlobalRoutePlannerDAO(self.map, 2.0)
-        planner = GlobalRoutePlanner(dao)
-        planner.setup()
+        self.planner = GlobalRoutePlanner(dao)
+        self.planner.setup()
 
         if self.scenario == 1:
             self.goal_location_loc = carla.Location(x=50, y=203.913498, z=0.275307)
@@ -262,17 +264,21 @@ class CarlaEnv:
         elif self.scenario in [4, 6]:
             self.goal_location_loc = carla.Location(x=-105.387177, y=-3.140184, z=0.0)
             self.goal_location_trans = carla.Transform(self.goal_location_loc)
-
+        elif self.scenario == 8:
+            self.goal_location_loc = carla.Location(x=74, y=-40, z=1.0)
+            self.goal_location_trans = carla.Transform(self.goal_location_loc)
         else:
             # self.goal_location_loc = way_points[self.goal_point].transform.location
             # self.goal_location_trans = way_points[self.goal_point].transform
             self.goal_location_loc = carla.Location(x=-6.5, y=-44, z=0.0)
             self.goal_location_trans = carla.Transform(self.goal_location_loc)
 
-        self.route = planner.trace_route(self.spawn_point_loc, self.goal_location_loc)
+        self.route = self.planner.trace_route(self.spawn_point_loc, self.goal_location_loc)
 
         # Delete duplicates (for some reason there are duplicates in self.route)
         _ = []
+        # decisions = [el2 for el1, el2 in self.route]
+        # decisions = [decisions[index] for index in range(len(decisions)) if index==0 or decisions[index] != decisions[index-1]]
         for i in range(len(self.route) - 1):
             current_point = self.route[i][0].transform
             next_point = self.route[i + 1][0].transform
@@ -287,11 +293,11 @@ class CarlaEnv:
 
         self.route = _
 
-        self._draw_optimal_route_lines(self.route)
+        self._draw_optimal_route_lines(self.route, draw=False)
 
         return self.goal_location_trans, self.goal_location_loc, self.route
 
-    def spawn_car(self):
+    def spawn_car(self, randomly=False):
         """
         Spawn a car
         :return: vehicle
@@ -299,8 +305,12 @@ class CarlaEnv:
 
         tesla = self.blueprint_library.filter('model3')[0]
         tesla.set_attribute('role_name', 'ego')
-        self.spawn_point.location.x -= 9
-
+        if randomly:
+            self.spawn_point = random.choice(self.route)[0].transform
+        else:
+            self.spawn_point.location.x -= 9
+        self.spawn_point.location.z = 2.0 # żeby nie był za nisko
+        
         self.vehicle = self.world.try_spawn_actor(tesla, self.spawn_point)
         self.actor_list.append(self.vehicle)
 
@@ -364,14 +374,18 @@ class CarlaEnv:
         Original images are totally black
         """
         semantic_cam_bp = self.blueprint_library.find('sensor.camera.semantic_segmentation')
+        # semantic_cam_bp = carla.sensor.Camera('MyCamera', PostProcessing='SemanticSegmentation')
         semantic_cam_bp.set_attribute('image_size_x', f'{self.resX}')
         semantic_cam_bp.set_attribute('image_size_y', f'{self.resY}')
         semantic_cam_bp.set_attribute('fov', '110')
 
         semantic_cam_sensor = self.world.spawn_actor(semantic_cam_bp, self.transform, attach_to=self.vehicle)
 
-        semantic_cam_sensor.listen(lambda data: self.process_semantic_img(data))
+        # semantic_cam_sensor.listen(lambda data: self.process_semantic_img(data))
         self.actor_list.append(semantic_cam_sensor)
+
+        self.image_queue = queue.Queue()
+        semantic_cam_sensor.listen(self.image_queue.put)
 
     def process_semantic_img(self, image):
         """
@@ -379,6 +393,8 @@ class CarlaEnv:
         :param image: raw data from the semantic camera
         """
         image.convert(cc.CityScapesPalette)
+        # image.convert(carla.ColorConverter.CityScapesPalette)
+        # image = image.to_array() 
         image = np.array(image.raw_data)
         image = image.reshape((self.resX, self.resY, 4))
         image = image[:, :, :3]
@@ -388,6 +404,7 @@ class CarlaEnv:
             # noinspection PyUnresolvedReferences
             cv2.waitKey(1)
 
+        # self.front_camera = torch.from_numpy(image).permute(2, 0, 1).unsqueeze(0).float()
         self.front_camera = torch.Tensor(image).view(3, self.resX, self.resY).unsqueeze(0).float()
 
     def add_depth_camera(self):
@@ -486,7 +503,7 @@ class CarlaEnv:
         """
         self.invasion_history_list.append(invasion)
 
-    def _draw_optimal_route_lines(self, route):
+    def _draw_optimal_route_lines(self, route, draw):
         """
         Draw optimal route between initial point and terminal point
         :param route: list of tuples
@@ -516,8 +533,9 @@ class CarlaEnv:
                     self.is_junction = False
                     self.middle_goals.append(route[i][0])
 
-            self.world.debug.draw_line(route[i][0].transform.location, route[i + 1][0].transform.location,
-                                       thickness=0.3, color=carla.Color(0, 0, 255), life_time=-1)
+            if draw:
+                self.world.debug.draw_line(route[i][0].transform.location, route[i + 1][0].transform.location,
+                                         thickness=0.3, color=carla.Color(0, 0, 255), life_time=-1)
 
         # We do not need self.middle_goals to be Waypoint class anymore we can change that to transform class
         for i, mg in enumerate(self.middle_goals):
@@ -530,8 +548,9 @@ class CarlaEnv:
         # Add terminal point
         self.middle_goals.append(self.goal_location_trans)
 
-        self.world.debug.draw_line(route[-1][0].transform.location, self.middle_goals[-1].location,
-                                   thickness=0.3, color=carla.Color(0, 0, 255), life_time=-1)
+        if draw:
+            self.world.debug.draw_line(route[-1][0].transform.location, self.middle_goals[-1].location,
+                                       thickness=0.3, color=carla.Color(0, 0, 255), life_time=-1)
 
         # Add middle points to long lines (when the size of long line > middle_goals_density)
         add_middle_goals = []
@@ -583,7 +602,8 @@ class CarlaEnv:
 
         # Draw middle points
         for middle_goal in self.middle_goals:
-            self.world.debug.draw_point(middle_goal.location, size=0.15, life_time=-1)
+            if draw:
+                self.world.debug.draw_point(middle_goal.location, size=0.15, life_time=-1)
             # Static reward for mp
             # Add each middle point with counter 0 which indicates if middle point has already given a reward
             self.stat_reward_mp.append([middle_goal.location, 0])
@@ -802,6 +822,10 @@ class CarlaEnv:
         self.settings.max_substeps = 10
         self.world.apply_settings(self.settings)
 
+        # self.world = self.client.reload_world()
+
+
+
         # # SET SYNCHRONOUS MODE
         # self.settings = self.world.get_settings()
         # self.settings.synchronous_mode = True
@@ -858,7 +882,7 @@ class CarlaEnv:
 
         self.set_spectator()
         self.plan_the_route()
-        self.spawn_car()
+        self.spawn_car(False)
 
         if self.camera_type == 'rgb':
             self.add_rgb_camera()
@@ -894,14 +918,16 @@ class CarlaEnv:
         self.world.tick()
         self.world.tick()
         self.world.tick()
-
         while not self.image_queue.empty():
             _ = self.image_queue.get()
 
         self.world.tick()
+        try:
+            image = self.image_queue.get()
+        except queue.Empty:
+            print("kolejka jest pusta")
+            image = None
 
-
-        image = self.image_queue.get()
         self.state_observer.image = image
 
         scalar_tensor = torch.tensor(self.speed, dtype=torch.float32).view(1, 1)  # Dodanie wymiaru [batch_size=1, 1]
@@ -911,7 +937,8 @@ class CarlaEnv:
         # if save_image:
         #     self.state_observer.save_to_disk(image, episode, 0)
         
-        self.process_rgb_img(image)
+        # self.process_rgb_img(image)
+        self.process_semantic_img(image)
         return self.front_camera, speed_tensor
     
     def step_apply_action(self, action):
@@ -976,17 +1003,23 @@ class CarlaEnv:
 
         if self.step_counter >= how_many_steps:
             self.done = True
-
-        image1 = self.image_queue.get()
-        image = self.image_queue.get() #2 frames are put on the queue between two consecutive steps
+        try:
+            image1 = self.image_queue.get()
+        except queue.Empty:
+            print("Timeout: brak obrazu w kolejce")
+            image1 = None
+        try:
+            image = self.image_queue.get() #2 frames are put on the queue between two consecutive steps
+        except queue.Empty:
+            print("Timeout: brak obrazu w kolejce")
+            image = None
         self.state_observer.image = image
-
 
         # if save_image:
         #     self.state_observer.save_to_disk(image, episode, step)
 
-        self.process_rgb_img(image)
-
+        # self.process_rgb_img(image)
+        self.process_semantic_img(image)
         return self.front_camera, reward, self.done, route_distance, speed_tensor, distance_from_goal
 
     def destroy_agents(self):

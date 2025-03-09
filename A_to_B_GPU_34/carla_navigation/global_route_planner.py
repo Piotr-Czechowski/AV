@@ -35,6 +35,7 @@ class GlobalRoutePlanner(object):
         self._road_id_to_edge = None
         self._intersection_end_node = -1
         self._previous_decision = RoadOption.VOID
+        self._previous_waypoint = None
 
     def setup(self):
         """
@@ -385,3 +386,41 @@ class GlobalRoutePlanner(object):
                             break
 
         return route_trace
+    
+    def on_junction(self, v_location):
+        left_junction =False
+        v_waypoint = self._dao._wmap.get_waypoint(v_location) #Tu powinien być najbliższy ale z wyznaczonej ścieżki
+        if self._previous_waypoint == None:
+            self._previous_waypoint = v_waypoint
+
+        if self._previous_waypoint.is_junction and not v_waypoint.is_junction:
+            left_junction = True
+
+        self._previous_waypoint = v_waypoint
+        return v_waypoint.is_junction, left_junction
+    
+    def current_directions(self, vehicle, world):
+        # map = world.get_map()
+        # current_waypoint = map.get_waypoint(vehicle.get_location())
+        # next_waypoints = current_waypoint.next(2.0)
+        # current_wp_vector = current_waypoint.transform.get_forward_vector()
+        # possible_directions = []
+        # for next_waypoint in next_waypoints:
+        #     next_wp_vector = next_waypoint.transform.get_forward_vector()
+        #     current_next_wp_vector = next_waypoint.transform.location - current_waypoint.transform.location
+        #     current_next_wp_vector = current_next_wp_vector.make_unit_vector()
+
+        #     dot_product = current_wp_vector.x * next_wp_vector.x + current_wp_vector.y * next_wp_vector.y
+        #     cross_product = current_wp_vector.x * next_wp_vector.y + current_wp_vector.y * next_wp_vector.x
+
+        #     if dot_product > 0.999:  # Prawie ten sam kierunek
+        #         maneuver = RoadOption.STRAIGHT
+        #         possible_directions.append("STRAIGHT")
+        #     elif cross_product > 0:  # Skręt w lewo (współrzędne zgodne z prawą dłonią)
+        #         maneuver = RoadOption.LEFT
+        #         possible_directions.append("LEFT")
+        #     else:  # Skręt w prawo
+        #         maneuver = RoadOption.RIGHT
+        #         possible_directions.append("RIGHT")
+
+        return possible_directions

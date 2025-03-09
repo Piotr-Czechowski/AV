@@ -74,16 +74,25 @@ class DiscreteActor(torch.nn.Module):
         #                                   torch.nn.ReLU())
         self.layer4 = torch.nn.Sequential(torch.nn.Linear(64 * 22 * 22, 512),
                                           torch.nn.ReLU())
+        
+        self.speed_layer1 = torch.nn.Sequential(
+            torch.nn.Linear(1, 64),
+            torch.nn.ReLU())
+
+        # self.speed_layer2 = torch.nn.Sequential(
+        #     torch.nn.Linear(64, 64),
+        #     torch.nn.ReLU()
+        # )
         # self.logits = torch.nn.Linear(512, actor_shape)
-        self.scalar_layer = torch.nn.Sequential(
-                    torch.nn.Linear(1, 64),
-                    torch.nn.ReLU()
-                    )
+        self.logits = torch.nn.Linear(512+64, actor_shape) # camera+speed
+
+        # self.scalar_layer = torch.nn.Sequential(
+        #             torch.nn.Linear(1, 64),
+        #             torch.nn.ReLU())
         #powrzucać dropouty, batchnorm
-        self.logits = torch.nn.Linear(512+64, actor_shape)
         # self.logits = torch.nn.Linear(2, actor_shape)
 
-    def forward(self, x, scalar):
+    def forward(self, x, speed=None, manouver=None):
         """
         Forward pass through the Actor network. Takes batch_size x observations as input and produces mu and sigma
         as the outputs
@@ -97,11 +106,22 @@ class DiscreteActor(torch.nn.Module):
         x = self.layer3(x)
         x = x.view(x.shape[0], -1)
         x = self.layer4(x)
-        # logits = self.logits(x)
-        scalar = scalar.to(self.device).view(-1, 1)
-        scalar_features = self.scalar_layer(scalar)
-        combined = torch.cat([x, scalar_features], dim=1)
-        logits = self.logits(combined)
+
+        if speed is None and manouver is None:
+            logits = self.logits(x)
+        elif speed is not None and manouver is None:
+            speed = speed.to(self.device).view(-1, 1)
+            speed = self.speed_layer1(speed)
+            # speed = self.speed_layer2(speed)
+            combined = torch.cat([x, speed], dim=1)
+            logits = self.logits(combined)
+        elif speed is not None and manouver is not None:
+            pass
+
+        # scalar = scalar.to(self.device).view(-1, 1)
+        # scalar_features = self.scalar_layer(scalar)
+        # combined = torch.cat([x, scalar_features], dim=1)
+        # logits = self.logits(combined)
 
         # attention = self.attention_layer(combined)
         # logits = self.logits(attention)
@@ -127,19 +147,25 @@ class Critic(torch.nn.Module):
                                           torch.nn.ReLU())
         self.layer4 = torch.nn.Sequential(torch.nn.Linear(64 * 22 * 22, 512),
                                           torch.nn.ReLU())
+        self.speed_layer1 = torch.nn.Sequential(
+            torch.nn.Linear(1, 64),
+            torch.nn.ReLU()
+            )
+        
+        # self.speed_layer2 = torch.nn.Sequential(
+        #     torch.nn.Linear(64, 64),
+        #     torch.nn.ReLU()
+        # )
+        # ----Last layers----
         # self.critic = torch.nn.Linear(512, critic_shape)
-
-        self.scalar_layer = torch.nn.Sequential(
-                    torch.nn.Linear(1, 64),
-                    torch.nn.ReLU()
-                    )
-
         self.critic = torch.nn.Linear(512+64, critic_shape)
+
+
         # self.attention_layer = torch.nn.MultiheadAttention(512+64, 2)
         # self.critic = torch.nn.Linear(2, critic_shape)
 
 
-    def forward(self, x, scalar):
+    def forward(self, x, speed=None, manouver=None):
         """
         Forward pass through the Critic network. Takes batch_size x observations as input and produces the value
         estimate as the output
@@ -154,13 +180,24 @@ class Critic(torch.nn.Module):
         x = x.view(x.shape[0], -1)
         # print(x.shape)
         x = self.layer4(x)
+
+        if speed is None and manouver is None:
+            critic = self.critic(x)
+        elif speed is not None and manouver is None:
+            speed = speed.to(self.device).view(-1, 1)
+            speed = self.speed_layer1(speed)
+            # speed = self.speed_layer2(speed)
+            combined = torch.cat([x, speed], dim=1)
+            critic = self.critic(combined)
+        elif speed is not None and manouver is not None:
+            pass
+
         # print(x.shape)
-        # critic = self.critic(x)
-        scalar = scalar.to(self.device).view(-1, 1)
-        scalar_features = self.scalar_layer(scalar)
-        combined = torch.cat([x, scalar_features], dim=1)
+        # scalar = scalar.to(self.device).view(-1, 1)
+        # scalar_features = self.scalar_layer(scalar)
+        # combined = torch.cat([x, scalar_features], dim=1)
         
-        critic = self.critic(combined)
+        # critic = self.critic(combined)
         # attention = self.attention_layer(combined)
         # critic = self.critic(attention)
 

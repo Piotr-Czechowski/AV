@@ -4,7 +4,7 @@ SHOULD_USE_CUDA = 'cuda' if torch.cuda.is_available() else 'cpu'
 # Global params
 PORT = 2000  # Port on which the server is running
 ACTION_TYPE = 'discrete'  # 'discrete' or 'continuous'
-CAMERA_TYPE = 'rgb'  # 'rgb' or 'semantic'
+CAMERA_TYPE = 'semantic'  # 'rgb' or 'semantic'
 GAMMA = 0.9  # Discount factor
 LR = 1e-4  # Learning rate
 USE_ENTROPY = True  # Entropy is a measure of chaos in a system
@@ -19,7 +19,7 @@ SLEEP_BETWEEN_ACTIONS = 0.2  # How many sec sleep between consecutive actions? E
 SHOW_CAM = False  # Vehicle's camera preview
 SERV_RESX = 640  # Server X resolution
 SERV_RESY = 480  # Server Y resolution
-SCENARIO = [7]  # List of scenarios on which the model is trained
+SCENARIO = [8]  # List of scenarios on which the model is trained
 
 """ 
 Specify scenario parameter or spawn_point and terminal_point parameters
@@ -46,6 +46,7 @@ REWARD_FROM_INV = 0  # Static reward from a line invasion
 # ACTIONS = ['forward', 'forward_left', 'forward_right', 'brake', 'brake_left', 'brake_right']
 
 ACTIONS = ['forward', 'forward_left', 'forward_right', 'brake', 'brake_left', 'brake_right', 'forward_slight_left','forward_slight_right','brake_slight_left','brake_slight_right',]
+# ACTION_IND:  0            1               2             3          4              5                 6                    7                       8                    9
 
 CARLA_PATH = r''  # provide your carla exec path
 CARLA_EGG_PATH = r''  # Provide your carla egg path
