@@ -84,7 +84,7 @@ class DiscreteActor(torch.nn.Module):
         #     torch.nn.ReLU()
         # )
         # self.logits = torch.nn.Linear(512, actor_shape)
-        self.logits = torch.nn.Linear(512+64, actor_shape) # camera+speed
+        self.actor = torch.nn.Linear(512+64, actor_shape) # camera+speed
 
         # self.scalar_layer = torch.nn.Sequential(
         #             torch.nn.Linear(1, 64),
@@ -108,13 +108,13 @@ class DiscreteActor(torch.nn.Module):
         x = self.layer4(x)
 
         if speed is None and manouver is None:
-            logits = self.logits(x)
+            actor = self.actor(x)
         elif speed is not None and manouver is None:
             speed = speed.to(self.device).view(-1, 1)
             speed = self.speed_layer1(speed)
             # speed = self.speed_layer2(speed)
             combined = torch.cat([x, speed], dim=1)
-            logits = self.logits(combined)
+            actor = self.actor(combined)
         elif speed is not None and manouver is not None:
             pass
 
@@ -125,7 +125,7 @@ class DiscreteActor(torch.nn.Module):
 
         # attention = self.attention_layer(combined)
         # logits = self.logits(attention)
-        return logits
+        return actor
 
 
 class Critic(torch.nn.Module):
