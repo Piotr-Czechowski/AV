@@ -37,11 +37,11 @@ sorted_counter = dict(sorted(rounded_rewards.items()))
 
 # plot results
 df = pd.DataFrame({
-    "Category": list(sorted_counter.keys()),
-    "Values": list(sorted_counter.values())
+    "Reward": list(sorted_counter.keys()),
+    "Episodes": list(sorted_counter.values())
 })
-# Create the bar chart with hover data
-fig = px.bar(df, x="Category", y="Values", color="Values",
+# create chart
+fig = px.bar(df, x="Reward", y="Episodes", color="Values",
              hover_data={"Values": True},
              color_continuous_scale="plasma")
 # Show figure
