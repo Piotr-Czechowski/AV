@@ -85,7 +85,7 @@ def reward_function(collision_history_list, invasion_counter, speed, route_dista
     if distance_and_speed >= 0:
         distance_and_speed = math.sqrt(distance_and_speed)
     else:
-        distance_and_speed = 2 - route_distance
+        distance_and_speed = max(speed*(2 - route_distance), -5)
 
     # print("terminal_state_reward: ", terminal_state_reward, "col_reward: ", col_reward, "speed_reward: ",speed_reward, "route_distance_reward: ", route_distance_reward, "inv_reward: ", inv_reward, "mp_static_reward: ", mp_static_reward)
     # reward = terminal_state_reward + col_reward + speed_reward + route_distance + inv_reward + mp_static_reward
