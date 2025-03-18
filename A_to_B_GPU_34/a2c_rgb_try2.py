@@ -26,6 +26,11 @@ from torch.distributions.multivariate_normal import MultivariateNormal
 from carla_env import CarlaEnv
 import carla
 import wandb
+from datetime import datetime
+# ile epizod zajmuje ruchów
+# ile epizod zajmuje sekund
+# logoowanie
+# logowanie loss
 
 # For RGB
 # from nets.a2c import Actor as DeepActor  # Continuous
@@ -52,8 +57,8 @@ port = settings.PORT
 action_type = settings.ACTION_TYPE
 camera_type = settings.CAMERA_TYPE
 load_model = settings.LOAD_MODEL
-model_incr_load = 'A_to_B_GPU_34/PC_models/currently_trained/synchr_200_semantic_camera_6_13_img_speed.pth'
-model_incr_save = 'A_to_B_GPU_34/PC_models/currently_trained/synchr_200_semantic_camera_6_13_img_speed'
+model_incr_load = 'A_to_B_GPU_34/PC_models/currently_trained/synchr_200_semantic_camera_7_2_img.pth'
+model_incr_save = 'A_to_B_GPU_34/PC_models/currently_trained/synchr_200_semantic_camera_7_2_img'
 
 gamma = settings.GAMMA
 lr = settings.LR
@@ -249,7 +254,7 @@ class DeepActorCriticAgent(mp.Process):
         td_targets = self.calculate_n_step_return(self.rewards, final_state_rgb, done, self.gamma, final_speed)
 
         actor_loss, critic_loss = self.calculate_loss(self.trajectory, td_targets)
-
+        wandb.log({"actor_loss": actor_loss, "critic_loss": critic_loss})
         self.actor_optimizer.zero_grad()
         actor_loss.backward(retain_graph=True)
         for name, param in self.actor.named_parameters():
@@ -313,15 +318,20 @@ def handle_crash(results_queue):
     project="A_to_B",
     # create or extend already logged run:
     resume="allow",
-    id="synchr_200_semantic_camera_6_13_img_speed",  
+    id="synchr_200_semantic_camera_7_2_img",  
 
     # track hyperparameters and run metadata
     config={
-    "name" : "synchr_200_semantic_camera_6_img",
+    "name" : "synchr_200_semantic_camera_7",
     "learning_rate": lr
     }
     )
-    wandb.run.notes = "Image + speed. Jedna warstwa przetwarzająca speed. 4 warstwy dla obrazu, jedna warstwa wspolna. Slight turns like:  9: [0, 1, 0.2], #brake slight right. Gradients logged"
+    wandb.run.notes = "Image+speed. 4 warstwy dla obrazu. 1 dla speed (1, 64). Slight turns like:  9: [0, 1, 0.2], #brake slight right. Gradients logged. Nowa funkcja nagrody (pierwiastek dla >=0 i ogr. do -5 dla <0) \n    " \
+    "distance_and_speed = (speed)*(2-route_distance)" \
+    "if distance_and_speed >= 0:" \
+    "   distance_and_speed = math.sqrt(distance_and_speed)" \
+    "else:" \
+    "   distance_and_speed = max(speed*(2 - route_distance), -5)"
     agent = DeepActorCriticAgent()
     agent.mean_reward = 0
     agent.episode = 0
@@ -340,6 +350,8 @@ def handle_crash(results_queue):
     while 1:
         # with lock:
         agent.episode += 1
+        if agent.episode >= 1100:
+            break
                 # SET SYNCHRONOUS MODE
         # agent.environment.settings = agent.environment.world.get_settings()
         # agent.environment.settings.synchronous_mode = True
@@ -371,7 +383,7 @@ def handle_crash(results_queue):
         manouvers_v= [ 0.1,     0.2,      0.3,       0.2]
         i = 0        
         manouver_tensor = torch.tensor([[manouvers_v[i]]]).to(device)
-
+        episode_start_time = datetime.now()
         while not done:
             episode_step += 1
 
@@ -423,7 +435,7 @@ def handle_crash(results_queue):
             new_state, reward, done, route_distance, speed_tensor, distance_from_goal = agent.environment.step(save_image=save_image, episode=agent.episode, step=episode_step)
             agent.environment.state_observer.reward = reward
 
-            wandb.log({"step_reward": reward, "step": episode_step})
+            wandb.log({"step_reward": reward})
             new_state = new_state / 255.0  # resize the tensor to [0, 1]
             speed_tensor = speed_tensor / 50.0
             agent.rewards.append(reward)
@@ -437,7 +449,8 @@ def handle_crash(results_queue):
             state_rgb = new_state
             agent.global_step_num += 1
 
-                
+        episode_end_time = datetime.now()
+        episode_time = episode_end_time - episode_start_time
 
         # if agent.action_type == 'discrete':
         #     print(str(actions_counter))
@@ -448,7 +461,7 @@ def handle_crash(results_queue):
         if ep_reward > agent.best_reward:
             agent.best_reward = ep_reward
         agent.save(model_incr_save)
-        wandb.log({"reward": ep_reward, "episode": agent.episode, "mean_reward": agent.mean_reward, "max_speed": max_speed, "distance_from_goal": distance_from_goal})
+        wandb.log({"episode steps": episode_step, "episode duration [s]": episode_time.seconds,"reward": ep_reward, "episode": agent.episode, "mean_reward": agent.mean_reward, "max_speed": max_speed, "distance_from_goal": distance_from_goal})
 
         # print("Episode: {} \t ep_reward:{} \t mean_ep_rew:{}\t best_ep_reward:{} max_speed: {} distance_from_goal: {}".format(agent.episode,
         #                                                                                     ep_reward,
