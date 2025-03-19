@@ -27,10 +27,7 @@ from carla_env import CarlaEnv
 import carla
 import wandb
 from datetime import datetime
-# ile epizod zajmuje ruchów
-# ile epizod zajmuje sekund
-# logoowanie
-# logowanie loss
+
 
 # For RGB
 # from nets.a2c import Actor as DeepActor  # Continuous
@@ -57,13 +54,14 @@ port = settings.PORT
 action_type = settings.ACTION_TYPE
 camera_type = settings.CAMERA_TYPE
 load_model = settings.LOAD_MODEL
-model_incr_load = 'A_to_B_GPU_34/PC_models/currently_trained/synchr_200_semantic_camera_7_2_img.pth'
-model_incr_save = 'A_to_B_GPU_34/PC_models/currently_trained/synchr_200_semantic_camera_7_2_img'
+model_incr_load = 'A_to_B_GPU_34/PC_models/currently_trained/synchr_200_semantic_camera_7_4_img.pth'
+model_incr_save = 'A_to_B_GPU_34/PC_models/currently_trained/synchr_200_semantic_camera_7_4_img'
 
 gamma = settings.GAMMA
 lr = settings.LR
 use_entropy = settings.USE_ENTROPY
 scenario = settings.SCENARIO
+testing = settings.TESTING
 
 
 # Transition - the representation of a single transition
@@ -164,13 +162,15 @@ class DeepActorCriticAgent(mp.Process):
         return action.cpu().numpy().squeeze(0)  # Convert to numpy ndarray, squeeze and remove the batch dimension
 
     # def get_action(self, obs, speed, manouver):
-    def get_action(self, obs, speed):
+    def get_action(self, obs, speed, testing=False):
 
         # action_distribution = self.policy(obs, speed, manouver)  # Call to self.policy(obs) also populates self.value with V(obs)
         action_distribution = self.policy(obs, speed)  # Call to self.policy(obs) also populates self.value with V(obs)
-
-        action = action_distribution.sample()
-
+        if testing:
+            action = action_distribution.probs.argmax(dim=-1)
+        else:
+            action = action_distribution.sample()
+        
         log_prob_a = action_distribution.log_prob(action)
 
         action = self.process_action(action)
@@ -318,7 +318,7 @@ def handle_crash(results_queue):
     project="A_to_B",
     # create or extend already logged run:
     resume="allow",
-    id="synchr_200_semantic_camera_7_2_img",  
+    id="synchr_200_semantic_camera_7_4_img",  
 
     # track hyperparameters and run metadata
     config={
@@ -326,12 +326,12 @@ def handle_crash(results_queue):
     "learning_rate": lr
     }
     )
-    wandb.run.notes = "Image+speed. 4 warstwy dla obrazu. 1 dla speed (1, 64). Slight turns like:  9: [0, 1, 0.2], #brake slight right. Gradients logged. Nowa funkcja nagrody (pierwiastek dla >=0 i ogr. do -5 dla <0) \n    " \
-    "distance_and_speed = (speed)*(2-route_distance)" \
-    "if distance_and_speed >= 0:" \
-    "   distance_and_speed = math.sqrt(distance_and_speed)" \
+    wandb.run.notes = "Image. 4 warstwy dla obrazu. . Slight turns like:  9: [0, 1, 0.2], #brake slight right. Gradients logged. Stara funkcja nagrody  \n    " \
+    "speed_reward = -1.2 + speed/3" \
+    "if route_distance < 1:" \
+    "   route_distance_reward = 1" \
     "else:" \
-    "   distance_and_speed = max(speed*(2 - route_distance), -5)"
+    "   route_distance_reward = -speed/3"
     agent = DeepActorCriticAgent()
     agent.mean_reward = 0
     agent.episode = 0
@@ -407,7 +407,7 @@ def handle_crash(results_queue):
             # print(f"Current manouver: Go {manouvers[i]}")
 
             # action = agent.get_action(state_rgb)
-            action = agent.get_action(state_rgb, speed_tensor)
+            action = agent.get_action(state_rgb, speed_tensor, testing)
             # action = agent.get_action(state_rgb, speed_tensor, manouver_tensor)
 
             if save_image:
@@ -442,7 +442,7 @@ def handle_crash(results_queue):
             ep_reward += reward
             step_num += 1
             # print("Step number: ", step_num, "reward: ", reward, "ep_reward: ", ep_reward)
-            if step_num >= 5 or done:
+            if not testing and (step_num >= 5 or done):
                 # actor_loss, critic_loss, actor_lr, critic_lr = agent.optimize(new_state, done, speed_tensor, manouver_tensor)
                 actor_loss, critic_loss, actor_lr, critic_lr = agent.optimize(new_state, done, speed_tensor)
                 step_num = 0
