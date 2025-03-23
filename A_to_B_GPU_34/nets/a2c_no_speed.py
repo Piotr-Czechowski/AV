@@ -61,7 +61,7 @@ class DiscreteActor(torch.nn.Module):
         super(DiscreteActor, self).__init__()
         self.device = device
         # self.layer1 = torch.nn.Sequential(torch.nn.Conv2d(input_shape[2], 32, 8, stride=4, padding=0),
-                                                     #  How many channels
+        #  How many channels
         self.layer1 = torch.nn.Sequential(torch.nn.Conv2d(input_shape[2], 32, 8, stride=4, padding=0),
                                           torch.nn.ReLU())
         self.layer2 = torch.nn.Sequential(torch.nn.Conv2d(32, 64, 3, stride=2, padding=0),
@@ -74,7 +74,7 @@ class DiscreteActor(torch.nn.Module):
         #                                   torch.nn.ReLU())
         self.layer4 = torch.nn.Sequential(torch.nn.Linear(64 * 22 * 22, 512),
                                           torch.nn.ReLU())
-        
+
         self.speed_layer1 = torch.nn.Sequential(
             torch.nn.Linear(1, 64),
             torch.nn.ReLU())
@@ -83,13 +83,13 @@ class DiscreteActor(torch.nn.Module):
         #     torch.nn.Linear(64, 64),
         #     torch.nn.ReLU()
         # )
-        # self.actor = torch.nn.Linear(512, actor_shape)
-        self.actor = torch.nn.Linear(512+64, actor_shape) # camera+speed
+        self.actor = torch.nn.Linear(512, actor_shape)
+        # self.actor = torch.nn.Linear(512+64, actor_shape) # camera+speed
 
         # self.scalar_layer = torch.nn.Sequential(
         #             torch.nn.Linear(1, 64),
         #             torch.nn.ReLU())
-        #powrzucać dropouty, batchnorm
+        # powrzucać dropouty, batchnorm
         # self.logits = torch.nn.Linear(2, actor_shape)
 
     def forward(self, x, speed=None, manouver=None):
@@ -106,7 +106,7 @@ class DiscreteActor(torch.nn.Module):
         x = self.layer3(x)
         x = x.view(x.shape[0], -1)
         x = self.layer4(x)
-        # speed = None
+        speed= None
         if speed is None and manouver is None:
             actor = self.actor(x)
         elif speed is not None and manouver is None:
@@ -150,20 +150,18 @@ class Critic(torch.nn.Module):
         self.speed_layer1 = torch.nn.Sequential(
             torch.nn.Linear(1, 64),
             torch.nn.ReLU()
-            )
-        
+        )
+
         # self.speed_layer2 = torch.nn.Sequential(
         #     torch.nn.Linear(64, 64),
         #     torch.nn.ReLU()
         # )
         # ----Last layers----
-        # self.critic = torch.nn.Linear(512, critic_shape)
-        self.critic = torch.nn.Linear(512+64, critic_shape)
-
+        self.critic = torch.nn.Linear(512, critic_shape)
+        # self.critic = torch.nn.Linear(512 + 64, critic_shape)
 
         # self.attention_layer = torch.nn.MultiheadAttention(512+64, 2)
         # self.critic = torch.nn.Linear(2, critic_shape)
-
 
     def forward(self, x, speed=None, manouver=None):
         """
@@ -180,7 +178,7 @@ class Critic(torch.nn.Module):
         x = x.view(x.shape[0], -1)
         # print(x.shape)
         x = self.layer4(x)
-        # speed = None
+        speed = None
         if speed is None and manouver is None:
             critic = self.critic(x)
         elif speed is not None and manouver is None:
@@ -196,13 +194,12 @@ class Critic(torch.nn.Module):
         # scalar = scalar.to(self.device).view(-1, 1)
         # scalar_features = self.scalar_layer(scalar)
         # combined = torch.cat([x, scalar_features], dim=1)
-        
+
         # critic = self.critic(combined)
         # attention = self.attention_layer(combined)
         # critic = self.critic(attention)
 
         return critic
-
 
 # class ActorCritic(torch.nn.Module):
 #     def __init__(self, input_shape, actor_shape, critic_shape, device=torch.device("cuda")):

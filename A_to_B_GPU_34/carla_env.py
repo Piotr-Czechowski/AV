@@ -28,8 +28,8 @@ import subprocess
 import cv2
 
 from utils import reward_function
-from A_to_B_GPU_34.carla_navigation.global_route_planner import GlobalRoutePlanner
-from A_to_B_GPU_34.carla_navigation.global_route_planner_dao import GlobalRoutePlannerDAO
+from carla_navigation.global_route_planner import GlobalRoutePlanner
+from carla_navigation.global_route_planner_dao import GlobalRoutePlannerDAO
 from settings import SHOW_CAM
 from state_observer import StateObserver
 
