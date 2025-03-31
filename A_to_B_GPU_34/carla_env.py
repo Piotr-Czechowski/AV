@@ -41,6 +41,7 @@ tp_reward = settings.REWARD_FROM_TP
 serv_resx = settings.SERV_RESX
 serv_resy = settings.SERV_RESY
 port = settings.PORT
+random_spawn = settings.RANDOM_SPAWNING
 
 
 
@@ -127,7 +128,7 @@ class CarlaEnv:
 
         self.manual_control = manual_control
         if not manual_control:
-            self.vehicle = self.spawn_car(False)
+            self.vehicle = self.spawn_car(random_spawn)
 
         # Manages the basic movement of a vehicle using typical driving controls
         self.control = carla.VehicleControl()
@@ -882,7 +883,7 @@ class CarlaEnv:
 
         self.set_spectator()
         self.plan_the_route()
-        self.spawn_car(False)
+        self.spawn_car(random_spawn)
 
         if self.camera_type == 'rgb':
             self.add_rgb_camera()

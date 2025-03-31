@@ -326,7 +326,7 @@ def handle_crash(results_queue):
     "learning_rate": lr
     }
     )
-    wandb.run.notes = "Image. 4 warstwy dla obrazu. . Slight turns like:  9: [0, 1, 0.2], #brake slight right. Gradients logged. Stara funkcja nagrody  \n    " \
+    wandb.run.notes = "Image + speed. 4 warstwy dla obrazu. 1 dla prędkości. 1 wspólna. Slight turns like:  9: [0, 1, 0.2], #brake slight right. Gradients logged. Stara funkcja nagrody  \n    " \
     "speed_reward = -1.2 + speed/3" \
     "if route_distance < 1:" \
     "   route_distance_reward = 1" \
@@ -350,7 +350,7 @@ def handle_crash(results_queue):
     while 1:
         # with lock:
         agent.episode += 1
-        if agent.episode >= 1100:
+        if agent.episode >= 2000:
             break
                 # SET SYNCHRONOUS MODE
         # agent.environment.settings = agent.environment.world.get_settings()
