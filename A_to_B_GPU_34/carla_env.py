@@ -41,7 +41,7 @@ tp_reward = settings.REWARD_FROM_TP
 serv_resx = settings.SERV_RESX
 serv_resy = settings.SERV_RESY
 port = settings.PORT
-random_spawn = settings.RANDOM_SPAWNING
+spawning_type = settings.SPAWNING_TYPE
 
 
 
@@ -127,8 +127,8 @@ class CarlaEnv:
         self.transform = carla.Transform(carla.Location(x=2.5, z=0.7))
 
         self.manual_control = manual_control
-        if not manual_control:
-            self.vehicle = self.spawn_car(random_spawn)
+        # if not manual_control:
+        #     self.vehicle = self.spawn_car(spawning_type)
 
         # Manages the basic movement of a vehicle using typical driving controls
         self.control = carla.VehicleControl()
@@ -157,6 +157,7 @@ class CarlaEnv:
         self.state_observer = StateObserver()
 
         self.planner = None
+        self.number_of_resets = 0
 
     def create_scenario(self, sp, tp, mp_d):
         if sp and tp:
@@ -298,7 +299,7 @@ class CarlaEnv:
 
         return self.goal_location_trans, self.goal_location_loc, self.route
 
-    def spawn_car(self, randomly=False):
+    def spawn_car(self, spawning_type=1, episode=None):
         """
         Spawn a car
         :return: vehicle
@@ -306,11 +307,16 @@ class CarlaEnv:
 
         tesla = self.blueprint_library.filter('model3')[0]
         tesla.set_attribute('role_name', 'ego')
-        if randomly:
+        if spawning_type==0:
             self.spawn_point = random.choice(self.route)[0].transform
-        else:
+        elif spawning_type == 1:
             self.spawn_point.location.x -= 9
-        self.spawn_point.location.z = 2.0 # żeby nie był za nisko
+        elif spawning_type==2:
+            if bool(episode%2):
+                self.spawn_point = self.route[0][0].transform
+            else:
+                self.spawn_point = self.route[-120][0].transform
+        self.spawn_point.location.z = 5.0 # żeby nie był za nisko
         
         self.vehicle = self.world.try_spawn_actor(tesla, self.spawn_point)
         self.actor_list.append(self.vehicle)
@@ -380,6 +386,17 @@ class CarlaEnv:
         semantic_cam_bp.set_attribute('image_size_y', f'{self.resY}')
         semantic_cam_bp.set_attribute('fov', '110')
 
+        # new_location = carla.Location(self.transform.location.x, 
+        #                             self.transform.location.y, 
+        #                             self.transform.location.z + 1.0)  # Podniesienie kamery o 1m
+
+        # new_rotation = carla.Rotation(self.transform.rotation.pitch - 15,  # Nachylenie w dół o 15 stopni
+        #                             self.transform.rotation.yaw, 
+        #                             self.transform.rotation.roll)
+
+        # new_transform = carla.Transform(new_location, new_rotation)
+
+        # semantic_cam_sensor = self.world.spawn_actor(semantic_cam_bp, new_transform, attach_to=self.vehicle)
         semantic_cam_sensor = self.world.spawn_actor(semantic_cam_bp, self.transform, attach_to=self.vehicle)
 
         # semantic_cam_sensor.listen(lambda data: self.process_semantic_img(data))
@@ -883,7 +900,7 @@ class CarlaEnv:
 
         self.set_spectator()
         self.plan_the_route()
-        self.spawn_car(random_spawn)
+        self.spawn_car(spawning_type, episode)
 
         if self.camera_type == 'rgb':
             self.add_rgb_camera()

@@ -2,7 +2,7 @@ import torch
 SHOULD_USE_CUDA = 'cuda' if torch.cuda.is_available() else 'cpu'
 
 # Global params
-PORT = 2010  # Port on which the server is running
+PORT = 2000  # Port on which the server is running
 ACTION_TYPE = 'discrete'  # 'discrete' or 'continuous'
 CAMERA_TYPE = 'semantic'  # 'rgb' or 'semantic'
 GAMMA = 0.9  # Discount factor
@@ -21,7 +21,7 @@ SERV_RESX = 640  # Server X resolution
 SERV_RESY = 480  # Server Y resolution
 SCENARIO = [8]  # List of scenarios on which the model is trained
 TESTING = False
-RANDOM_SPAWNING = True
+SPAWNING_TYPE = 2 # 0 - random, 1 - at the beginning, 2 - in 2 different places one by one
 """ 
 Specify scenario parameter or spawn_point and terminal_point parameters
 Scenario parameter: {1,2,3,4,5,6,7}
