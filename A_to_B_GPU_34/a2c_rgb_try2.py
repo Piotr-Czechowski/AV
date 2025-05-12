@@ -53,8 +53,8 @@ port = settings.PORT
 action_type = settings.ACTION_TYPE
 camera_type = settings.CAMERA_TYPE
 load_model = settings.LOAD_MODEL
-model_incr_load = 'A_to_B_GPU_34/PC_models/currently_trained/synchr_200_semantic_camera_7_11_img.pth'
-model_incr_save = 'A_to_B_GPU_34/PC_models/currently_trained/synchr_200_semantic_camera_7_11_img'
+model_incr_load = 'A_to_B_GPU_34/PC_models/currently_trained/synchr_200_semantic_camera_7_14_img_rand_speed.pth'
+model_incr_save = 'A_to_B_GPU_34/PC_models/currently_trained/synchr_200_semantic_camera_7_14_img_rand_speed'
 
 gamma = settings.GAMMA
 lr = settings.LR
@@ -317,7 +317,7 @@ def handle_crash(results_queue):
     project="A_to_B",
     # create or extend already logged run:
     resume="allow",
-    id="synchr_200_semantic_camera_7_11_img",  
+    id="synchr_200_semantic_camera_7_14_img_rand_speed",  
 
     # track hyperparameters and run metadata
     config={
@@ -325,7 +325,7 @@ def handle_crash(results_queue):
     "learning_rate": lr
     }
     )
-    wandb.run.notes = "Image. 4 warstwy dla obrazu. 0 dla predkosci. Slight turns like:  9: [0, 1, 0.2], #brake slight right. Gradients logged. Stara funkcja nagrody. Nowa sieć  \n    " \
+    wandb.run.notes = "Image. Nowy model (nie ten z blokami rezydualnymi), z predkoscia. Slight turns like:  9: [0, 1, 0.2], #brake slight right. Gradients logged. Stara funkcja nagrody. Nowa sieć. Random spawning  \n    " \
     "speed_reward = -1.2 + speed/3" \
     "if route_distance < 1:" \
     "   route_distance_reward = 1" \
@@ -343,13 +343,13 @@ def handle_crash(results_queue):
     episode_rewards = []  # Every episode's reward
     prev_checkpoint_mean_ep_rew = agent.best_mean_reward
     num_improved_episodes_before_checkpoint = 0  # To keep track of the num of ep with higher perf to save model
-    episodes_to_save_images = (1, 2, 1000, 1001, 2010, 2011, 4000, 4001, 4999, 4998)
+    episodes_to_save_images = (11, 12, 1010, 1011, 2020, 2021, 4010, 4011, 4989, 4988)
     max_speed = 0
     distance_from_goal = 0
     while 1:
         # with lock:
         agent.episode += 1
-        if agent.episode >= 5000:
+        if agent.episode >= 10000:
             break
                 # SET SYNCHRONOUS MODE
         # agent.environment.settings = agent.environment.world.get_settings()
