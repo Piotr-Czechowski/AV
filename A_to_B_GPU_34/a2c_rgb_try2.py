@@ -61,6 +61,7 @@ lr = settings.LR
 use_entropy = settings.USE_ENTROPY
 scenario = settings.SCENARIO
 testing = settings.TESTING
+logging = settings.LOGGING
 
 
 # Transition - the representation of a single transition
@@ -253,12 +254,16 @@ class DeepActorCriticAgent(mp.Process):
         td_targets = self.calculate_n_step_return(self.rewards, final_state_rgb, done, self.gamma, final_speed)
 
         actor_loss, critic_loss = self.calculate_loss(self.trajectory, td_targets)
-        wandb.log({"actor_loss": actor_loss, "critic_loss": critic_loss})
+        if logging:
+            wandb.log({"actor_loss": actor_loss, "critic_loss": critic_loss})
         self.actor_optimizer.zero_grad()
         actor_loss.backward(retain_graph=True)
         for name, param in self.actor.named_parameters():
             if param.grad is not None:
-                wandb.log({f"gradients/actor/{name}": wandb.Histogram(param.grad.cpu().numpy())})
+                if logging:
+                    wandb.log({f"gradients/actor/{name}": wandb.Histogram(param.grad.cpu().numpy())})
+                else:
+                    pass
         self.actor_optimizer.step()
 
 
@@ -266,7 +271,10 @@ class DeepActorCriticAgent(mp.Process):
         critic_loss.backward()
         for name, param in self.critic.named_parameters():
             if param.grad is not None:
-                wandb.log({f"gradients/critic/{name}": wandb.Histogram(param.grad.cpu().numpy())})
+                if logging:
+                    wandb.log({f"gradients/critic/{name}": wandb.Histogram(param.grad.cpu().numpy())})
+                else:
+                    pass
         self.critic_optimizer.step()
         actor_lr = self.actor_optimizer.param_groups[0]['lr']
         critic_lr =self.critic_optimizer.param_groups[0]['lr']
@@ -312,25 +320,26 @@ class DeepActorCriticAgent(mp.Process):
         #       " and an all time best reward of:", self.best_reward)
         
 def handle_crash(results_queue):
-    wandb.init(
-    # set the ##wandb project where this run will be logged
-    project="A_to_B",
-    # create or extend already logged run:
-    resume="allow",
-    id="synchr_200_semantic_camera_7_14_img_rand_speed",  
+    if logging:
+        wandb.init(
+        # set the ##wandb project where this run will be logged
+        project="A_to_B",
+        # create or extend already logged run:
+        resume="allow",
+        id="synchr_200_semantic_camera_7_14_img_rand_speed",  
 
-    # track hyperparameters and run metadata
-    config={
-    "name" : "synchr_200_semantic_camera_7",
-    "learning_rate": lr
-    }
-    )
-    wandb.run.notes = "Image. Nowy model (nie ten z blokami rezydualnymi), z predkoscia. Slight turns like:  9: [0, 1, 0.2], #brake slight right. Gradients logged. Stara funkcja nagrody. Nowa sieć. Random spawning  \n    " \
-    "speed_reward = -1.2 + speed/3" \
-    "if route_distance < 1:" \
-    "   route_distance_reward = 1" \
-    "else:" \
-    "   route_distance_reward = -speed/3. Startowanie w dwóch miejscach na przemian"
+        # track hyperparameters and run metadata
+        config={
+        "name" : "synchr_200_semantic_camera_7",
+        "learning_rate": lr
+        }
+        )
+        wandb.run.notes = "Image. Nowy model (nie ten z blokami rezydualnymi), z predkoscia. Slight turns like:  9: [0, 1, 0.2], #brake slight right. Gradients logged. Stara funkcja nagrody. Nowa sieć. Random spawning  \n    " \
+        "speed_reward = -1.2 + speed/3" \
+        "if route_distance < 1:" \
+        "   route_distance_reward = 1" \
+        "else:" \
+        "   route_distance_reward = -speed/3. Startowanie w dwóch miejscach na przemian"
     agent = DeepActorCriticAgent()
     agent.mean_reward = 0
     agent.episode = 0
@@ -433,8 +442,8 @@ def handle_crash(results_queue):
 
             new_state, reward, done, route_distance, speed_tensor, distance_from_goal = agent.environment.step(save_image=save_image, episode=agent.episode, step=episode_step)
             agent.environment.state_observer.reward = reward
-
-            wandb.log({"step_reward": reward})
+            if logging:
+                wandb.log({"step_reward": reward})
             new_state = new_state / 255.0  # resize the tensor to [0, 1]
             speed_tensor = speed_tensor / 50.0
             agent.rewards.append(reward)
@@ -460,7 +469,8 @@ def handle_crash(results_queue):
         if ep_reward > agent.best_reward:
             agent.best_reward = ep_reward
         agent.save(model_incr_save)
-        wandb.log({"episode steps": episode_step, "episode duration [s]": episode_time.seconds,"reward": ep_reward, "episode": agent.episode, "mean_reward": agent.mean_reward, "max_speed": max_speed, "distance_from_goal": distance_from_goal})
+        if logging:
+            wandb.log({"episode steps": episode_step, "episode duration [s]": episode_time.seconds,"reward": ep_reward, "episode": agent.episode, "mean_reward": agent.mean_reward, "max_speed": max_speed, "distance_from_goal": distance_from_goal})
 
         # print("Episode: {} \t ep_reward:{} \t mean_ep_rew:{}\t best_ep_reward:{} max_speed: {} distance_from_goal: {}".format(agent.episode,
         #                                                                                     ep_reward,

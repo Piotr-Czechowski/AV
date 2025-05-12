@@ -22,6 +22,8 @@ SERV_RESY = 480  # Server Y resolution
 SCENARIO = [8]  # List of scenarios on which the model is trained
 TESTING = False
 SPAWNING_TYPE = 0 # 0 - random, 1 - at the beginning, 2 - in 2 different places one by one
+LOGGING = True
+
 """ 
 Specify scenario parameter or spawn_point and terminal_point parameters
 Scenario parameter: {1,2,3,4,5,6,7}
