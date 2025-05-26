@@ -154,6 +154,67 @@ import torch
 #         #     torch.nn.Linear(1, 64),
 #         #     torch.nn.ReLU()
 #         #     )
+# =======
+#     def forward(self, x, speed=None, manouver=None):
+#         """
+#         Forward pass through the Actor network. Takes batch_size x observations as input and produces mu and sigma
+#         as the outputs
+#         :param x: The observations
+#         :return: Mean (mu) and Sigma (sigma) for a Gaussian policy
+#         """
+#         x.requires_grad_()
+#         x = x.to(self.device)
+#         x = self.layer1(x)
+#         x = self.layer2(x)
+#         x = self.layer3(x)
+#         x = x.view(x.shape[0], -1)
+#         x = self.layer4(x)
+#         # speed = None
+#         if speed is None and manouver is None:
+#             actor = self.actor(x)
+#         elif speed is not None and manouver is None:
+#             speed = speed.to(self.device).view(-1, 1)
+#             speed = self.speed_layer1(speed)
+#             # speed = self.speed_layer2(speed)
+#             combined = torch.cat([x, speed], dim=1)
+#             actor = self.actor(combined)
+#         elif speed is not None and manouver is not None:
+#             pass
+
+#         # scalar = scalar.to(self.device).view(-1, 1)
+#         # scalar_features = self.scalar_layer(scalar)
+#         # combined = torch.cat([x, scalar_features], dim=1)
+#         # logits = self.logits(combined)
+
+#         # attention = self.attention_layer(combined)
+#         # logits = self.logits(attention)
+#         return actor
+
+
+# class Critic(torch.nn.Module):
+#     def __init__(self, input_shape, critic_shape=1, device=torch.device("cuda")):
+#         """
+#         Deep convolutional Neural Network to represent the Critic in an Actor-Critic algorithm
+#         :param input_shape: Shape of each of the observations
+#         :param critic_shape: Shape of the Critic's output. Typically 1
+#         :param device: The torch.device (cpu or cuda) where the inputs and the parameters are to be stored and operated
+#         """
+#         super(Critic, self).__init__()
+#         self.device = device
+#         # input_shape[2] instead of 6
+#         self.layer1 = torch.nn.Sequential(torch.nn.Conv2d(input_shape[2], 32, 8, stride=4, padding=0),
+#                                           torch.nn.ReLU())
+#         self.layer2 = torch.nn.Sequential(torch.nn.Conv2d(32, 64, 3, stride=2, padding=0),
+#                                           torch.nn.ReLU())
+#         self.layer3 = torch.nn.Sequential(torch.nn.Conv2d(64, 64, 3, stride=1, padding=0),
+#                                           torch.nn.ReLU())
+#         self.layer4 = torch.nn.Sequential(torch.nn.Linear(64 * 22 * 22, 512),
+#                                           torch.nn.ReLU())
+#         self.speed_layer1 = torch.nn.Sequential(
+#             torch.nn.Linear(1, 64),
+#             torch.nn.ReLU()
+#             )
+# >>>>>>> main
         
 #         # self.speed_layer2 = torch.nn.Sequential(
 #         #     torch.nn.Linear(64, 64),
