@@ -2,7 +2,7 @@ import torch
 SHOULD_USE_CUDA = 'cuda' if torch.cuda.is_available() else 'cpu'
 
 # Global params
-PORT = 2000  # Port on which the server is running
+PORT = 2010  # Port on which the server is running
 ACTION_TYPE = 'discrete'  # 'discrete' or 'continuous'
 CAMERA_TYPE = 'semantic'  # 'rgb' or 'semantic'
 GAMMA = 0.9  # Discount factor
@@ -19,7 +19,11 @@ SLEEP_BETWEEN_ACTIONS = 0.2  # How many sec sleep between consecutive actions? E
 SHOW_CAM = False  # Vehicle's camera preview
 SERV_RESX = 640  # Server X resolution
 SERV_RESY = 480  # Server Y resolution
-SCENARIO = [8]  # List of scenarios on which the model is trained
+SCENARIO = [5]  # List of scenarios on which the model is trained
+TESTING = False
+SPAWNING_TYPE = 0 # 0 - random, 1 - at the beginning, 2 - in 2 different places one by one
+LOGGING = True
+DRAW = False
 
 """ 
 Specify scenario parameter or spawn_point and terminal_point parameters
@@ -31,6 +35,8 @@ Scenario parameter: {1,2,3,4,5,6,7}
 5) Little straight lane and right turn
 6) Little straight lane and left turn
 7) Straight lane + 2 right turns
+8) Straight + Left + Straight + Right + Straight
+
 
 The whole list of scenarios can be specified with switch_scenario parameter indicating that
 after switch_scenario episodes there will be next scenario from the list

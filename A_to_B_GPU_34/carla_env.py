@@ -32,6 +32,8 @@ from A_to_B_GPU_34.carla_navigation.global_route_planner import GlobalRoutePlann
 from A_to_B_GPU_34.carla_navigation.global_route_planner_dao import GlobalRoutePlannerDAO
 from settings import SHOW_CAM
 from state_observer import StateObserver
+from carla_navigation.local_planner import RoadOption
+
 
 # Global settings
 how_many_steps = settings.STEP_COUNTER
@@ -41,7 +43,15 @@ tp_reward = settings.REWARD_FROM_TP
 serv_resx = settings.SERV_RESX
 serv_resy = settings.SERV_RESY
 port = settings.PORT
+spawning_type = settings.SPAWNING_TYPE
+logging = settings.LOGGING
+draw = settings.DRAW
 
+DECISIONS_DICT = {
+    RoadOption.LEFT: 0,
+    RoadOption.STRAIGHT: 1,
+    RoadOption.RIGHT: 2
+}
 
 
 def start_carla_server(args):
@@ -126,8 +136,8 @@ class CarlaEnv:
         self.transform = carla.Transform(carla.Location(x=2.5, z=0.7))
 
         self.manual_control = manual_control
-        if not manual_control:
-            self.vehicle = self.spawn_car(False)
+        # if not manual_control:
+        #     self.vehicle = self.spawn_car(spawning_type)
 
         # Manages the basic movement of a vehicle using typical driving controls
         self.control = carla.VehicleControl()
@@ -156,6 +166,9 @@ class CarlaEnv:
         self.state_observer = StateObserver()
 
         self.planner = None
+        self.number_of_resets = 0
+        self.car_decisions = []
+     
 
     def create_scenario(self, sp, tp, mp_d):
         if sp and tp:
@@ -182,7 +195,9 @@ class CarlaEnv:
 
         elif self.scenario == 5:
             # Little straight line and right turn
-            self.spawn_point = self.map.get_spawn_points()[11]
+            sp = self.map.get_spawn_points()[11]
+            sp.location.y += 10
+            self.spawn_point = carla.Transform(sp.location, sp.rotation)
 
         elif self.scenario == 6:
             # Little straight line and left turn
@@ -208,33 +223,39 @@ class CarlaEnv:
         :param d: constant
         :return: self.spectator - spectator's exact location and its angles
         """
-        angle = 90  # cos and sin argument
+        # angle = 90  # cos and sin argument
 
-        spectator_coordinates = carla.Location(self.spawn_point_loc.x,
-                                               self.spawn_point_loc.y,
-                                               self.spawn_point_loc.z)
+        # spectator_coordinates = carla.Location(self.spawn_point_loc.x,
+        #                                        self.spawn_point_loc.y,
+        #                                        self.spawn_point_loc.z)
 
-        if self.scenario == 7:
-            spectator_coordinates.x -= 3
-            spectator_coordinates.y += 10
-            spectator_coordinates.z += 50
-            pass
-        else:
-            spectator_coordinates.x += 10
-            spectator_coordinates.y += 10
-            spectator_coordinates.z += 50
+        # if self.scenario == 7:
+        #     spectator_coordinates.x -= 3
+        #     spectator_coordinates.y += 10
+        #     spectator_coordinates.z += 50
+        #     pass
+        # else:
+        #     spectator_coordinates.x += 10
+        #     spectator_coordinates.y += 10
+        #     spectator_coordinates.z += 50
 
-        a = math.radians(angle)
-        location = carla.Location(d * math.cos(a), d * math.sin(a), 2.0) + spectator_coordinates
+        # a = math.radians(angle)
+        # location = carla.Location(d * math.cos(a), d * math.sin(a), 2.0) + spectator_coordinates
 
+        # self.spectator = self.world.get_spectator()
+        # """
+        # yaw - rotating your vision in 2D (left <-, right ->)  
+        # pitch - looking more to the sky or the road 
+        # roll - leaning your vision (e.g. from | to ->)
+        # """
+        # self.spectator.set_transform(carla.Transform(location, carla.Rotation(yaw=-60, pitch=-60, roll=0)))
+
+        # return self.spectator
+        spectator_coordinates = self.spawn_point.location
+        location = spectator_coordinates
+        location.z = location.z + 30
         self.spectator = self.world.get_spectator()
-        """
-        yaw - rotating your vision in 2D (left <-, right ->)  
-        pitch - looking more to the sky or the road 
-        roll - leaning your vision (e.g. from | to ->)
-        """
-        self.spectator.set_transform(carla.Transform(location, carla.Rotation(yaw=-60, pitch=-60, roll=0)))
-
+        self.spectator.set_transform(carla.Transform(location, carla.Rotation(yaw=0, pitch=-90, roll=0)))
         return self.spectator
 
     def plan_the_route(self):
@@ -279,6 +300,10 @@ class CarlaEnv:
         _ = []
         # decisions = [el2 for el1, el2 in self.route]
         # decisions = [decisions[index] for index in range(len(decisions)) if index==0 or decisions[index] != decisions[index-1]]
+        decisions = [el2 for el1, el2 in self.route]
+        decisions = [decisions[index] for index in range(len(decisions)) if (index==0 or decisions[index] != decisions[index-1]) and decisions[index] != RoadOption.LANEFOLLOW]
+        decisions = [DECISIONS_DICT[el] for el in decisions]
+
         for i in range(len(self.route) - 1):
             current_point = self.route[i][0].transform
             next_point = self.route[i + 1][0].transform
@@ -293,11 +318,13 @@ class CarlaEnv:
 
         self.route = _
 
-        self._draw_optimal_route_lines(self.route, draw=False)
+        self._draw_optimal_route_lines(self.route, draw=draw)
+        self.car_decisions = decisions
+
 
         return self.goal_location_trans, self.goal_location_loc, self.route
 
-    def spawn_car(self, randomly=False):
+    def spawn_car(self, spawning_type=1, episode=None):
         """
         Spawn a car
         :return: vehicle
@@ -305,11 +332,17 @@ class CarlaEnv:
 
         tesla = self.blueprint_library.filter('model3')[0]
         tesla.set_attribute('role_name', 'ego')
-        if randomly:
+        if spawning_type==0:
             self.spawn_point = random.choice(self.route)[0].transform
-        else:
-            self.spawn_point.location.x -= 9
-        self.spawn_point.location.z = 2.0 # żeby nie był za nisko
+        elif spawning_type == 1:
+            # self.spawn_point.location.x -= 9
+            pass
+        elif spawning_type==2:
+            if bool(episode%2):
+                self.spawn_point = self.route[0][0].transform
+            else:
+                self.spawn_point = self.route[-120][0].transform
+        self.spawn_point.location.z = 10.0 # żeby nie był za nisko
         
         self.vehicle = self.world.try_spawn_actor(tesla, self.spawn_point)
         self.actor_list.append(self.vehicle)
@@ -379,6 +412,17 @@ class CarlaEnv:
         semantic_cam_bp.set_attribute('image_size_y', f'{self.resY}')
         semantic_cam_bp.set_attribute('fov', '110')
 
+        # new_location = carla.Location(self.transform.location.x, 
+        #                             self.transform.location.y, 
+        #                             self.transform.location.z + 1.0)  # Podniesienie kamery o 1m
+
+        # new_rotation = carla.Rotation(self.transform.rotation.pitch - 15,  # Nachylenie w dół o 15 stopni
+        #                             self.transform.rotation.yaw, 
+        #                             self.transform.rotation.roll)
+
+        # new_transform = carla.Transform(new_location, new_rotation)
+
+        # semantic_cam_sensor = self.world.spawn_actor(semantic_cam_bp, new_transform, attach_to=self.vehicle)
         semantic_cam_sensor = self.world.spawn_actor(semantic_cam_bp, self.transform, attach_to=self.vehicle)
 
         # semantic_cam_sensor.listen(lambda data: self.process_semantic_img(data))
@@ -880,9 +924,10 @@ class CarlaEnv:
             self.scenario = random.choice(self.scenario_list)
             self.create_scenario(self.sp, self.tp, self.middle_goals_density)
 
-        self.set_spectator()
+
         self.plan_the_route()
-        self.spawn_car(False)
+        self.spawn_car(spawning_type, episode)
+        self.set_spectator()
 
         if self.camera_type == 'rgb':
             self.add_rgb_camera()
@@ -912,12 +957,9 @@ class CarlaEnv:
 
         # to render properly path on the road. Otherwise it doesn't shine
         self.step_apply_action(0)
-        self.world.tick()
-        self.world.tick()    
-        self.world.tick()
-        self.world.tick()
-        self.world.tick()
-        self.world.tick()
+        for i in range(15):
+            self.world.tick()
+            
         while not self.image_queue.empty():
             _ = self.image_queue.get()
 
