@@ -32,6 +32,8 @@ from A_to_B_GPU_34.carla_navigation.global_route_planner import GlobalRoutePlann
 from A_to_B_GPU_34.carla_navigation.global_route_planner_dao import GlobalRoutePlannerDAO
 from settings import SHOW_CAM
 from state_observer import StateObserver
+from carla_navigation.local_planner import RoadOption
+
 
 # Global settings
 how_many_steps = settings.STEP_COUNTER
@@ -43,8 +45,13 @@ serv_resy = settings.SERV_RESY
 port = settings.PORT
 spawning_type = settings.SPAWNING_TYPE
 logging = settings.LOGGING
+draw = settings.DRAW
 
-
+DECISIONS_DICT = {
+    RoadOption.LEFT: 0,
+    RoadOption.STRAIGHT: 1,
+    RoadOption.RIGHT: 2
+}
 
 
 def start_carla_server(args):
@@ -160,6 +167,8 @@ class CarlaEnv:
 
         self.planner = None
         self.number_of_resets = 0
+        self.car_decisions = []
+     
 
     def create_scenario(self, sp, tp, mp_d):
         if sp and tp:
@@ -186,7 +195,9 @@ class CarlaEnv:
 
         elif self.scenario == 5:
             # Little straight line and right turn
-            self.spawn_point = self.map.get_spawn_points()[11]
+            sp = self.map.get_spawn_points()[11]
+            sp.location.y += 10
+            self.spawn_point = carla.Transform(sp.location, sp.rotation)
 
         elif self.scenario == 6:
             # Little straight line and left turn
@@ -289,6 +300,10 @@ class CarlaEnv:
         _ = []
         # decisions = [el2 for el1, el2 in self.route]
         # decisions = [decisions[index] for index in range(len(decisions)) if index==0 or decisions[index] != decisions[index-1]]
+        decisions = [el2 for el1, el2 in self.route]
+        decisions = [decisions[index] for index in range(len(decisions)) if (index==0 or decisions[index] != decisions[index-1]) and decisions[index] != RoadOption.LANEFOLLOW]
+        decisions = [DECISIONS_DICT[el] for el in decisions]
+
         for i in range(len(self.route) - 1):
             current_point = self.route[i][0].transform
             next_point = self.route[i + 1][0].transform
@@ -303,7 +318,9 @@ class CarlaEnv:
 
         self.route = _
 
-        self._draw_optimal_route_lines(self.route, draw=False)
+        self._draw_optimal_route_lines(self.route, draw=draw)
+        self.car_decisions = decisions
+
 
         return self.goal_location_trans, self.goal_location_loc, self.route
 
@@ -318,7 +335,8 @@ class CarlaEnv:
         if spawning_type==0:
             self.spawn_point = random.choice(self.route)[0].transform
         elif spawning_type == 1:
-            self.spawn_point.location.x -= 9
+            # self.spawn_point.location.x -= 9
+            pass
         elif spawning_type==2:
             if bool(episode%2):
                 self.spawn_point = self.route[0][0].transform
@@ -939,12 +957,9 @@ class CarlaEnv:
 
         # to render properly path on the road. Otherwise it doesn't shine
         self.step_apply_action(0)
-        self.world.tick()
-        self.world.tick()    
-        self.world.tick()
-        self.world.tick()
-        self.world.tick()
-        self.world.tick()
+        for i in range(15):
+            self.world.tick()
+            
         while not self.image_queue.empty():
             _ = self.image_queue.get()
 
