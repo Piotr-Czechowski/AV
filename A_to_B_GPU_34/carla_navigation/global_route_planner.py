@@ -203,6 +203,9 @@ class GlobalRoutePlanner(object):
                 if left_found and right_found:
                     break
 
+
+
+
     def _distance_heuristic(self, n1, n2):
         """
         Distance heuristic calculator for path searching
@@ -342,10 +345,57 @@ class GlobalRoutePlanner(object):
 
         return closest_index
 
+    # def trace_route(self, origin, destination):
+    #     """
+    #     This method returns list of (carla.Waypoint, RoadOption)
+    #     from origin to destination
+    #     """
+
+    #     route_trace = []
+    #     route = self._path_search(origin, destination)
+    #     current_waypoint = self._dao.get_waypoint(origin)
+    #     destination_waypoint = self._dao.get_waypoint(destination)
+    #     resolution = self._dao.get_resolution()
+
+    #     for i in range(len(route) - 1):
+    #         road_option = self._turn_decision(i, route)
+    #         edge = self._graph.edges[route[i], route[i+1]]
+    #         path = []
+
+    #         if edge['type'] != RoadOption.LANEFOLLOW and edge['type'] != RoadOption.VOID:
+    #             route_trace.append((current_waypoint, road_option))
+    #             exit_wp = edge['exit_waypoint']
+    #             n1, n2 = self._road_id_to_edge[exit_wp.road_id][exit_wp.section_id][exit_wp.lane_id]
+    #             next_edge = self._graph.edges[n1, n2]
+    #             if next_edge['path']:
+    #                 closest_index = self._find_closest_in_list(current_waypoint, next_edge['path'])
+    #                 closest_index = min(len(next_edge['path'])-1, closest_index+5)
+    #                 current_waypoint = next_edge['path'][closest_index]
+    #             else:
+    #                 current_waypoint = next_edge['exit_waypoint']
+    #             route_trace.append((current_waypoint, road_option))
+
+    #         else:
+    #             path = path + [edge['entry_waypoint']] + edge['path'] + [edge['exit_waypoint']]
+    #             closest_index = self._find_closest_in_list(current_waypoint, path)
+    #             for waypoint in path[closest_index:]:
+    #                 current_waypoint = waypoint
+    #                 route_trace.append((current_waypoint, road_option))
+    #                 if len(route)-i <= 2 and waypoint.transform.location.distance(destination) < 2*resolution:
+    #                     break
+    #                 elif len(route)-i <= 2 and current_waypoint.road_id == destination_waypoint.road_id and current_waypoint.section_id == destination_waypoint.section_id and current_waypoint.lane_id == destination_waypoint.lane_id:
+    #                     destination_index = self._find_closest_in_list(destination_waypoint, path)
+    #                     if closest_index > destination_index:
+    #                         break
+
+    #     return route_trace
+
+    
     def trace_route(self, origin, destination):
         """
         This method returns list of (carla.Waypoint, RoadOption)
-        from origin to destination
+        from origin to destination. Ensures vehicle starts on original lane,
+        and inserts lane change maneuvers 3 meters before required change.
         """
 
         route_trace = []
@@ -354,38 +404,79 @@ class GlobalRoutePlanner(object):
         destination_waypoint = self._dao.get_waypoint(destination)
         resolution = self._dao.get_resolution()
 
-        for i in range(len(route) - 1):
+        last_lane_change_wp = None
+
+        initial_path = [current_waypoint]
+        next_waypoints = current_waypoint.next_until_lane_end(resolution)
+        if next_waypoints:
+            initial_path.extend(next_waypoints)
+
+        for wp in initial_path:
+            route_trace.append((wp, RoadOption.LANEFOLLOW))
+            current_waypoint = wp
+
+        for i in range(1, len(route) - 1):
+            edge = self._graph.edges[route[i], route[i + 1]]
             road_option = self._turn_decision(i, route)
-            edge = self._graph.edges[route[i], route[i+1]]
-            path = []
+            path = [edge['entry_waypoint']] + edge['path'] + [edge['exit_waypoint']]
+            closest_index = self._find_closest_in_list(current_waypoint, path)
 
-            if edge['type'] != RoadOption.LANEFOLLOW and edge['type'] != RoadOption.VOID:
-                route_trace.append((current_waypoint, road_option))
-                exit_wp = edge['exit_waypoint']
-                n1, n2 = self._road_id_to_edge[exit_wp.road_id][exit_wp.section_id][exit_wp.lane_id]
-                next_edge = self._graph.edges[n1, n2]
-                if next_edge['path']:
-                    closest_index = self._find_closest_in_list(current_waypoint, next_edge['path'])
-                    closest_index = min(len(next_edge['path'])-1, closest_index+5)
-                    current_waypoint = next_edge['path'][closest_index]
-                else:
-                    current_waypoint = next_edge['exit_waypoint']
+            lane_change_needed = False
+            change_direction = None
+            this_wp = edge['exit_waypoint']
+            if i + 1 < len(route) - 1:
+                next_wp = self._graph.edges[route[i + 1], route[i + 2]]['exit_waypoint']
+                if this_wp.road_id == next_wp.road_id and this_wp.section_id == next_wp.section_id:
+                    lane_diff = next_wp.lane_id - this_wp.lane_id
+                    if lane_diff == 1:
+                        lane_change_needed = True
+                        change_direction = RoadOption.CHANGELANERIGHT
+                    elif lane_diff == -1:
+                        lane_change_needed = True
+                        change_direction = RoadOption.CHANGELANELEFT
+
+            j = 0
+            while j < len(path[closest_index:]):
+                waypoint = path[closest_index + j]
+                current_waypoint = waypoint
+
+                if lane_change_needed:
+                    dist_to_exit = waypoint.transform.location.distance(edge['exit_waypoint'].transform.location)
+                    if dist_to_exit <= 3.0 and (last_lane_change_wp != waypoint):
+                        route_trace.append((current_waypoint, change_direction))
+                        last_lane_change_wp = waypoint
+                        lane_change_needed = False
+                        j += 1
+                        continue
+
                 route_trace.append((current_waypoint, road_option))
 
-            else:
-                path = path + [edge['entry_waypoint']] + edge['path'] + [edge['exit_waypoint']]
-                closest_index = self._find_closest_in_list(current_waypoint, path)
-                for waypoint in path[closest_index:]:
-                    current_waypoint = waypoint
-                    route_trace.append((current_waypoint, road_option))
-                    if len(route)-i <= 2 and waypoint.transform.location.distance(destination) < 2*resolution:
+                if len(route) - i <= 2 and waypoint.transform.location.distance(destination) < 2 * resolution:
+                    break
+                elif len(route) - i <= 2 and current_waypoint.road_id == destination_waypoint.road_id and \
+                        current_waypoint.section_id == destination_waypoint.section_id and \
+                        current_waypoint.lane_id == destination_waypoint.lane_id:
+                    destination_index = self._find_closest_in_list(destination_waypoint, path)
+                    if closest_index > destination_index:
                         break
-                    elif len(route)-i <= 2 and current_waypoint.road_id == destination_waypoint.road_id and current_waypoint.section_id == destination_waypoint.section_id and current_waypoint.lane_id == destination_waypoint.lane_id:
-                        destination_index = self._find_closest_in_list(destination_waypoint, path)
-                        if closest_index > destination_index:
-                            break
+
+                j += 1
+
+        # Usuń dwa kolejne waypointy, gdzie następuje zmiana lane_id oraz dwa przed i dwa po
+        lane_ids = [wp[0].lane_id for wp in route_trace]
+        change_idx = None
+        for idx in range(1, len(lane_ids)):
+            if lane_ids[idx] != lane_ids[idx - 1]:
+                change_idx = idx
+                break
+
+        if change_idx is not None:
+            start_idx = max(0, change_idx - 3)
+            end_idx = min(len(route_trace), change_idx + 4)
+            route_trace = route_trace[:start_idx] + route_trace[end_idx:]
 
         return route_trace
+
     
     def on_junction(self, v_location):
         left_junction =False

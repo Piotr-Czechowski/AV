@@ -53,6 +53,15 @@ DECISIONS_DICT = {
     RoadOption.RIGHT: 2
 }
 
+MAP_POINTS_SC10 = [(50, 203.913498, 0.275307),
+              (100, 203.788742, 1.3),
+              (-55.387177, 0.558450, 0.0),
+              (-105.387177, -3.140184, 0.0),
+              (74, -40, 1.0),
+              (-6.5, -44, 0.0)]
+
+MAP_POINTS_SC11 = [ (14,(-55.387177, 0.558450, 0.0)),
+                    (14,(-105.387177, -3.140184, 0.0)),]
 
 def start_carla_server(args):
     return subprocess.Popen(f'CarlaUE4.exe ' + args, cwd=settings.CARLA_PATH, shell=True)
@@ -168,13 +177,15 @@ class CarlaEnv:
         self.planner = None
         self.number_of_resets = 0
         self.car_decisions = []
+        self.spawn_points_index = 0
+        self.goal_points_index = 0
      
 
     def create_scenario(self, sp, tp, mp_d):
+
         if sp and tp:
             # Usage of spawn_point and terminal_point
             self.spawn_point = self.map.get_spawn_points()[sp]
-            self.goal_point = tp  # Agent destination
 
         elif self.scenario in [1, 2]:
             # Straight short line - 1
@@ -211,6 +222,20 @@ class CarlaEnv:
             self.spawn_point = self.map.get_spawn_points()[130]
             # self.spawn_point = carla.Transform(sp.location, sp.rotation)
             self.goal_point = 122
+
+        elif self.scenario == 10:
+            self.spawn_points_index = random.randint(0,30)
+            sp = self.map.get_spawn_points()[self.spawn_points_index]
+            self.spawn_point = carla.Transform(sp.location, sp.rotation)
+
+        elif self.scenario == 11:
+            try:
+                self.goal_points_index = random.randint(0,len(MAP_POINTS_SC11)-1)
+                sp_number = MAP_POINTS_SC11[self.goal_points_index][0]
+                sp = self.map.get_spawn_points()[sp_number]
+                self.spawn_point = carla.Transform(sp.location, sp.rotation)
+            except TypeError:
+                print(3)
         else:
             self.log.err(f"Invalid params: scenario: {self.scenario} or sp: {sp}, tp:{tp},"
                          f" mp_d:{mp_d}")
@@ -288,6 +313,17 @@ class CarlaEnv:
         elif self.scenario == 8:
             self.goal_location_loc = carla.Location(x=74, y=-40, z=1.0)
             self.goal_location_trans = carla.Transform(self.goal_location_loc)
+        elif self.scenario == 10:
+            self.goal_points_index = random.randint(0,len(MAP_POINTS_SC10)-1)
+            x, y, z = MAP_POINTS_SC10[self.goal_points_index]
+            self.goal_location_loc = carla.Location(x=x, y=y, z=z)
+            self.goal_location_trans = carla.Transform(self.goal_location_loc)
+        elif self.scenario == 11:
+            x, y, z = MAP_POINTS_SC11[self.goal_points_index][1]
+            self.goal_location_loc = carla.Location(x=x, y=y, z=z)
+            self.goal_location_trans = carla.Transform(self.goal_location_loc)
+
+        
         else:
             # self.goal_location_loc = way_points[self.goal_point].transform.location
             # self.goal_location_trans = way_points[self.goal_point].transform
@@ -301,7 +337,7 @@ class CarlaEnv:
         # decisions = [el2 for el1, el2 in self.route]
         # decisions = [decisions[index] for index in range(len(decisions)) if index==0 or decisions[index] != decisions[index-1]]
         decisions = [el2 for el1, el2 in self.route]
-        decisions = [decisions[index] for index in range(len(decisions)) if (index==0 or decisions[index] != decisions[index-1]) and decisions[index] != RoadOption.LANEFOLLOW]
+        decisions = [decisions[index] for index in range(len(decisions)) if (index==0 or decisions[index] != decisions[index-1]) and decisions[index] != RoadOption.LANEFOLLOW and decisions[index] != RoadOption.CHANGELANELEFT and decisions[index] != RoadOption.CHANGELANERIGHT]
         decisions = [DECISIONS_DICT[el] for el in decisions]
 
         for i in range(len(self.route) - 1):
@@ -320,6 +356,8 @@ class CarlaEnv:
 
         self._draw_optimal_route_lines(self.route, draw=draw)
         self.car_decisions = decisions
+        self.car_decisions.append(1)
+        print(f"Manouvers to make in this episode: {self.car_decisions}")
 
 
         return self.goal_location_trans, self.goal_location_loc, self.route
@@ -592,6 +630,7 @@ class CarlaEnv:
         # Add terminal point
         self.middle_goals.append(self.goal_location_trans)
 
+        # Do not need middle points anymore
         if draw:
             self.world.debug.draw_line(route[-1][0].transform.location, self.middle_goals[-1].location,
                                        thickness=0.3, color=carla.Color(0, 0, 255), life_time=-1)
@@ -646,8 +685,8 @@ class CarlaEnv:
 
         # Draw middle points
         for middle_goal in self.middle_goals:
-            if draw:
-                self.world.debug.draw_point(middle_goal.location, size=0.15, life_time=-1)
+            # if draw:
+            #     self.world.debug.draw_point(middle_goal.location, size=0.15, life_time=-1)
             # Static reward for mp
             # Add each middle point with counter 0 which indicates if middle point has already given a reward
             self.stat_reward_mp.append([middle_goal.location, 0])

@@ -369,12 +369,12 @@ def handle_crash(results_queue):
         # agent.environment.settings.max_substep_delta_time = 0.01
         # agent.environment.settings.max_substeps = 10
         # agent.environment.world.apply_settings(agent.environment.settings)
-        if agent.episode % 2 == 0:
-            agent.environment.scenario = [5]
-            agent.environment.scenario_list = [5]
-        else:
-            agent.environment.scenario = [6]
-            agent.environment.scenario_list = [6]
+        # if agent.episode % 2 == 0:
+        #     agent.environment.scenario = [5]
+        #     agent.environment.scenario_list = [5]
+        # else:
+        #     agent.environment.scenario = [6]
+        #     agent.environment.scenario_list = [6]
 
         save_image = True if agent.episode in episodes_to_save_images else False
         
@@ -422,7 +422,7 @@ def handle_crash(results_queue):
                     manouver = 1
                 manouver_tensor = torch.tensor([manouver]).to(device)
 
-            print(f"CAR DECISION ON THE NEAREST JUNCTION: {manouver}")
+            # print(f"CAR DECISION ON THE NEAREST JUNCTION: {manouver}")
 
             # action = agent.get_action(state_rgb)
             # action = agent.get_action(state_rgb, speed_tensor, testing)
