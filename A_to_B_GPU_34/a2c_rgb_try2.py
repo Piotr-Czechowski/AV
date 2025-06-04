@@ -338,7 +338,7 @@ def handle_crash(results_queue):
         "learning_rate": lr
         }
         )
-        wandb.run.notes = "Image. Nowy model (nie ten z blokami rezydualnymi), z predkoscia oraz manewrem na wejsciu. Na przemian skret w lewo i w prawo. Slight turns like:  9: [0, 1, 0.2], #brake slight right. Gradients logged. Stara funkcja nagrody. \n    " \
+        wandb.run.notes = "Img+speed+manouver. speed/100.Nowy model (nie ten z blokami rezydualnymi), z predkoscia oraz manewrem na wejsciu. Scenariusz 10 - randomowa trasa w kazdym epizodzie. Slight turns like:  9: [0, 1, 0.2], #brake slight right. Gradients logged. Stara funkcja nagrody. \n    " \
         "speed_reward = -1.2 + speed/3" \
         "if route_distance < 1:" \
         "   route_distance_reward = 1" \
@@ -372,12 +372,12 @@ def handle_crash(results_queue):
         # agent.environment.settings.max_substep_delta_time = 0.01
         # agent.environment.settings.max_substeps = 10
         # agent.environment.world.apply_settings(agent.environment.settings)
-        if agent.episode % 2 == 0:
-            agent.environment.scenario = [5]
-            agent.environment.scenario_list = [5]
-        else:
-            agent.environment.scenario = [6]
-            agent.environment.scenario_list = [6]
+        # if agent.episode % 2 == 0:
+        #     agent.environment.scenario = [5]
+        #     agent.environment.scenario_list = [5]
+        # else:
+        #     agent.environment.scenario = [6]
+        #     agent.environment.scenario_list = [6]
 
         save_image = True if agent.episode in episodes_to_save_images else False
         
@@ -425,7 +425,7 @@ def handle_crash(results_queue):
                     manouver = 1
                 manouver_tensor = torch.tensor([manouver]).to(device)
 
-            print(f"CAR DECISION ON THE NEAREST JUNCTION: {manouver}")
+            # print(f"CAR DECISION ON THE NEAREST JUNCTION: {manouver}")
 
             # action = agent.get_action(state_rgb)
             # action = agent.get_action(state_rgb, speed_tensor, testing)
@@ -458,7 +458,7 @@ def handle_crash(results_queue):
             if logging:
                 wandb.log({"step_reward": reward})
             new_state = new_state / 255.0  # resize the tensor to [0, 1]
-            speed_tensor = speed_tensor / 50.0
+            speed_tensor = speed_tensor / 100.0
             agent.rewards.append(reward)
             ep_reward += reward
             step_num += 1
