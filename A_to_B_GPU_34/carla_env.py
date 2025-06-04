@@ -47,6 +47,9 @@ spawning_type = settings.SPAWNING_TYPE
 logging = settings.LOGGING
 draw = settings.DRAW
 
+MAX_ATTEMPTS = 10
+WAIT_TIME = 0.5  # sekundy
+
 DECISIONS_DICT = {
     RoadOption.LEFT: 0,
     RoadOption.STRAIGHT: 1,
@@ -380,9 +383,17 @@ class CarlaEnv:
                 self.spawn_point = self.route[0][0].transform
             else:
                 self.spawn_point = self.route[-120][0].transform
-        self.spawn_point.location.z = 10.0 # żeby nie był za nisko
+        self.spawn_point.location.z = 20.0 # żeby nie był za nisko
         
-        self.vehicle = self.world.try_spawn_actor(tesla, self.spawn_point)
+        for attempt in range(MAX_ATTEMPTS):
+            self.vehicle = self.world.try_spawn_actor(tesla, self.spawn_point)
+            if self.vehicle is not None:
+                print(f"Pojazd zespawnowany w próbie {attempt + 1}")
+                break
+            time.sleep(WAIT_TIME)
+        else:
+            raise RuntimeError("Nie udało się zespawnować pojazdu po kilku próbach.")
+
         self.actor_list.append(self.vehicle)
 
         return self.vehicle
