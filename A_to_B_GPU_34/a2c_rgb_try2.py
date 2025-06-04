@@ -12,7 +12,6 @@ import pdb
 import time
 import numpy as np
 import os
-import os
 
 from collections import namedtuple
 import torch
@@ -53,8 +52,8 @@ port = settings.PORT
 action_type = settings.ACTION_TYPE
 camera_type = settings.CAMERA_TYPE
 load_model = settings.LOAD_MODEL
-model_incr_load = 'A_to_B_GPU_34/PC_models/currently_trained/synchr_200_semantic_camera_7_15_img_rand_speed_manouver.pth'
-model_incr_save = 'A_to_B_GPU_34/PC_models/currently_trained/synchr_200_semantic_camera_7_15_img_rand_speed_manouver'
+model_incr_load = 'A_to_B_GPU_34/PC_models/currently_trained/synchr_200_semantic_camera_7_15_img_manouver_1_1_0.pth'
+model_incr_save = 'A_to_B_GPU_34/PC_models/currently_trained/synchr_200_semantic_camera_7_15_img_manouver_1_1_0'
 
 gamma = settings.GAMMA
 lr = settings.LR
@@ -286,6 +285,8 @@ class DeepActorCriticAgent(mp.Process):
     
     def save(self, name):
         model_file_name = name + ".pth"
+        if logging:
+            print(f'Model to save name {model_file_name}')
         self_state = {"actor": self.actor.state_dict(),
                        "actor_optimizer": self.actor_optimizer.state_dict(),
                        "critic": self.critic.state_dict(),
@@ -294,8 +295,9 @@ class DeepActorCriticAgent(mp.Process):
                        "best_reward": self.best_reward,
                        "episode": self.episode,
                        "mean_reward": self.mean_reward}
+        if logging:
+            print(f'Model path exists {os.path.exists(model_file_name)} model up dir exists {os.path.exists("/".join(model_file_name.split("/")[:-1]))}')
         torch.save(self_state, model_file_name)
-        # print("self's state is saved to", model_file_name)
 
     def load(self, name):
         model_file_name = name
@@ -322,16 +324,17 @@ class DeepActorCriticAgent(mp.Process):
         
 def handle_crash(results_queue):
     if logging:
+        print('Beginngin Weights and Biases initialization')
         wandb.init(
         # set the ##wandb project where this run will be logged
         project="A_to_B",
         # create or extend already logged run:
         resume="allow",
-        id="synchr_200_semantic_camera_7_15_img_rand_speed_manouver",  
+        id="synchr_200_semantic_camera_7_15_img_manouver_1_1_0",
 
         # track hyperparameters and run metadata
         config={
-        "name" : "synchr_200_semantic_camera_7",
+        "name" : "synchr_200_semantic_camera_7_15_img_manouver_1_1_0",
         "learning_rate": lr
         }
         )
@@ -428,6 +431,7 @@ def handle_crash(results_queue):
             # action = agent.get_action(state_rgb, speed_tensor, testing)
             action = agent.get_action(state_rgb, speed_tensor, manouver_tensor, testing)
 
+            print(f'Saving image, {save_image}')
             if save_image:
                 agent.environment.state_observer.action = action # To print action on the frame
                 agent.environment.state_observer.step = episode_step # To print action on the frame
@@ -435,7 +439,6 @@ def handle_crash(results_queue):
                 agent.environment.state_observer.save_to_disk()
                 agent.environment.state_observer.draw_related_values()
                 agent.environment.state_observer.save_together()
-
 
             if agent.action_type == 'discrete':
                 actions_counter[ac.ACTIONS_NAMES[agent.environment.action_space[action]]] += 1
@@ -475,11 +478,12 @@ def handle_crash(results_queue):
 
         episode_rewards.append(ep_reward)
         agent.mean_reward = (agent.mean_reward * (min(100, agent.episode)-1) + ep_reward)/min(100, agent.episode) #mean reward from last 100 episodes
-        
         if ep_reward > agent.best_reward:
             agent.best_reward = ep_reward
         agent.save(model_incr_save)
         if logging:
+            print('Logging values of episode steps, episode duration [s], reward, episode, mean_reward etc.')
+            # print(f'{datetime.now().strftime('%Y %B %d | %H:%M')}  Logging values of episode steps, episode duration [s], reward, episode, mean_reward etc.')
             wandb.log({"episode steps": episode_step, "episode duration [s]": episode_time.seconds,"reward": ep_reward, "episode": agent.episode, "mean_reward": agent.mean_reward, "max_speed": max_speed, "distance_from_goal": distance_from_goal})
 
         # print("Episode: {} \t ep_reward:{} \t mean_ep_rew:{}\t best_ep_reward:{} max_speed: {} distance_from_goal: {}".format(agent.episode,

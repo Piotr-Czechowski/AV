@@ -400,6 +400,10 @@ import torch
 #         logits = self.fc(x)
 #         return logits
 
+
+
+
+
 ########################################### TEN CO WYZEJ ALE Z PREDKOSCIA
 import torch
 import torch.nn as nn

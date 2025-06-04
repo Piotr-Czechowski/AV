@@ -28,8 +28,8 @@ import subprocess
 import cv2
 
 from utils import reward_function
-from A_to_B_GPU_34.carla_navigation.global_route_planner import GlobalRoutePlanner
-from A_to_B_GPU_34.carla_navigation.global_route_planner_dao import GlobalRoutePlannerDAO
+from carla_navigation.global_route_planner import GlobalRoutePlanner
+from carla_navigation.global_route_planner_dao import GlobalRoutePlannerDAO
 from settings import SHOW_CAM
 from state_observer import StateObserver
 from carla_navigation.local_planner import RoadOption
@@ -195,13 +195,13 @@ class CarlaEnv:
 
         elif self.scenario == 5:
             # Little straight line and right turn
-            sp = self.map.get_spawn_points()[11]
+            sp = self.map.get_spawn_points()[13]
             sp.location.y += 10
             self.spawn_point = carla.Transform(sp.location, sp.rotation)
 
         elif self.scenario == 6:
             # Little straight line and left turn
-            sp = self.map.get_spawn_points()[12]
+            sp = self.map.get_spawn_points()[14]
             # sp.location.y -= 20
             self.spawn_point = carla.Transform(sp.location, sp.rotation)
 
