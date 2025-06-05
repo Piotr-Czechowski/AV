@@ -443,7 +443,7 @@ class DiscreteActor(nn.Module):
         
         # Łączymy wyjście z CNN (flattenowane do 256*4*4) z przetworzoną prędkością (32)
         self.fc = nn.Sequential(
-            nn.Linear(256 * 4 * 4 + 32 + 32, 512),  # dodajemy +32 z manewru
+            nn.Linear(256 * 4 * 4 + 32, 512),  # dodajemy +32 z manewru
             nn.ReLU(),
             nn.Dropout(0.3),
             nn.Linear(512, actor_shape)
@@ -516,7 +516,7 @@ class Critic(nn.Module):
         # )
         # Łączymy wyjście z CNN z informacją o prędkości.
         self.fc = nn.Sequential(
-            nn.Linear(256 * 4 * 4 + 32 + 32, 512),  # dodajemy +32 z manewru
+            nn.Linear(256 * 4 * 4 + 32, 512),  # dodajemy +32 z manewru
             nn.ReLU(),
             nn.Dropout(0.3),
             nn.Linear(512, actor_shape)
