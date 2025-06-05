@@ -162,11 +162,11 @@ class DeepActorCriticAgent(mp.Process):
         return action.cpu().numpy().squeeze(0)  # Convert to numpy ndarray, squeeze and remove the batch dimension
 
     # def get_action(self, obs, speed, manouver):
-    # def get_action(self, obs, speed, testing=False):
-    def get_action(self, obs, speed, manouver, testing=False):
+    def get_action(self, obs, speed, testing=False):
+    # def get_action(self, obs, speed, manouver, testing=False):
 
-        action_distribution = self.policy(obs, speed, manouver)  # Call to self.policy(obs) also populates self.value with V(obs)
-        # action_distribution = self.policy(obs, speed)  # Call to self.policy(obs) also populates self.value with V(obs)
+        # action_distribution = self.policy(obs, speed, manouver)  # Call to self.policy(obs) also populates self.value with V(obs)
+        action_distribution = self.policy(obs, speed)  # Call to self.policy(obs) also populates self.value with V(obs)
         if testing:
             action = action_distribution.probs.argmax(dim=-1)
         else:
@@ -179,17 +179,17 @@ class DeepActorCriticAgent(mp.Process):
         self.trajectory.append(Transition(obs, self.value, action, log_prob_a))  # Construct the trajectory
         return action
 
-    def discrete_policy(self, obs, speed, manouver):
-    # def discrete_policy(self, obs, speed):
+    # def discrete_policy(self, obs, speed, manouver):
+    def discrete_policy(self, obs, speed):
         """
         Calculates a discrete/categorical distribution over actions given observations
         :param obs: self's observation
         :return: policy, a distribution over actions for the given observation
         """
-        logits = self.actor(obs, speed, manouver)
-        value = self.critic(obs, speed, manouver)
-        # logits = self.actor(obs, speed)
-        # value = self.critic(obs, speed)
+        # logits = self.actor(obs, speed, manouver)
+        # value = self.critic(obs, speed, manouver)
+        logits = self.actor(obs, speed)
+        value = self.critic(obs, speed)
         self.logits = logits.to(torch.device("cuda"))
         self.value = value.to(torch.device("cuda"))
         """
@@ -200,8 +200,8 @@ class DeepActorCriticAgent(mp.Process):
         self.action_distribution = Categorical(logits=self.logits)
         return self.action_distribution
 
-    def calculate_n_step_return(self, n_step_rewards, final_state, done, gamma, final_speed, manouver):
-    # def calculate_n_step_return(self, n_step_rewards, final_state, done, gamma, final_speed):
+    # def calculate_n_step_return(self, n_step_rewards, final_state, done, gamma, final_speed, manouver):
+    def calculate_n_step_return(self, n_step_rewards, final_state, done, gamma, final_speed):
 
         """A_to_B_GPU_34/PC_models/currently_trained/synchr_sc3_30_start_sc_3.pth
         Calculates the n-step return for each state in the input-trajectory/n_step_transitions
@@ -212,8 +212,8 @@ class DeepActorCriticAgent(mp.Process):
         """
         g_t_n_s = []
         with torch.no_grad():
-            g_t_n = torch.tensor([[0]]).float().to(device) if done else self.critic(final_state, final_speed, manouver)
-            # g_t_n = torch.tensor([[0]]).float().to(device) if done else self.critic(final_state, final_speed)
+            # g_t_n = torch.tensor([[0]]).float().to(device) if done else self.critic(final_state, final_speed, manouver)
+            g_t_n = torch.tensor([[0]]).float().to(device) if done else self.critic(final_state, final_speed)
             for r_t in n_step_rewards[::-1]:  # Reverse order; From r_tpn to r_t
                 g_t_n = torch.tensor(r_t).float() + gamma * g_t_n
                 g_t_n_s.insert(0, g_t_n)  # n-step returns inserted to the left to maintain correct index order
@@ -248,11 +248,11 @@ class DeepActorCriticAgent(mp.Process):
 
         return actor_loss, critic_loss
 
-    def optimize(self, final_state_rgb, done, final_speed, manouver):
-    # def optimize(self, final_state_rgb, done, final_speed):
+    # def optimize(self, final_state_rgb, done, final_speed, manouver):
+    def optimize(self, final_state_rgb, done, final_speed):
 
-        td_targets = self.calculate_n_step_return(self.rewards, final_state_rgb, done, self.gamma, final_speed, manouver)
-        # td_targets = self.calculate_n_step_return(self.rewards, final_state_rgb, done, self.gamma, final_speed)
+        # td_targets = self.calculate_n_step_return(self.rewards, final_state_rgb, done, self.gamma, final_speed, manouver)
+        td_targets = self.calculate_n_step_return(self.rewards, final_state_rgb, done, self.gamma, final_speed)
 
         actor_loss, critic_loss = self.calculate_loss(self.trajectory, td_targets)
         if logging:
