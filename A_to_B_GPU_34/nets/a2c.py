@@ -436,10 +436,10 @@ class DiscreteActor(nn.Module):
             nn.ReLU()
         )
 
-        self.manouver_fc = nn.Sequential(
-            nn.Linear(3, 32),  # zakładamy 4 możliwe manewry
-            nn.ReLU()
-        )
+        # self.manouver_fc = nn.Sequential(
+        #     nn.Linear(3, 32),  # zakładamy 4 możliwe manewry
+        #     nn.ReLU()
+        # )
         
         # Łączymy wyjście z CNN (flattenowane do 256*4*4) z przetworzoną prędkością (32)
         self.fc = nn.Sequential(
@@ -465,12 +465,12 @@ class DiscreteActor(nn.Module):
         
         speed_features = self.speed_fc(speed)
 
-        manouver = F.one_hot(manouver, num_classes=3).float().to(self.device)
-        manouver_features = self.manouver_fc(manouver)
+        # manouver = F.one_hot(manouver, num_classes=3).float().to(self.device)
+        # manouver_features = self.manouver_fc(manouver)
         
         # Łączenie cech obrazu z cechami prędkości
-        # combined = torch.cat([cnn_features, speed_features], dim=1)
-        combined = torch.cat([cnn_features, speed_features, manouver_features], dim=1)
+        combined = torch.cat([cnn_features, speed_features], dim=1)
+        # combined = torch.cat([cnn_features, speed_features, manouver_features], dim=1)
 
         logits = self.fc(combined)
         return logits
@@ -510,10 +510,10 @@ class Critic(nn.Module):
             nn.ReLU()
         )
 
-        self.manouver_fc = nn.Sequential(
-            nn.Linear(3, 32),  # zakładamy 4 możliwe manewry
-            nn.ReLU()
-        )
+        # self.manouver_fc = nn.Sequential(
+        #     nn.Linear(3, 32),  # zakładamy 4 możliwe manewry
+        #     nn.ReLU()
+        # )
         # Łączymy wyjście z CNN z informacją o prędkości.
         self.fc = nn.Sequential(
             nn.Linear(256 * 4 * 4 + 32 + 32, 512),  # dodajemy +32 z manewru
@@ -537,12 +537,12 @@ class Critic(nn.Module):
                 speed = speed.unsqueeze(1)
         
         speed_features = self.speed_fc(speed)
-        manouver = F.one_hot(manouver, num_classes=3).float().to(self.device)
-        manouver_features = self.manouver_fc(manouver)  
+        # manouver = F.one_hot(manouver, num_classes=3).float().to(self.device)
+        # manouver_features = self.manouver_fc(manouver)  
         
         # Połączenie cech obrazu z cechami prędkości
-        # combined = torch.cat([cnn_features, speed_features], dim=1)
-        combined = torch.cat([cnn_features, speed_features, manouver_features], dim=1)
+        combined = torch.cat([cnn_features, speed_features], dim=1)
+        # combined = torch.cat([cnn_features, speed_features, manouver_features], dim=1)
 
         logits = self.fc(combined)
         return logits
