@@ -12,7 +12,8 @@ import pdb
 import time
 import numpy as np
 import os
-import os
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+import gc
 
 from collections import namedtuple
 import torch
@@ -53,8 +54,8 @@ port = settings.PORT
 action_type = settings.ACTION_TYPE
 camera_type = settings.CAMERA_TYPE
 load_model = settings.LOAD_MODEL
-model_incr_load = 'A_to_B_GPU_34/PC_models/currently_trained/synchr_200_semantic_camera_7_14_img_rand_speed_2.pth'
-model_incr_save = 'A_to_B_GPU_34/PC_models/currently_trained/synchr_200_semantic_camera_7_14_img_rand_speed_2'
+model_incr_load = 'A_to_B_GPU_34/PC_models/currently_trained/synchr_200_semantic_camera_7_14_img_rand_speed_3.pth'
+model_incr_save = 'A_to_B_GPU_34/PC_models/currently_trained/synchr_200_semantic_camera_7_14_img_rand_speed_3'
 
 gamma = settings.GAMMA
 lr = settings.LR
@@ -164,9 +165,10 @@ class DeepActorCriticAgent(mp.Process):
     # def get_action(self, obs, speed, manouver):
     def get_action(self, obs, speed, testing=False):
     # def get_action(self, obs, speed, manouver, testing=False):
-
+        with torch.no_grad():
         # action_distribution = self.policy(obs, speed, manouver)  # Call to self.policy(obs) also populates self.value with V(obs)
-        action_distribution = self.policy(obs, speed)  # Call to self.policy(obs) also populates self.value with V(obs)
+        
+            action_distribution = self.policy(obs, speed)  # Call to self.policy(obs) also populates self.value with V(obs)
         if testing:
             action = action_distribution.probs.argmax(dim=-1)
         else:
@@ -176,7 +178,8 @@ class DeepActorCriticAgent(mp.Process):
 
         action = self.process_action(action)
         # Store the n-step trajectory while training. Skip storing the trajectories in test mode
-        self.trajectory.append(Transition(obs, self.value, action, log_prob_a))  # Construct the trajectory
+        if not testing:
+            self.trajectory.append(Transition(obs, self.value, action, log_prob_a))  # Construct the trajectory
         return action
 
     # def discrete_policy(self, obs, speed, manouver):
@@ -345,7 +348,7 @@ def handle_crash(results_queue):
     agent.mean_reward = 0
     agent.episode = 0
     if os.path.isfile(model_incr_load):
-        # print("model istnieje i jest wgrywany.")
+        print("model istnieje i jest wgrywany.")
         agent.load(model_incr_load)
     else:
         print("model jeszcze nie istnieje.")
@@ -360,7 +363,7 @@ def handle_crash(results_queue):
         # with lock:
         agent.episode += 1
 
-        if agent.episode >= 10000:
+        if agent.episode >= 30000:
             break
                 # SET SYNCHRONOUS MODE
         # agent.environment.settings = agent.environment.world.get_settings()
@@ -425,8 +428,8 @@ def handle_crash(results_queue):
             # print(f"CAR DECISION ON THE NEAREST JUNCTION: {manouver}")
 
             # action = agent.get_action(state_rgb)
-            # action = agent.get_action(state_rgb, speed_tensor, testing)
-            action = agent.get_action(state_rgb, speed_tensor, manouver_tensor, testing)
+            action = agent.get_action(state_rgb, speed_tensor, testing)
+            # action = agent.get_action(state_rgb, speed_tensor, manouver_tensor, testing)
 
             if save_image:
                 agent.environment.state_observer.action = action # To print action on the frame
@@ -464,9 +467,11 @@ def handle_crash(results_queue):
                 actor_loss, critic_loss, actor_lr, critic_lr = agent.optimize(new_state, done, speed_tensor, manouver_tensor)
                 # actor_loss, critic_loss, actor_lr, critic_lr = agent.optimize(new_state, done, speed_tensor)
                 step_num = 0
+                
             state_rgb = new_state
             agent.global_step_num += 1
-
+        gc.collect()
+        torch.cuda.empty_cache()
         episode_end_time = datetime.now()
         episode_time = episode_end_time - episode_start_time
 
@@ -488,8 +493,13 @@ def handle_crash(results_queue):
         #                                                                                     agent.best_reward, 
         #                                                                                     max_speed,
         #                                                                                     distance_from_goal))        
-    del world
-    del client
+    # gc.collect()
+    # torch.cuda.empty_cache()
+    # del world
+    # del client
+    agent.environment.world = None
+    agent.environment.client = None
+
     results_queue.put(1)
 
 

@@ -383,7 +383,7 @@ class CarlaEnv:
                 self.spawn_point = self.route[0][0].transform
             else:
                 self.spawn_point = self.route[-120][0].transform
-        self.spawn_point.location.z = 20.0 # żeby nie był za nisko
+        self.spawn_point.location.z = 5.0 # żeby nie był za nisko
         
         for attempt in range(MAX_ATTEMPTS):
             self.vehicle = self.world.try_spawn_actor(tesla, self.spawn_point)
