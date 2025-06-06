@@ -718,7 +718,7 @@ class CarlaEnv:
         #     return
 
         # spawn_transform = random.choice(spawn_points)
-        spawn_transform = spawn_points[48]
+        spawn_transform = spawn_points[150]
         # spawn_transform.location.z += 1.0  # unieś trochę, by uniknąć kolizji z ziemią
 
         self.walker = self.world.try_spawn_actor(walker_bp, spawn_transform)
@@ -747,6 +747,29 @@ class CarlaEnv:
             # else:
             #     print("Nie znaleziono celu dla pieszego.")
 
+    def spawn_npc_vehicle(self, spawn_index=50):
+        """
+        Spawn AI-controlled NPC vehicle at specified spawn point.
+        """
+        npc_bp = self.blueprint_library.filter("vehicle.*")[0]  # pierwszy pojazd z listy
+        npc_bp.set_attribute("role_name", "autopilot")
+
+        spawn_points = self.map.get_spawn_points()
+        if len(spawn_points) <= spawn_index:
+            print(f"Nie ma tylu punktów spawn. Max: {len(spawn_points)}")
+            return
+
+        spawn_transform = spawn_points[spawn_index]
+        spawn_transform.location.z += 0.5  # uniknij kolizji z podłożem
+
+        npc_vehicle = self.world.try_spawn_actor(npc_bp, spawn_transform)
+        if npc_vehicle is None:
+            print("Nie udało się zespawnować NPC.")
+            return
+
+        npc_vehicle.set_autopilot(True)
+        self.actor_list.append(npc_vehicle)
+        print(f"NPC pojazd zespawnowany w punkcie {spawn_index}.")
 
 
 
@@ -1025,6 +1048,7 @@ class CarlaEnv:
             self.create_scenario(self.sp, self.tp, self.middle_goals_density)
 
         self.spawn_single_pedestrian()
+        self.spawn_npc_vehicle(spawn_index=48)
 
         self.plan_the_route()
         self.spawn_car(spawning_type, episode)
