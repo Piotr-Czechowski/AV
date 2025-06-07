@@ -383,7 +383,7 @@ class CarlaEnv:
                 self.spawn_point = self.route[0][0].transform
             else:
                 self.spawn_point = self.route[-120][0].transform
-        self.spawn_point.location.z = 20.0 # żeby nie był za nisko
+        # self.spawn_point.location.z = 20.0 # żeby nie był za nisko
         
         for attempt in range(MAX_ATTEMPTS):
             self.vehicle = self.world.try_spawn_actor(tesla, self.spawn_point)
@@ -702,6 +702,30 @@ class CarlaEnv:
             # Add each middle point with counter 0 which indicates if middle point has already given a reward
             self.stat_reward_mp.append([middle_goal.location, 0])
 
+    def spawn_npc_vehicle(self, spawn_index=50):
+        """
+        Spawn AI-controlled NPC vehicle at specified spawn point.
+        """Add commentMore actions
+        npc_bp = self.blueprint_library.filter("vehicle.*")[0]  # pierwszy pojazd z listy
+        npc_bp.set_attribute("role_name", "autopilot")
+
+        spawn_points = self.map.get_spawn_points()
+        if len(spawn_points) <= spawn_index:
+            print(f"Nie ma tylu punktów spawn. Max: {len(spawn_points)}")
+            return
+
+        spawn_transform = spawn_points[spawn_index]
+        spawn_transform.location.z += 0.5  # uniknij kolizji z podłożem
+
+        npc_vehicle = self.world.try_spawn_actor(npc_bp, spawn_transform)
+        if npc_vehicle is None:
+            print("Nie udało się zespawnować NPC.")
+            return
+
+        npc_vehicle.set_autopilot(True)
+        self.actor_list.append(npc_vehicle)
+        print(f"NPC pojazd zespawnowany w punkcie {spawn_index}.")
+
     @staticmethod
     def _calculate_distance_transform(current_location, goal_location):
         """
@@ -974,7 +998,9 @@ class CarlaEnv:
             self.scenario = random.choice(self.scenario_list)
             self.create_scenario(self.sp, self.tp, self.middle_goals_density)
 
-
+        # self.spawn_single_pedestrian()
+        # self.spawn_npc_vehicle(spawn_index=48)
+        
         self.plan_the_route()
         self.spawn_car(spawning_type, episode)
         self.set_spectator()
