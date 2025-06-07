@@ -13,6 +13,7 @@ import time
 import numpy as np
 import os
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+import gc
 
 from collections import namedtuple
 import torch

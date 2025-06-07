@@ -182,6 +182,9 @@ class CarlaEnv:
         self.car_decisions = []
         self.spawn_points_index = 0
         self.goal_points_index = 0
+
+        self.walker = None
+        self.walker_controller = None
      
 
     def create_scenario(self, sp, tp, mp_d):
@@ -726,6 +729,49 @@ class CarlaEnv:
         self.actor_list.append(npc_vehicle)
         print(f"NPC pojazd zespawnowany w punkcie {spawn_index}.")
 
+
+    def spawn_single_pedestrian(self):
+        
+        walker_blueprints = self.world.get_blueprint_library().filter("walker.pedestrian.*")
+        controller_bp = self.world.get_blueprint_library().find('controller.ai.walker')
+
+        walker_bp = random.choice(walker_blueprints)
+
+        spawn_points = self.map.get_spawn_points()
+        # if not spawn_points:
+        #     print("Brak dostępnych punktów startowych.")
+        #     return
+
+        # spawn_transform = random.choice(spawn_points)
+        spawn_transform = spawn_points[48]
+        # spawn_transform.location.z += 1.0  # unieś trochę, by uniknąć kolizji z ziemią
+
+        self.walker = self.world.try_spawn_actor(walker_bp, spawn_transform)
+        if self.walker is None:
+            print("Nie udało się zespawnować pieszego.")
+        else:
+            self.walker.set_simulate_physics(True)
+            self.actor_list.append(self.walker)  # ✅ dodaj do listy
+            self.walker_controller = self.world.spawn_actor(controller_bp, carla.Transform(), attach_to=self.walker)
+        if self.walker_controller is not None:
+            self.actor_list.append(self.walker_controller)  # ✅ też dodaj
+
+        
+        
+
+        self.walker_controller = self.world.spawn_actor(controller_bp, carla.Transform(), attach_to=self.walker)
+        self.walker_controller.start()
+        self.world.tick()
+
+        if self.walker_controller.is_alive:
+            print("stworzony ale nie wie gdzie isc")
+            # destination = self.world.get_random_location_from_navigation()
+            # if destination is not None:
+            #     self.walker_controller.go_to_location(destination)
+            #     self.walker_controller.set_max_speed(random.uniform(0.5, 1.5))
+            # else:
+            #     print("Nie znaleziono celu dla pieszego.")
+
     @staticmethod
     def _calculate_distance_transform(current_location, goal_location):
         """
@@ -1000,7 +1046,7 @@ class CarlaEnv:
 
         # self.spawn_single_pedestrian()
         # self.spawn_npc_vehicle(spawn_index=48)
-        
+
         self.plan_the_route()
         self.spawn_car(spawning_type, episode)
         self.set_spectator()
