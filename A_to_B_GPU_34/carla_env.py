@@ -708,7 +708,7 @@ class CarlaEnv:
     def spawn_npc_vehicle(self, spawn_index=50):
         """
         Spawn AI-controlled NPC vehicle at specified spawn point.
-        """Add commentMore actions
+        """
         npc_bp = self.blueprint_library.filter("vehicle.*")[0]  # pierwszy pojazd z listy
         npc_bp.set_attribute("role_name", "autopilot")
 
@@ -731,7 +731,7 @@ class CarlaEnv:
 
 
     def spawn_single_pedestrian(self):
-        
+
         walker_blueprints = self.world.get_blueprint_library().filter("walker.pedestrian.*")
         controller_bp = self.world.get_blueprint_library().find('controller.ai.walker')
 

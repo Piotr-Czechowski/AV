@@ -166,12 +166,12 @@ class DeepActorCriticAgent(mp.Process):
     # def get_action(self, obs, speed, testing=False):
     def get_action(self, obs, speed, manouver, testing=False):
 
-        with torch.no_grad():
-            action_distribution = self.policy(obs, speed, manouver)  # Call to self.policy(obs) also populates self.value with V(obs)
-        # action_distribution = self.policy(obs, speed)  # Call to self.policy(obs) also populates self.value with V(obs)
         if testing:
+            with torch.no_grad():
+                action_distribution = self.policy(obs, speed, manouver) 
             action = action_distribution.probs.argmax(dim=-1)
         else:
+            action_distribution = self.policy(obs, speed, manouver) 
             action = action_distribution.sample()
         
         log_prob_a = action_distribution.log_prob(action)
