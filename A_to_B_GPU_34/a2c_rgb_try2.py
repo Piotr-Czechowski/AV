@@ -54,8 +54,8 @@ port = settings.PORT
 action_type = settings.ACTION_TYPE
 camera_type = settings.CAMERA_TYPE
 load_model = settings.LOAD_MODEL
-model_incr_load = 'A_to_B_GPU_34/PC_models/currently_trained/synchr_200_semantic_camera_8_2_sc10.pth'
-model_incr_save = 'A_to_B_GPU_34/PC_models/currently_trained/synchr_200_semantic_camera_8_2_sc10'
+model_incr_load = 'A_to_B_GPU_34/PC_models/currently_trained/synchr_200_semantic_camera_8_3_sc10.pth'
+model_incr_save = 'A_to_B_GPU_34/PC_models/currently_trained/synchr_200_semantic_camera_8_3_sc10'
 
 gamma = settings.GAMMA
 lr = settings.LR
@@ -331,7 +331,7 @@ def handle_crash(results_queue):
         project="A_to_B",
         # create or extend already logged run:
         resume="allow",
-        id="synchr_200_semantic_camera_8_2_sc10",  
+        id="synchr_200_semantic_camera_8_3_sc10",  
 
         # track hyperparameters and run metadata
         config={
@@ -339,7 +339,7 @@ def handle_crash(results_queue):
         "learning_rate": lr
         }
         )
-        wandb.run.notes = "Img+speed+manouver. speed/100.Nowy model (nie ten z blokami rezydualnymi), z predkoscia oraz manewrem na wejsciu. Scenariusz 10 - randomowa trasa w kazdym epizodzie. Slight turns like:  9: [0, 1, 0.2], #brake slight right. Gradients logged. Stara funkcja nagrody. \n    " \
+        wandb.run.notes = "Img+speed+manouver. speed/100.Nowy model (nie ten z blokami rezydualnymi), z predkoscia oraz manewrem na wejsciu. Scenariusz 10 - randomowa trasa w kazdym epizodzie. Slight turns like:  9: [0, 1, 0.2], #brake slight right. Gradients logged. Stara/nowa  funkcja nagrody(sin, nacisk an jazde okolo 20 km/h). \n    " \
         "speed_reward = -1.2 + speed/3" \
         "if route_distance < 1:" \
         "   route_distance_reward = 1" \
@@ -357,13 +357,13 @@ def handle_crash(results_queue):
     episode_rewards = []  # Every episode's reward
     prev_checkpoint_mean_ep_rew = agent.best_mean_reward
     num_improved_episodes_before_checkpoint = 0  # To keep track of the num of ep with higher perf to save model
-    episodes_to_save_images = (10000, 10001, 10002, 14000, 14998, 14999)
+    episodes_to_save_images = (8114, 8115, 8116, 8117, 8118, 8119)
     max_speed = 0
     distance_from_goal = 0
     while 1:
         # with lock:
         agent.episode += 1
-
+        print(agent.episode)
         if agent.episode >= 25000:
             break
                 # SET SYNCHRONOUS MODE
