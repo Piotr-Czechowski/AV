@@ -72,20 +72,27 @@ def reward_function(collision_history_list, invasion_counter, speed, route_dista
     """
 
     # speed_reward = speed / 10 - 2.2  # 35km/h spinning in circles
-    speed_reward = -1.2 + speed/3
-    """
-    Distance reward
-    """
-    if route_distance < 1:
-        route_distance_reward = 1
+    # speed_reward = -1.2 + speed/3
+    # """
+    # Distance reward
+    # """
+    # if route_distance < 1:
+    #     route_distance_reward = 1
 
-    else:
-        route_distance_reward = -speed/3
+    # else:
+    #     route_distance_reward = -speed/3
+
     # distance_and_speed = (speed)*(2-route_distance)
     # if distance_and_speed >= 0:
     #     distance_and_speed = math.sqrt(distance_and_speed)
     # else:
     #     distance_and_speed = max(speed*(2 - route_distance), -5)
+
+    speed_reward = -1.2 + 8*math.sin(speed/10) # pik jest w okolicach 20 km/h
+    if route_distance < 1:
+        route_distance_reward = 1
+    else:
+        route_distance_reward = -8*math.sin(speed/10)
 
     # print("terminal_state_reward: ", terminal_state_reward, "col_reward: ", col_reward, "speed_reward: ",speed_reward, "route_distance_reward: ", route_distance_reward, "inv_reward: ", inv_reward, "mp_static_reward: ", mp_static_reward)
     reward = terminal_state_reward + col_reward + speed_reward + route_distance_reward + inv_reward + mp_static_reward

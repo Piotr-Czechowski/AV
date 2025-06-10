@@ -12,6 +12,8 @@ import pdb
 import time
 import numpy as np
 import os
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+import gc
 
 from collections import namedtuple
 import torch
@@ -164,18 +166,21 @@ class DeepActorCriticAgent(mp.Process):
     # def get_action(self, obs, speed, testing=False):
     def get_action(self, obs, speed, manouver, testing=False):
 
-        action_distribution = self.policy(obs, speed, manouver)  # Call to self.policy(obs) also populates self.value with V(obs)
-        # action_distribution = self.policy(obs, speed)  # Call to self.policy(obs) also populates self.value with V(obs)
         if testing:
+            with torch.no_grad():
+                action_distribution = self.policy(obs, speed, manouver) 
             action = action_distribution.probs.argmax(dim=-1)
         else:
+            action_distribution = self.policy(obs, speed, manouver) 
             action = action_distribution.sample()
         
         log_prob_a = action_distribution.log_prob(action)
 
         action = self.process_action(action)
         # Store the n-step trajectory while training. Skip storing the trajectories in test mode
-        self.trajectory.append(Transition(obs, self.value, action, log_prob_a))  # Construct the trajectory
+        # Construct the trajectory
+        if not testing:
+            self.trajectory.append(Transition(obs, self.value, action, log_prob_a)) 
         return action
 
     def discrete_policy(self, obs, speed, manouver):
@@ -338,7 +343,7 @@ def handle_crash(results_queue):
         "learning_rate": lr
         }
         )
-        wandb.run.notes = "Img+speed+manouver. speed/100.Nowy model (nie ten z blokami rezydualnymi), z predkoscia oraz manewrem na wejsciu. Scenariusz 10 - randomowa trasa w kazdym epizodzie. Slight turns like:  9: [0, 1, 0.2], #brake slight right. Gradients logged. Stara funkcja nagrody. \n    " \
+        wandb.run.notes = "Img+speed+manouver. speed/100.Nowy model (nie ten z blokami rezydualnymi), z predkoscia oraz manewrem na wejsciu. Scenariusz 10 - randomowa trasa w kazdym epizodzie. Slight turns like:  9: [0, 1, 0.2], #brake slight right. Gradients logged. Stara/nowa  funkcja nagrody(sin, nacisk an jazde okolo 20 km/h). \n    " \
         "speed_reward = -1.2 + speed/3" \
         "if route_distance < 1:" \
         "   route_distance_reward = 1" \
@@ -356,14 +361,14 @@ def handle_crash(results_queue):
     episode_rewards = []  # Every episode's reward
     prev_checkpoint_mean_ep_rew = agent.best_mean_reward
     num_improved_episodes_before_checkpoint = 0  # To keep track of the num of ep with higher perf to save model
-    episodes_to_save_images = (11, 12, 1010, 1011, 2020, 2021, 4010, 4011, 4989, 4988)
+    episodes_to_save_images = (8114, 8115, 8116, 8117, 8118, 8119)
     max_speed = 0
     distance_from_goal = 0
     while 1:
         # with lock:
         agent.episode += 1
-
-        if agent.episode >= 10000:
+        print(agent.episode)
+        if agent.episode >= 25000:
             break
                 # SET SYNCHRONOUS MODE
         # agent.environment.settings = agent.environment.world.get_settings()
@@ -472,7 +477,9 @@ def handle_crash(results_queue):
 
         episode_end_time = datetime.now()
         episode_time = episode_end_time - episode_start_time
-
+        
+        gc.collect()
+        torch.cuda.empty_cache()
         # if agent.action_type == 'discrete':
         #     print(str(actions_counter))
 
@@ -492,8 +499,8 @@ def handle_crash(results_queue):
         #                                                                                     agent.best_reward, 
         #                                                                                     max_speed,
         #                                                                                     distance_from_goal))        
-    del world
-    del client
+    agent.environment.world = None
+    agent.environment.client = None
     results_queue.put(1)
 
 

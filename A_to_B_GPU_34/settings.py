@@ -23,7 +23,7 @@ SCENARIO = [10]  # List of scenarios on which the model is trained
 TESTING = False
 SPAWNING_TYPE = 1 # 0 - random, 1 - at the beginning, 2 - in 2 different places one by one
 LOGGING = True
-DRAW = True
+DRAW = False
 
 """ 
 Specify scenario parameter or spawn_point and terminal_point parameters
