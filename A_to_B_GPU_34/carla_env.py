@@ -145,11 +145,11 @@ class CarlaEnv:
         # List of all actors in the environment
         self.actor_list = []
 
-        self.transform = carla.Transform(carla.Location(x=2.5, z=0.7))
-        # self.transform = carla.Transform(
-        #     carla.Location(x=1.2, z=2.5),  # Kamera lekko z przodu, na wysokości ~oczu
-        #     carla.Rotation(pitch=-10)      # Pochylona w dół o 10 stopni
-        # )
+        # self.transform = carla.Transform(carla.Location(x=2.5, z=0.7))
+        self.transform = carla.Transform(
+            carla.Location(x=1.2, z=2.5),  # Kamera lekko z przodu, na wysokości ~oczu
+            carla.Rotation(pitch=-10)      # Pochylona w dół o 10 stopni
+        )
 
         self.manual_control = manual_control
         # if not manual_control:
