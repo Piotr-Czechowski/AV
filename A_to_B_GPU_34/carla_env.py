@@ -466,7 +466,8 @@ class CarlaEnv:
         # semantic_cam_bp = carla.sensor.Camera('MyCamera', PostProcessing='SemanticSegmentation')
         semantic_cam_bp.set_attribute('image_size_x', f'{self.resX}')
         semantic_cam_bp.set_attribute('image_size_y', f'{self.resY}')
-        semantic_cam_bp.set_attribute('fov', '110')
+        # semantic_cam_bp.set_attribute('fov', '110')
+        semantic_cam_bp.set_attribute('fov', '170') # Fish eye
 
         # new_location = carla.Location(self.transform.location.x, 
         #                             self.transform.location.y, 

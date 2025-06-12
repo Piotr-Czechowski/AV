@@ -400,10 +400,6 @@ import torch
 #         logits = self.fc(x)
 #         return logits
 
-
-
-
-
 ########################################### TEN CO WYZEJ ALE Z PREDKOSCIA
 import torch
 import torch.nn as nn
@@ -550,3 +546,4 @@ class Critic(nn.Module):
 
         logits = self.fc(combined)
         return logits
+    
