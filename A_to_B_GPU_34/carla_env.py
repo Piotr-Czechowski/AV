@@ -66,6 +66,8 @@ MAP_POINTS_SC10 = [(50, 203.913498, 0.275307),
 MAP_POINTS_SC11 = [ (14,(-55.387177, 0.558450, 0.0)),
                     (14,(-105.387177, -3.140184, 0.0)),]
 
+MAP_POINTS_SC12 = (167, 165, 18, 200, 222, 105, 106, 1, 134, 3, 100, 139, 109, 190, 146, 188, 186, 184, 174, 126, 48, 233, 0, 32, 30, 44, 191, 51, 53, 238, 237, 235, 231, 229, 228, 225, 11, 85, 45, 247, 132, 252, 42)
+
 def start_carla_server(args):
     return subprocess.Popen(f'CarlaUE4.exe ' + args, cwd=settings.CARLA_PATH, shell=True)
 
@@ -245,7 +247,15 @@ class CarlaEnv:
                 sp = self.map.get_spawn_points()[sp_number]
                 self.spawn_point = carla.Transform(sp.location, sp.rotation)
             except TypeError:
-                print(3)
+                print("Error while spawning")
+        elif self.scenario == 12:
+            try:
+                self.goal_points_index = random.choice(MAP_POINTS_SC12)
+                sp_number = self.goal_points_index
+                sp = self.map.get_spawn_points()[sp_number]
+                self.spawn_point = carla.Transform(sp.location, sp.rotation)
+            except TypeError:
+                print("Error while spawning")
         else:
             self.log.err(f"Invalid params: scenario: {self.scenario} or sp: {sp}, tp:{tp},"
                          f" mp_d:{mp_d}")
@@ -332,7 +342,11 @@ class CarlaEnv:
             x, y, z = MAP_POINTS_SC11[self.goal_points_index][1]
             self.goal_location_loc = carla.Location(x=x, y=y, z=z)
             self.goal_location_trans = carla.Transform(self.goal_location_loc)
-
+        elif self.scenario == 12:
+            spawn_points = self.world.get_map().get_spawn_points()
+            valid_spawn_points = [sp for i, sp in enumerate(spawn_points) if i != self.goal_points_index]
+            self.goal_location_trans = random.choice(valid_spawn_points)
+            self.goal_location_loc = self.goal_location_trans.location
         
         else:
             # self.goal_location_loc = way_points[self.goal_point].transform.location
