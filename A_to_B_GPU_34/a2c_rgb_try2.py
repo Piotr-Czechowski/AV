@@ -54,8 +54,8 @@ port = settings.PORT
 action_type = settings.ACTION_TYPE
 camera_type = settings.CAMERA_TYPE
 load_model = settings.LOAD_MODEL
-model_incr_load = 'A_to_B_GPU_34/PC_models/currently_trained/synchr_200_semantic_camera_8_4_sc10.pth'
-model_incr_save = 'A_to_B_GPU_34/PC_models/currently_trained/synchr_200_semantic_camera_8_4_sc10'
+model_incr_load = 'A_to_B_GPU_34/PC_models/currently_trained/synchr_200_semantic_camera_8_5_sc10.pth'
+model_incr_save = 'A_to_B_GPU_34/PC_models/currently_trained/synchr_200_semantic_camera_8_5_sc10'
 
 gamma = settings.GAMMA
 lr = settings.LR
@@ -331,7 +331,7 @@ def handle_crash(results_queue):
         project="A_to_B",
         # create or extend already logged run:
         resume="allow",
-        id="synchr_200_semantic_camera_8_4_sc10",  
+        id="synchr_200_semantic_camera_8_5_sc10",  
 
         # track hyperparameters and run metadata
         config={
@@ -339,7 +339,7 @@ def handle_crash(results_queue):
         "learning_rate": lr
         }
         )
-        wandb.run.notes = "Img+speed+manouver. speed/100.Nowy model (nie ten z blokami rezydualnymi), z predkoscia oraz manewrem na wejsciu. Scenariusz 10 - randomowa trasa w kazdym epizodzie. Slight turns like:  9: [0, 1, 0.2], #brake slight right. Gradients logged. Stara/nowa  funkcja nagrody(sin, nacisk an jazde okolo 20 km/h). Kamera (x = 1.2, z=2.5, pitch=-10)\n    " \
+        wandb.run.notes = "Town01. Img+speed+manouver. speed/100.Nowy model (nie ten z blokami rezydualnymi), z predkoscia oraz manewrem na wejsciu. Scenariusz 10 - randomowa trasa w kazdym epizodzie. Slight turns like:  9: [0, 1, 0.2], #brake slight right. Gradients logged. Stara/nowa  funkcja nagrody(sin, nacisk an jazde okolo 20 km/h). Kamera (x = 1.2, z=2.5, pitch=-10)\n    " \
         "speed_reward = -1.2 + 8*math.sin(speed/10)" \
         "if route_distance < 1:" \
         "   route_distance_reward = 1" \
@@ -357,7 +357,7 @@ def handle_crash(results_queue):
     episode_rewards = []  # Every episode's reward
     prev_checkpoint_mean_ep_rew = agent.best_mean_reward
     num_improved_episodes_before_checkpoint = 0  # To keep track of the num of ep with higher perf to save model
-    episodes_to_save_images = (1, 2, 3, 4, 5, 6)
+    episodes_to_save_images = (2855, 2856, 2857, 2858, 2859, 2860)
     max_speed = 0
     distance_from_goal = 0
     while 1:
@@ -433,6 +433,7 @@ def handle_crash(results_queue):
             action = agent.get_action(state_rgb, speed_tensor, manouver_tensor, testing)
 
             if save_image:
+                agent.environment.state_observer.manouver = manouver
                 agent.environment.state_observer.action = action # To print action on the frame
                 agent.environment.state_observer.step = episode_step # To print action on the frame
                 agent.environment.state_observer.episode = agent.episode
