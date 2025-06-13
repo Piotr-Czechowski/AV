@@ -435,7 +435,7 @@ class CarlaEnv:
         rgb_cam_bp = self.blueprint_library.find("sensor.camera.rgb")
         rgb_cam_bp.set_attribute("image_size_x", f"{self.resX}")
         rgb_cam_bp.set_attribute("image_size_y", f"{self.resY}")
-        rgb_cam_bp.set_attribute("fov", f"110")
+        rgb_cam_bp.set_attribute("fov", f"75")
 
         rgb_cam = self.world.spawn_actor(rgb_cam_bp, self.transform, attach_to=self.vehicle)
         self.actor_list.append(rgb_cam)
@@ -480,7 +480,7 @@ class CarlaEnv:
         # semantic_cam_bp = carla.sensor.Camera('MyCamera', PostProcessing='SemanticSegmentation')
         semantic_cam_bp.set_attribute('image_size_x', f'{self.resX}')
         semantic_cam_bp.set_attribute('image_size_y', f'{self.resY}')
-        semantic_cam_bp.set_attribute('fov', '110')
+        semantic_cam_bp.set_attribute('fov', '75')
 
         # new_location = carla.Location(self.transform.location.x, 
         #                             self.transform.location.y, 
@@ -531,7 +531,7 @@ class CarlaEnv:
         depth_cam_bp = self.blueprint_library.find('sensor.camera.depth')
         depth_cam_bp.set_attribute('image_size_x', f'{self.resX}')
         depth_cam_bp.set_attribute('image_size_y', f'{self.resY}')
-        depth_cam_bp.set_attribute('fov', '90')
+        depth_cam_bp.set_attribute('fov', '75')
 
         depth_cam_sensor = self.world.spawn_actor(depth_cam_bp, self.transform, attach_to=self.vehicle)
 

@@ -54,8 +54,8 @@ port = settings.PORT
 action_type = settings.ACTION_TYPE
 camera_type = settings.CAMERA_TYPE
 load_model = settings.LOAD_MODEL
-model_incr_load = 'A_to_B_GPU_34/PC_models/currently_trained/synchr_200_semantic_camera_8_7_sc12.pth'
-model_incr_save = 'A_to_B_GPU_34/PC_models/currently_trained/synchr_200_semantic_camera_8_7_sc12'
+model_incr_load = 'A_to_B_GPU_34/PC_models/currently_trained/synchr_200_semantic_camera_8_8_sc12.pth'
+model_incr_save = 'A_to_B_GPU_34/PC_models/currently_trained/synchr_200_semantic_camera_8_8_sc12'
 
 gamma = settings.GAMMA
 lr = settings.LR
@@ -331,7 +331,7 @@ def handle_crash(results_queue):
         project="A_to_B",
         # create or extend already logged run:
         resume="allow",
-        id="synchr_200_semantic_camera_8_7_sc12",  
+        id="synchr_200_semantic_camera_8_8_sc12",  
 
         # track hyperparameters and run metadata
         config={
@@ -339,7 +339,7 @@ def handle_crash(results_queue):
         "learning_rate": lr
         }
         )
-        wandb.run.notes = "Town01. Img+speed+manouver. speed/100.Nowy model (nie ten z blokami rezydualnymi), z predkoscia oraz manewrem na wejsciu. Scenariusz 12 - randomowa trasa w kazdym epizodzie. Slight turns like:  9: [0, 1, 0.2], #brake slight right. Gradients logged. Stara/nowa  funkcja nagrody(sin, nacisk an jazde okolo 20 km/h). Kamera (x = 1.2, z=2.5, pitch=-10)\n    " \
+        wandb.run.notes = "Town01. Img+speed+manouver. FOV = 75. speed/100.Nowy model (nie ten z blokami rezydualnymi), z predkoscia oraz manewrem na wejsciu. Scenariusz 12 - randomowa trasa w kazdym epizodzie. Slight turns like:  9: [0, 1, 0.2], #brake slight right. Gradients logged. Stara/nowa  funkcja nagrody(sin, nacisk an jazde okolo 20 km/h). Kamera (x = 1.2, z=2.5, pitch=-10)\n    " \
         "speed_reward = -1.2 + 8*math.sin(speed/10)" \
         "if route_distance < 1:" \
         "   route_distance_reward = 1" \
