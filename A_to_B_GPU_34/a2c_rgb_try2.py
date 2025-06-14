@@ -89,8 +89,6 @@ class DeepActorCriticAgent(mp.Process):
         self.lr = lr
         self.use_entropy = use_entropy
 
-        # env = CarlaEnv(scenario=scenario, spawn_point=False, terminal_point=False, mp_density=25, port=port,
-        #                     action_space=self.action_type, camera=self.camera_type, resX=80, resY=80, manual_control=False)
         env = CarlaEnv(scenario=scenario, spawn_point=False, terminal_point=False, mp_density=25, port=port,
                        action_space=self.action_type, camera=self.camera_type, resX=200, resY=200, manual_control=False)
 
@@ -112,8 +110,7 @@ class DeepActorCriticAgent(mp.Process):
         self.value = 0
         self.action_distribution = None
 
-        # state_shape = [80, 80, 3]
-        state_shape = [200, 200, 3]
+        state_shape = [200, 200, 3] # shape of input image
 
         critic_shape = 1
 
@@ -121,10 +118,10 @@ class DeepActorCriticAgent(mp.Process):
             self.action_shape = len(ac.ACTIONS_NAMES)
             self.policy = self.discrete_policy
             self.actor = DeepDiscreteActor(state_shape, self.action_shape, device).to(device)
-        # elif self.action_type == 'continuous':
-        #     self.action_shape = 2
-        #     self.policy = self.multi_variate_gaussian_policy
-            # self.actor = DeepActor(state_shape, self.action_shape, device).to(device)
+        elif self.action_type == 'continuous':
+            self.action_shape = 2
+            self.policy = self.multi_variate_gaussian_policy
+            # self.actor = DeepActor(state_shape, self.action_shape, device).to(device) # DeepActor not defined so far, discrete control only
         else:
             self.log.err(f"Wrong action type: {self.action_type}, choose discrete or continuous")
 
@@ -164,9 +161,16 @@ class DeepActorCriticAgent(mp.Process):
 
     # def get_action(self, obs, speed, manouver):
     def get_action(self, obs, speed, testing=False):
-    # def get_action(self, obs, speed, manouver, testing=False):
+    # def get_action(self, obs, speed, manouver, testing=False): #if manouver signal is used (manouver scenario)
+        # this part should implemented from the beginning. After adding it, the performance dropped slightly
+        if testing:
+            self.actor.eval()
+            self.critic.eval()
+        else:
+            self.actor.train()
+            self.critic.train()
         with torch.no_grad():
-        # action_distribution = self.policy(obs, speed, manouver)  # Call to self.policy(obs) also populates self.value with V(obs)
+            # action_distribution = self.policy(obs, speed, manouver)  # Call to self.policy(obs) also populates self.value with V(obs) (manouver scenario)
         
             action_distribution = self.policy(obs, speed)  # Call to self.policy(obs) also populates self.value with V(obs)
         if testing:
@@ -182,15 +186,15 @@ class DeepActorCriticAgent(mp.Process):
             self.trajectory.append(Transition(obs, self.value, action, log_prob_a))  # Construct the trajectory
         return action
 
-    # def discrete_policy(self, obs, speed, manouver):
+    # def discrete_policy(self, obs, speed, manouver): #if manouver signal is used
     def discrete_policy(self, obs, speed):
         """
         Calculates a discrete/categorical distribution over actions given observations
         :param obs: self's observation
         :return: policy, a distribution over actions for the given observation
         """
-        # logits = self.actor(obs, speed, manouver)
-        # value = self.critic(obs, speed, manouver)
+        # logits = self.actor(obs, speed, manouver) #if manouver signal is used (manouver scenario)
+        # value = self.critic(obs, speed, manouver) #if manouver signal is used (manouver scenario)
         logits = self.actor(obs, speed)
         value = self.critic(obs, speed)
         self.logits = logits.to(torch.device("cuda"))
@@ -203,7 +207,7 @@ class DeepActorCriticAgent(mp.Process):
         self.action_distribution = Categorical(logits=self.logits)
         return self.action_distribution
 
-    # def calculate_n_step_return(self, n_step_rewards, final_state, done, gamma, final_speed, manouver):
+    # def calculate_n_step_return(self, n_step_rewards, final_state, done, gamma, final_speed, manouver): #if manouver signal is used (manouver scenario)
     def calculate_n_step_return(self, n_step_rewards, final_state, done, gamma, final_speed):
 
         """A_to_B_GPU_34/PC_models/currently_trained/synchr_sc3_30_start_sc_3.pth
@@ -215,7 +219,7 @@ class DeepActorCriticAgent(mp.Process):
         """
         g_t_n_s = []
         with torch.no_grad():
-            # g_t_n = torch.tensor([[0]]).float().to(device) if done else self.critic(final_state, final_speed, manouver)
+            # g_t_n = torch.tensor([[0]]).float().to(device) if done else self.critic(final_state, final_speed, manouver) #if manouver signal is used (manouver scenario)
             g_t_n = torch.tensor([[0]]).float().to(device) if done else self.critic(final_state, final_speed)
             for r_t in n_step_rewards[::-1]:  # Reverse order; From r_tpn to r_t
                 g_t_n = torch.tensor(r_t).float() + gamma * g_t_n
@@ -233,7 +237,6 @@ class DeepActorCriticAgent(mp.Process):
         log_prob_a_batch = n_step_trajectory.log_prob_a
         actor_losses, critic_losses, advantages = [], [], []
         for td_target, critic_prediction, log_p_a in zip(td_targets, v_s_batch, log_prob_a_batch):
-            #writer.add_scalar("Value", critic_prediction, self.global_step_num)
             td_err = td_target - critic_prediction  # td_err is an unbiased estimated of Advantage
             advantages.append(td_err)
             result = - log_p_a * td_err
@@ -251,10 +254,10 @@ class DeepActorCriticAgent(mp.Process):
 
         return actor_loss, critic_loss
 
-    # def optimize(self, final_state_rgb, done, final_speed, manouver):
+    # def optimize(self, final_state_rgb, done, final_speed, manouver): # manouver scenario
     def optimize(self, final_state_rgb, done, final_speed):
 
-        # td_targets = self.calculate_n_step_return(self.rewards, final_state_rgb, done, self.gamma, final_speed, manouver)
+        # td_targets = self.calculate_n_step_return(self.rewards, final_state_rgb, done, self.gamma, final_speed, manouver) #if manouver signal is used (manouver scenario)
         td_targets = self.calculate_n_step_return(self.rewards, final_state_rgb, done, self.gamma, final_speed)
 
         actor_loss, critic_loss = self.calculate_loss(self.trajectory, td_targets)
@@ -298,7 +301,6 @@ class DeepActorCriticAgent(mp.Process):
                        "episode": self.episode,
                        "mean_reward": self.mean_reward}
         torch.save(self_state, model_file_name)
-        # print("self's state is saved to", model_file_name)
 
     def load(self, name):
         model_file_name = name
@@ -307,8 +309,8 @@ class DeepActorCriticAgent(mp.Process):
         self.critic.load_state_dict(self_state["critic"])
         self.actor_optimizer.load_state_dict(self_state["actor_optimizer"])
         self.critic_optimizer.load_state_dict(self_state["critic_optimizer"])
-        self.actor.to(device) #added
-        self.critic.to(device) #added
+        self.actor.to(device) 
+        self.critic.to(device)
         try:
             self.mean_reward = self_state["mean_reward"]
         except:
@@ -319,9 +321,7 @@ class DeepActorCriticAgent(mp.Process):
             pass
         self.best_mean_reward = self_state["best_mean_reward"]
         self.best_reward = self_state["best_reward"]
-        # print("Loaded Advantage Actor-Critic model state from", model_file_name,
-        #       " which fetched a best mean reward of:", self.best_mean_reward,
-        #       " and an all time best reward of:", self.best_reward)
+
         
 def handle_crash(results_queue):
     if logging:
@@ -332,18 +332,12 @@ def handle_crash(results_queue):
         resume="allow",
         id="synchr_200_semantic_camera_8_2_sc10",  
 
-        # track hyperparameters and run metadata
         config={
         "name" : "synchr_200_semantic_camera_8",
         "learning_rate": lr
         }
         )
-        wandb.run.notes = "Img+speed+manouver. speed/100.Nowy model (nie ten z blokami rezydualnymi), z predkoscia oraz manewrem na wejsciu. Scenariusz 10 - randomowa trasa w kazdym epizodzie. Slight turns like:  9: [0, 1, 0.2], #brake slight right. Gradients logged. Stara funkcja nagrody. \n    " \
-        "speed_reward = -1.2 + speed/3" \
-        "if route_distance < 1:" \
-        "   route_distance_reward = 1" \
-        "else:" \
-        "   route_distance_reward = -speed/3. Startowanie w dwóch miejscach na przemian"
+        wandb.run.notes = "Description visible in W&B" # to modify
     agent = DeepActorCriticAgent()
     agent.mean_reward = 0
     agent.episode = 0
@@ -356,7 +350,7 @@ def handle_crash(results_queue):
     episode_rewards = []  # Every episode's reward
     prev_checkpoint_mean_ep_rew = agent.best_mean_reward
     num_improved_episodes_before_checkpoint = 0  # To keep track of the num of ep with higher perf to save model
-    episodes_to_save_images = (10115, 10116, 10117, 10118, 10119)
+    episodes_to_save_images = (10172, 10173, 10174, 10175, 10176)
     max_speed = 0
     distance_from_goal = 0
     while 1:
@@ -365,19 +359,6 @@ def handle_crash(results_queue):
         print(agent.episode)
         if agent.episode >= 30000:
             break
-                # SET SYNCHRONOUS MODE
-        # agent.environment.settings = agent.environment.world.get_settings()
-        # agent.environment.settings.synchronous_mode = True
-        # agent.environment.settings.fixed_delta_seconds = 0.1
-        # agent.environment.settings.max_substep_delta_time = 0.01
-        # agent.environment.settings.max_substeps = 10
-        # agent.environment.world.apply_settings(agent.environment.settings)
-        # if agent.episode % 2 == 0:
-        #     agent.environment.scenario = [5]
-        #     agent.environment.scenario_list = [5]
-        # else:
-        #     agent.environment.scenario = [6]
-        #     agent.environment.scenario_list = [6]
 
         save_image = True if agent.episode in episodes_to_save_images else False
         
@@ -386,7 +367,7 @@ def handle_crash(results_queue):
         state_rgb, speed_tensor = agent.environment.reset(save_image=save_image, episode = agent.episode)
 
         state_rgb = state_rgb / 255.0  # resize the tensor to [0, 1]
-        speed_tensor = speed_tensor/50.0
+        speed_tensor = speed_tensor/50.0 # resize the tensor to [0, 1] - In case speed tensor is too big (long scenarios), resize it by speed_tensor/100
 
         done = False
         ep_reward = 0.0 
@@ -399,7 +380,7 @@ def handle_crash(results_queue):
         episode_step=0
 
         i = 0 
-        manouver = agent.environment.car_decisions[i]
+        manouver = agent.environment.car_decisions[i] # right now, the model doesn't take into consideration manouver value. But this code can be useful in the future
         manouver_tensor = torch.tensor([manouver]).to(device)
         
         episode_start_time = datetime.now()
@@ -407,17 +388,11 @@ def handle_crash(results_queue):
         while not done:
             episode_step += 1
 
-            # perform_actions +=1  #perform every 0.2 seconds
-            # if perform_actions%2==1:
-                # print(perform_actions)
             if speed_tensor.item() > max_speed:
                 max_speed = speed_tensor.item()
 
-            #manouver
-            on_junction, left_junction = agent.environment.planner.on_junction(agent.environment.vehicle.get_location())
-            # manouver = "S" # S - straight, R - right, L - left
+            on_junction, left_junction = agent.environment.planner.on_junction(agent.environment.vehicle.get_location()) # code needed in the future (manouver scenario)
             if left_junction:
-                # print(f"Vehicle left junction")
                 try:
                     i += 1
                     manouver = agent.environment.car_decisions[i]
@@ -425,13 +400,11 @@ def handle_crash(results_queue):
                     manouver = 1
                 manouver_tensor = torch.tensor([manouver]).to(device)
 
-            # print(f"CAR DECISION ON THE NEAREST JUNCTION: {manouver}")
 
-            # action = agent.get_action(state_rgb)
             action = agent.get_action(state_rgb, speed_tensor, testing)
-            # action = agent.get_action(state_rgb, speed_tensor, manouver_tensor, testing)
+            # action = agent.get_action(state_rgb, speed_tensor, manouver_tensor, testing) # manouver scenario
 
-            if save_image:
+            if save_image: # Serves to save semantic semgantation camera images (for DEBUG purposes)
                 agent.environment.state_observer.action = action # To print action on the frame
                 agent.environment.state_observer.step = episode_step # To print action on the frame
                 agent.environment.state_observer.episode = agent.episode
@@ -443,7 +416,7 @@ def handle_crash(results_queue):
             if agent.action_type == 'discrete':
                 actions_counter[ac.ACTIONS_NAMES[agent.environment.action_space[action]]] += 1
             agent.environment.step_apply_action(action)
-        # else:
+            
             while not agent.environment.image_queue.empty():
                 _ = agent.environment.image_queue.get()
 
@@ -457,15 +430,16 @@ def handle_crash(results_queue):
             agent.environment.state_observer.reward = reward
             if logging:
                 wandb.log({"step_reward": reward})
+
             new_state = new_state / 255.0  # resize the tensor to [0, 1]
-            speed_tensor = speed_tensor / 100.0
+            speed_tensor = speed_tensor / 50.0 
             agent.rewards.append(reward)
             ep_reward += reward
             step_num += 1
-            # print("Step number: ", step_num, "reward: ", reward, "ep_reward: ", ep_reward)
+
             if not testing and (step_num >= 5 or done):
-                actor_loss, critic_loss, actor_lr, critic_lr = agent.optimize(new_state, done, speed_tensor, manouver_tensor)
-                # actor_loss, critic_loss, actor_lr, critic_lr = agent.optimize(new_state, done, speed_tensor)
+                # actor_loss, critic_loss, actor_lr, critic_lr = agent.optimize(new_state, done, speed_tensor, manouver_tensor) # manouver scenario
+                actor_loss, critic_loss, actor_lr, critic_lr = agent.optimize(new_state, done, speed_tensor)
                 step_num = 0
                 
             state_rgb = new_state
@@ -475,8 +449,6 @@ def handle_crash(results_queue):
         episode_end_time = datetime.now()
         episode_time = episode_end_time - episode_start_time
 
-        # if agent.action_type == 'discrete':
-        #     print(str(actions_counter))
 
         episode_rewards.append(ep_reward)
         agent.mean_reward = (agent.mean_reward * (min(100, agent.episode)-1) + ep_reward)/min(100, agent.episode) #mean reward from last 100 episodes
@@ -487,16 +459,7 @@ def handle_crash(results_queue):
         if logging:
             wandb.log({"episode steps": episode_step, "episode duration [s]": episode_time.seconds,"reward": ep_reward, "episode": agent.episode, "mean_reward": agent.mean_reward, "max_speed": max_speed, "distance_from_goal": distance_from_goal})
 
-        # print("Episode: {} \t ep_reward:{} \t mean_ep_rew:{}\t best_ep_reward:{} max_speed: {} distance_from_goal: {}".format(agent.episode,
-        #                                                                                     ep_reward,
-        #                                                                                     agent.mean_reward,
-        #                                                                                     agent.best_reward, 
-        #                                                                                     max_speed,
-        #                                                                                     distance_from_goal))        
-    # gc.collect()
-    # torch.cuda.empty_cache()
-    # del world
-    # del client
+      
     agent.environment.world = None
     agent.environment.client = None
 
@@ -507,9 +470,8 @@ if __name__ == "__main__":
     mp.set_start_method('spawn')
     results_queue = mp.Queue()
     manager = mp.Manager()
-    # lock = manager.Lock()
-    while 1:   
-        p = mp.Process(target=handle_crash, args=(results_queue,))
+    while 1:   # Carla container crashes from time to time. This piece of code handles this error by recreating the learnign process in case of such crash. REMEMBER, Carla's container needs to restart automatically
+        p = mp.Process(target=handle_crash, args=(results_queue,)) 
         p.start()
         p.join()
         if results_queue.empty():
@@ -525,4 +487,3 @@ if __name__ == "__main__":
         else:
             # empty the queue
             results_queue.get()
-            # with lock:

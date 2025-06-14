@@ -1,0 +1,7 @@
+1. Have carla running on port localhost:2000
+2. Open AV folder as a main folder
+3. Open terminal. Install pipenv (pip install pipenv)
+4. Install the necessary packages (pipenv install --dev )
+5. Type "pipenv shell" to open pipenv layer. 
+6. Install carla, wandb, pillow and networkx packages (pip install carla and pip install networkx, pip install pillow, pip install wandb)
+7. Using proper interpreter run "a2c_rgb_try2.py" from  A_to_B_GPU_34 folder.

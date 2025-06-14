@@ -20,10 +20,12 @@ SHOW_CAM = False  # Vehicle's camera preview
 SERV_RESX = 640  # Server X resolution
 SERV_RESY = 480  # Server Y resolution
 SCENARIO = [8]  # List of scenarios on which the model is trained
-TESTING = True
-SPAWNING_TYPE = 1 # 0 - random, 1 - at the beginning, 2 - in 2 different places one by one
-LOGGING = False
-DRAW = False
+TESTING = True # Do not optimize
+SPAWNING_TYPE = 1 # Defines where the car is put on the defined path, 0 - randomly, 1 - at the beginning, 2 - in 2 different places one by one,
+LOGGING = False # Log the data to Weights&biases
+DRAW = False # Draw the blue line of waypoints the reward function is based on
+PEDESTRIAN = False # Add pedestrian on the path
+OTHER_CARS = False # Add another car on the path
 
 """ 
 Specify scenario parameter or spawn_point and terminal_point parameters
@@ -44,14 +46,13 @@ The whole list of scenarios can be specified with switch_scenario parameter indi
 after switch_scenario episodes there will be next scenario from the list
 """
 
-# Rewards
+# Rewards (static rewards not used anymore)
 REWARD_FROM_TP = 0  # Static reward from arriving to the terminal point
 REWARD_FROM_MP = 0  # Static reward from arriving to the middle point
 REWARD_FROM_COL = 0  # Static reward from a collision
 REWARD_FROM_INV = 0  # Static reward from a line invasion
 # Speed and distance rewards are in the utils.py/reward_function
 
-# ACTIONS = ['forward', 'forward_left', 'forward_right', 'brake', 'brake_left', 'brake_right']
 
 ACTIONS = ['forward', 'forward_left', 'forward_right', 'brake', 'brake_left', 'brake_right', 'forward_slight_left','forward_slight_right','brake_slight_left','brake_slight_right',]
 # ACTION_IND:  0            1               2             3          4              5                 6                    7                       8                    9

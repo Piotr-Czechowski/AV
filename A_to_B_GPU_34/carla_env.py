@@ -13,7 +13,8 @@ from utils import ColoredPrint
 from ACTIONS import ACTIONS as ac
 import queue
 
-# try:
+# not needed for docker container
+# try: 
 #     sys.path.append(glob.glob(settings.CARLA_EGG_PATH % (
 #         sys.version_info.major,
 #         sys.version_info.minor,
@@ -46,6 +47,8 @@ port = settings.PORT
 spawning_type = settings.SPAWNING_TYPE
 logging = settings.LOGGING
 draw = settings.DRAW
+pedestrians = settings.PEDESTRIAN
+other_cars = settings.OTHER_CARS
 
 MAX_ATTEMPTS = 10
 WAIT_TIME = 0.5  # sekundy
@@ -249,7 +252,7 @@ class CarlaEnv:
 
         self.spawn_point_loc = self.spawn_point.location
 
-    def set_spectator(self, d=6.4):
+    def set_spectator(self, d=6.4): # spectator is a point we are observing the world from
         """
         Get specator's camera angles
         :param d: constant
@@ -698,7 +701,7 @@ class CarlaEnv:
         if self.scenario == 6:
             self.middle_goals[1] = carla.Transform(carla.Location(x=-83.688499, y=0.805027, z=0.0))
 
-        # Draw middle points
+        # Draw middle points. We don't use it anymore
         for middle_goal in self.middle_goals:
             # if draw:
             #     self.world.debug.draw_point(middle_goal.location, size=0.15, life_time=-1)
@@ -713,23 +716,18 @@ class CarlaEnv:
         walker_bp = random.choice(walker_blueprints)
 
         spawn_points = self.map.get_spawn_points()
-        # if not spawn_points:
-        #     print("Brak dostępnych punktów startowych.")
-        #     return
 
-        # spawn_transform = random.choice(spawn_points)
         spawn_transform = spawn_points[150]
-        # spawn_transform.location.z += 1.0  # unieś trochę, by uniknąć kolizji z ziemią
 
         self.walker = self.world.try_spawn_actor(walker_bp, spawn_transform)
         if self.walker is None:
             print("Nie udało się zespawnować pieszego.")
         else:
             self.walker.set_simulate_physics(True)
-            self.actor_list.append(self.walker)  # ✅ dodaj do listy
+            self.actor_list.append(self.walker)  # add to the actors list
             self.walker_controller = self.world.spawn_actor(controller_bp, carla.Transform(), attach_to=self.walker)
         if self.walker_controller is not None:
-            self.actor_list.append(self.walker_controller)  # ✅ też dodaj
+            self.actor_list.append(self.walker_controller)  # ✅ add to actors list
 
         
         
@@ -738,7 +736,7 @@ class CarlaEnv:
         self.walker_controller.start()
         self.world.tick()
 
-        if self.walker_controller.is_alive:
+        if self.walker_controller.is_alive: # this part of code is responsible for setting the destination for the pedestrian. But it needs some improvements
             print("stworzony ale nie wie gdzie isc")
             # destination = self.world.get_random_location_from_navigation()
             # if destination is not None:
@@ -751,7 +749,7 @@ class CarlaEnv:
         """
         Spawn AI-controlled NPC vehicle at specified spawn point.
         """
-        npc_bp = self.blueprint_library.filter("vehicle.*")[0]  # pierwszy pojazd z listy
+        npc_bp = self.blueprint_library.filter("vehicle.*")[0]  # first vehicle from the list
         npc_bp.set_attribute("role_name", "autopilot")
 
         spawn_points = self.map.get_spawn_points()
@@ -760,7 +758,7 @@ class CarlaEnv:
             return
 
         spawn_transform = spawn_points[spawn_index]
-        spawn_transform.location.z += 0.5  # uniknij kolizji z podłożem
+        spawn_transform.location.z += 0.5  # avoid collision with surface (rather not obligatory)
 
         npc_vehicle = self.world.try_spawn_actor(npc_bp, spawn_transform)
         if npc_vehicle is None:
@@ -1047,8 +1045,10 @@ class CarlaEnv:
             self.scenario = random.choice(self.scenario_list)
             self.create_scenario(self.sp, self.tp, self.middle_goals_density)
 
-        self.spawn_single_pedestrian()
-        self.spawn_npc_vehicle(spawn_index=48)
+        if pedestrians:
+            self.spawn_single_pedestrian()
+        if other_cars:
+            self.spawn_npc_vehicle(spawn_index=48)
 
         self.plan_the_route()
         self.spawn_car(spawning_type, episode)
