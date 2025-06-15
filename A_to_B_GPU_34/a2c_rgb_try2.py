@@ -54,8 +54,8 @@ port = settings.PORT
 action_type = settings.ACTION_TYPE
 camera_type = settings.CAMERA_TYPE
 load_model = settings.LOAD_MODEL
-model_incr_load = 'A_to_B_GPU_34/PC_models/currently_trained/synchr_200_semantic_camera_7_15_img_manouver_fisheye_1_10_0.pth'
-model_incr_save = 'A_to_B_GPU_34/PC_models/currently_trained/synchr_200_semantic_camera_7_15_img_manouver_fisheye_1_10_0'
+model_incr_load = 'A_to_B_GPU_34/PC_models/currently_trained/synchr_200_semantic_camera_7_15_img_manouver_no_fisheye__1_10_8.pth'
+model_incr_save = 'A_to_B_GPU_34/PC_models/currently_trained/synchr_200_semantic_camera_7_15_img_manouver_no_fisheye__1_10_8'
 
 gamma = settings.GAMMA
 lr = settings.LR
@@ -335,11 +335,11 @@ def handle_crash(results_queue):
         project="A_to_B",
         # create or extend already logged run:
         resume="allow",
-        id="synchr_200_semantic_camera_7_15_img_manouver_fisheye_1_10_0",
+        id="synchr_200_semantic_camera_7_15_img_manouver_no_fisheye__1_10_8.pth",
 
         # track hyperparameters and run metadata
         config={
-        "name" : "synchr_200_semantic_camera_7_15_img_manouver_fisheye_1_10_0",
+        "name" : "synchr_200_semantic_camera_7_15_img_manouver_no_fisheye__1_10_8.pth",
         "learning_rate": lr
         }
         )
@@ -352,16 +352,18 @@ def handle_crash(results_queue):
     agent = DeepActorCriticAgent()
     agent.mean_reward = 0
     agent.episode = 0
+    print(f'Load a model from file')
     if os.path.isfile(model_incr_load):
         # print("model istnieje i jest wgrywany.")
         agent.load(model_incr_load)
+        print(f'Loaded model and episode is {agent.episode}')
     else:
         print("model jeszcze nie istnieje.")
 
     episode_rewards = []  # Every episode's reward
     prev_checkpoint_mean_ep_rew = agent.best_mean_reward
     num_improved_episodes_before_checkpoint = 0  # To keep track of the num of ep with higher perf to save model
-    episodes_to_save_images = (8114, 8115, 8116, 8117, 8118, 8119)
+    episodes_to_save_images = (1, 3, 4, 6, 10, 11, 8114, 8115, 8116, 8117, 8118, 8119)
     max_speed = 0
     distance_from_goal = 0
     while 1:
@@ -475,6 +477,7 @@ def handle_crash(results_queue):
             state_rgb = new_state
             agent.global_step_num += 1
 
+        print(f'Episode {agent.episode} ended')
         episode_end_time = datetime.now()
         episode_time = episode_end_time - episode_start_time
         
@@ -483,6 +486,7 @@ def handle_crash(results_queue):
         # if agent.action_type == 'discrete':
         #     print(str(actions_counter))
 
+        print(f'Finalizing data to log to Weights and Biases')
         episode_rewards.append(ep_reward)
         agent.mean_reward = (agent.mean_reward * (min(100, agent.episode)-1) + ep_reward)/min(100, agent.episode) #mean reward from last 100 episodes
         if ep_reward > agent.best_reward:
@@ -490,7 +494,8 @@ def handle_crash(results_queue):
         agent.save(model_incr_save)
         if logging:
             print('Logging values of episode steps, episode duration [s], reward, episode, mean_reward etc.')
-            # print(f'{datetime.now().strftime('%Y %B %d | %H:%M')}  Logging values of episode steps, episode duration [s], reward, episode, mean_reward etc.')
+            print(f'{datetime.now().strftime("%Y %B %d | %H:%M")}  Logging values of episode steps, episode duration [s], reward, episode, mean_reward etc.')
+            print(f'Episode {agent.episode}, and mean reward {agent.mean_reward}')
             wandb.log({"episode steps": episode_step, "episode duration [s]": episode_time.seconds,"reward": ep_reward, "episode": agent.episode, "mean_reward": agent.mean_reward, "max_speed": max_speed, "distance_from_goal": distance_from_goal})
 
         # print("Episode: {} \t ep_reward:{} \t mean_ep_rew:{}\t best_ep_reward:{} max_speed: {} distance_from_goal: {}".format(agent.episode,
