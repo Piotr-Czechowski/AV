@@ -54,8 +54,8 @@ port = settings.PORT
 action_type = settings.ACTION_TYPE
 camera_type = settings.CAMERA_TYPE
 load_model = settings.LOAD_MODEL
-model_incr_load = 'A_to_B_GPU_34/PC_models/currently_trained/synchr_200_semantic_camera_8_8_sc12.pth'
-model_incr_save = 'A_to_B_GPU_34/PC_models/currently_trained/synchr_200_semantic_camera_8_8_sc12'
+model_incr_load = 'A_to_B_GPU_34/PC_models/currently_trained/synchr_200_semantic_camera_8_9_sc12.pth'
+model_incr_save = 'A_to_B_GPU_34/PC_models/currently_trained/synchr_200_semantic_camera_8_9_sc12'
 
 gamma = settings.GAMMA
 lr = settings.LR
@@ -331,7 +331,7 @@ def handle_crash(results_queue):
         project="A_to_B",
         # create or extend already logged run:
         resume="allow",
-        id="synchr_200_semantic_camera_8_8_sc12",  
+        id="synchr_200_semantic_camera_8_9_sc12",  
 
         # track hyperparameters and run metadata
         config={
@@ -339,7 +339,7 @@ def handle_crash(results_queue):
         "learning_rate": lr
         }
         )
-        wandb.run.notes = "Town01. Img+speed+manouver. FOV = 75. speed/100.Nowy model (nie ten z blokami rezydualnymi), z predkoscia oraz manewrem na wejsciu. Scenariusz 12 - randomowa trasa w kazdym epizodzie. Slight turns like:  9: [0, 1, 0.2], #brake slight right. Gradients logged. Stara/nowa  funkcja nagrody(sin, nacisk an jazde okolo 20 km/h). Kamera (x = 1.2, z=2.5, pitch=-10)\n    " \
+        wandb.run.notes = "Town01. Img+speed+manouver. FOV = 60. speed/100.Nowy model (nie ten z blokami rezydualnymi), z predkoscia oraz manewrem na wejsciu. Scenariusz 12 - randomowa trasa w kazdym epizodzie. Slight turns like:  9: [0, 1, 0.2], #brake slight right. Gradients logged. Stara/nowa  funkcja nagrody(sin, nacisk an jazde okolo 20 km/h). Kamera (x = 1.2, z=2.5, pitch=-10)\n    " \
         "speed_reward = -1.2 + 8*math.sin(speed/10)" \
         "if route_distance < 1:" \
         "   route_distance_reward = 1" \
@@ -357,7 +357,7 @@ def handle_crash(results_queue):
     episode_rewards = []  # Every episode's reward
     prev_checkpoint_mean_ep_rew = agent.best_mean_reward
     num_improved_episodes_before_checkpoint = 0  # To keep track of the num of ep with higher perf to save model
-    episodes_to_save_images = (12, 52, 122, 522, 1022, 1522, 2022, 3022)
+    episodes_to_save_images = (11674, 11675, 11676, 11677, 11678, 11679)
     max_speed = 0
     distance_from_goal = 0
     while 1:
@@ -387,7 +387,7 @@ def handle_crash(results_queue):
         state_rgb, speed_tensor = agent.environment.reset(save_image=save_image, episode = agent.episode)
 
         state_rgb = state_rgb / 255.0  # resize the tensor to [0, 1]
-        speed_tensor = speed_tensor/50.0
+        speed_tensor = speed_tensor/100.0
 
         done = False
         ep_reward = 0.0 

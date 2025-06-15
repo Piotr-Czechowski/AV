@@ -149,7 +149,7 @@ class CarlaEnv:
 
         # self.transform = carla.Transform(carla.Location(x=2.5, z=0.7))
         self.transform = carla.Transform(
-            carla.Location(x=1.2, z=2.5),  # Kamera lekko z przodu, na wysokości ~oczu
+            carla.Location(x=0.3, z=2.5),  # Kamera lekko z przodu, na wysokości ~oczu
             carla.Rotation(pitch=-10)      # Pochylona w dół o 10 stopni
         )
 
@@ -435,7 +435,7 @@ class CarlaEnv:
         rgb_cam_bp = self.blueprint_library.find("sensor.camera.rgb")
         rgb_cam_bp.set_attribute("image_size_x", f"{self.resX}")
         rgb_cam_bp.set_attribute("image_size_y", f"{self.resY}")
-        rgb_cam_bp.set_attribute("fov", f"75")
+        rgb_cam_bp.set_attribute("fov", f"60")
 
         rgb_cam = self.world.spawn_actor(rgb_cam_bp, self.transform, attach_to=self.vehicle)
         self.actor_list.append(rgb_cam)
