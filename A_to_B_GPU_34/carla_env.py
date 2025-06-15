@@ -68,6 +68,7 @@ MAP_POINTS_SC11 = [ (14,(-55.387177, 0.558450, 0.0)),
 
 MAP_POINTS_SC12 = (167, 165, 18, 200, 222, 105, 106, 1, 134, 3, 100, 139, 109, 190, 146, 188, 186, 184, 174, 126, 48, 233, 0, 32, 30, 44, 191, 51, 53, 238, 237, 235, 231, 229, 228, 225, 11, 85, 45, 247, 132, 252, 42)
 
+MAP_POINTS_SC13 = [(76, 22), (76, 226), (225, 137), (225, 91), (204, 112), (204, 122), (11, 104), (11, 137), (205, 112), (205, 116), (44, 89), (44, 52), (241, 103), (241, 102), (32, 124), (32, 83), (229, 103), (229, 88), (199, 110), (199, 117), (228, 102), (228, 88), (201, 11), (201, 198), (1, 105), (1, 100), (188, 107), (188, 73)]
 def start_carla_server(args):
     return subprocess.Popen(f'CarlaUE4.exe ' + args, cwd=settings.CARLA_PATH, shell=True)
 
@@ -256,6 +257,15 @@ class CarlaEnv:
                 self.spawn_point = carla.Transform(sp.location, sp.rotation)
             except TypeError:
                 print("Error while spawning")
+
+        elif self.scenario == 13:
+            try:
+                self.goal_points_index = random.randint(0,len(MAP_POINTS_SC13)-1)
+                sp_number = MAP_POINTS_SC13[self.goal_points_index][0]
+                sp = self.map.get_spawn_points()[sp_number]
+                self.spawn_point = carla.Transform(sp.location, sp.rotation)
+            except TypeError:
+                print("Error while spawning")
         else:
             self.log.err(f"Invalid params: scenario: {self.scenario} or sp: {sp}, tp:{tp},"
                          f" mp_d:{mp_d}")
@@ -347,7 +357,10 @@ class CarlaEnv:
             valid_spawn_points = [sp for i, sp in enumerate(spawn_points) if i != self.goal_points_index]
             self.goal_location_trans = random.choice(valid_spawn_points)
             self.goal_location_loc = self.goal_location_trans.location
-        
+        elif self.scenario == 13:
+            sp_number = MAP_POINTS_SC13[self.goal_points_index][1]
+            self.goal_location_trans = self.map.get_spawn_points()[sp_number]
+            self.goal_location_loc = self.goal_location_trans.location
         else:
             # self.goal_location_loc = way_points[self.goal_point].transform.location
             # self.goal_location_trans = way_points[self.goal_point].transform
@@ -997,12 +1010,12 @@ class CarlaEnv:
 
         self.world = self.client.reload_world()
 
-        self.settings = self.world.get_settings()
-        self.settings.synchronous_mode = True
-        self.settings.fixed_delta_seconds = 0.1
-        self.settings.max_substep_delta_time = 0.01
-        self.settings.max_substeps = 10
-        self.world.apply_settings(self.settings)
+        # self.settings = self.world.get_settings()
+        # self.settings.synchronous_mode = True
+        # self.settings.fixed_delta_seconds = 0.1
+        # self.settings.max_substep_delta_time = 0.01
+        # self.settings.max_substeps = 10
+        # self.world.apply_settings(self.settings)
 
         # self.world = self.client.reload_world()
 
