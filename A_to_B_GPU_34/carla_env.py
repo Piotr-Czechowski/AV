@@ -69,6 +69,8 @@ MAP_POINTS_SC11 = [ (14,(-55.387177, 0.558450, 0.0)),
 MAP_POINTS_SC12 = (167, 165, 18, 200, 222, 105, 106, 1, 134, 3, 100, 139, 109, 190, 146, 188, 186, 184, 174, 126, 48, 233, 0, 32, 30, 44, 191, 51, 53, 238, 237, 235, 231, 229, 228, 225, 11, 85, 45, 247, 132, 252, 42)
 
 MAP_POINTS_SC13 = [(76, 22), (76, 226), (225, 137), (225, 91), (204, 112), (204, 122), (11, 104), (11, 137), (205, 112), (205, 116), (44, 89), (44, 52), (241, 103), (241, 102), (32, 124), (32, 83), (229, 103), (229, 88), (199, 110), (199, 117), (228, 102), (228, 88), (201, 11), (201, 198), (1, 105), (1, 100), (188, 107), (188, 73)]
+MAP_POINTS_SC14 = [(28, 154), (28, 155), (49, 132), (49, 129), (83, 89), (83, 225), (77, 200), (77,98), (54, 235), (54,234)] #right/straight
+MAP_POINTS_SC15 = [(78, 76), (78, 92), (71, 131), (71, 130), (238, 130),(37, 161), (43, 89),(43,222), (204, 67), (204, 162) ] #left/straight
 def start_carla_server(args):
     return subprocess.Popen(f'CarlaUE4.exe ' + args, cwd=settings.CARLA_PATH, shell=True)
 
@@ -126,7 +128,8 @@ class CarlaEnv:
             self.scenario = self.scenario_list[0]  # Single scenario
         except IndexError:
             self.scenario = False
-
+        
+        self.goal_points_index = 0
         self.sp = spawn_point
         self.tp = terminal_point
         self.middle_goals = []
@@ -188,7 +191,7 @@ class CarlaEnv:
         self.number_of_resets = 0
         self.car_decisions = []
         self.spawn_points_index = 0
-        self.goal_points_index = 0
+        
 
         self.walker = None
         self.walker_controller = None
@@ -266,6 +269,29 @@ class CarlaEnv:
                 self.spawn_point = carla.Transform(sp.location, sp.rotation)
             except TypeError:
                 print("Error while spawning")
+        elif self.scenario == 14:
+            try:
+                if self.goal_points_index == len(MAP_POINTS_SC14)-1:
+                    self.goal_points_index = 0
+                else:
+                    self.goal_points_index = self.goal_points_index+1
+                sp_number = MAP_POINTS_SC14[self.goal_points_index][0]
+                sp = self.map.get_spawn_points()[sp_number]
+                self.spawn_point = carla.Transform(sp.location, sp.rotation)
+            except TypeError:
+                print("Error while spawning")
+
+        elif self.scenario == 15:
+            try:
+                if self.goal_points_index==len(MAP_POINTS_SC15)-1:
+                    self.goal_points_index = 0
+                else:
+                    self.goal_points_index = self.goal_points_index+1
+                sp_number = MAP_POINTS_SC15[self.goal_points_index][0]
+                sp = self.map.get_spawn_points()[sp_number]
+                self.spawn_point = carla.Transform(sp.location, sp.rotation)
+            except TypeError:
+                print("Error while spawning")
         else:
             self.log.err(f"Invalid params: scenario: {self.scenario} or sp: {sp}, tp:{tp},"
                          f" mp_d:{mp_d}")
@@ -320,8 +346,8 @@ class CarlaEnv:
         :return: goal_location - terminal point, self.route - list of tuples of
         """
         # Plan a route to the destination
-        way_points = self.map.generate_waypoints(2.0)
-        dao = GlobalRoutePlannerDAO(self.map, 2.0)
+        way_points = self.map.generate_waypoints(1.0)
+        dao = GlobalRoutePlannerDAO(self.map, 1.0)
         self.planner = GlobalRoutePlanner(dao)
         self.planner.setup()
 
@@ -359,6 +385,14 @@ class CarlaEnv:
             self.goal_location_loc = self.goal_location_trans.location
         elif self.scenario == 13:
             sp_number = MAP_POINTS_SC13[self.goal_points_index][1]
+            self.goal_location_trans = self.map.get_spawn_points()[sp_number]
+            self.goal_location_loc = self.goal_location_trans.location
+        elif self.scenario == 14:
+            sp_number = MAP_POINTS_SC14[self.goal_points_index][1]
+            self.goal_location_trans = self.map.get_spawn_points()[sp_number]
+            self.goal_location_loc = self.goal_location_trans.location
+        elif self.scenario == 15:
+            sp_number = MAP_POINTS_SC15[self.goal_points_index][1]
             self.goal_location_trans = self.map.get_spawn_points()[sp_number]
             self.goal_location_loc = self.goal_location_trans.location
         else:
@@ -1009,7 +1043,12 @@ class CarlaEnv:
         
 
         self.world = self.client.reload_world()
-
+        
+        spawn_points = self.world.get_map().get_spawn_points()
+        for i, spawn_point in enumerate(spawn_points):
+            location = spawn_point.location
+            self.world.debug.draw_string(location, str(i), draw_shadow=False, color=carla.Color(r=0, g=255, b=0), life_time=120.0)
+        
         self.settings = self.world.get_settings()
         self.settings.synchronous_mode = True
         self.settings.fixed_delta_seconds = 0.1
@@ -1033,12 +1072,12 @@ class CarlaEnv:
         tries = 3
         self.world = self.client.get_world()
 
-        spawn_points = self.world.get_map().get_spawn_points()
-        for i, spawn_point in enumerate(spawn_points):
-            location = spawn_point.location
-            self.world.debug.draw_string(location, str(i), draw_shadow=False, color=carla.Color(r=0, g=255, b=0), life_time=120.0)
+        # spawn_points = self.world.get_map().get_spawn_points()
+        # for i, spawn_point in enumerate(spawn_points):
+        #     location = spawn_point.location
+        #     self.world.debug.draw_string(location, str(i), draw_shadow=False, color=carla.Color(r=0, g=255, b=0), life_time=120.0)
+            # self.world.tick()
 
-        self.world.tick()
         while prev_world_id == self.world.id and tries > 0:
             tries -= 1
             self.world.tick()
