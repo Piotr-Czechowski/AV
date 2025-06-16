@@ -113,7 +113,7 @@ class CarlaEnv:
         else:
             self.log.warn(f"Client version: {client_ver}, Server version: {server_ver}")
 
-        self.world = self.client.load_world('Town01')
+        self.world = self.client.load_world('Town03')
 
 
 
@@ -1010,12 +1010,12 @@ class CarlaEnv:
 
         self.world = self.client.reload_world()
 
-        # self.settings = self.world.get_settings()
-        # self.settings.synchronous_mode = True
-        # self.settings.fixed_delta_seconds = 0.1
-        # self.settings.max_substep_delta_time = 0.01
-        # self.settings.max_substeps = 10
-        # self.world.apply_settings(self.settings)
+        self.settings = self.world.get_settings()
+        self.settings.synchronous_mode = True
+        self.settings.fixed_delta_seconds = 0.1
+        self.settings.max_substep_delta_time = 0.01
+        self.settings.max_substeps = 10
+        self.world.apply_settings(self.settings)
 
         # self.world = self.client.reload_world()
 
@@ -1109,7 +1109,7 @@ class CarlaEnv:
         #     _ = self.image_queue.get()
 
         # to render properly path on the road. Otherwise it doesn't shine
-        self.step_apply_action(0)
+        self.step_apply_action(3)
         for i in range(15):
             self.world.tick()
             
