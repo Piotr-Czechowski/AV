@@ -333,6 +333,7 @@ def synchronize_models(agent, weights, device=None):
     n = len(weights)
     model_paths = [model_incr_save + "-{}".format(i) + '.pth' for i in range(n)]
     device = device or "cpu"
+    print(f'Synchonizing model from paths {model_paths} and \n with weights {[we for we in torch.tensor(weights, dtype=torch.float32, device=device)]} on device {device}')
 
     # Normalize weights so they sum to 1
     w = torch.tensor(weights, dtype=torch.float32, device=device)
@@ -530,6 +531,7 @@ def handle_crash(rank: int, world_size: int, shared_array: mp.Array, results_que
 
             shared_array[rank] = agent.mean_reward
             if agent.episode % 300 == 0:
+                print(f'Models are being synchronized')
                 synchronize_models(agent, shared_array, device=device)
 
             if logging:
@@ -629,4 +631,3 @@ if __name__ == "__main__":
             time.sleep(5)
     except:
         print(f' --- Supervisor loop failed --- ')
-    
