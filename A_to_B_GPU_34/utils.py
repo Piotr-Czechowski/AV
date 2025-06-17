@@ -89,7 +89,7 @@ def reward_function(collision_history_list, invasion_counter, speed, route_dista
     #     distance_and_speed = max(speed*(2 - route_distance), -5)
 
     speed_reward = -1.2 + 8*math.sin(speed/10) # pik jest w okolicach 20 km/h
-    if route_distance < 1:
+    if route_distance < 1.5:
         route_distance_reward = 1
     else:
         route_distance_reward = -8*math.sin(speed/10)

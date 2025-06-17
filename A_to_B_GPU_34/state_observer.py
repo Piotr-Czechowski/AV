@@ -12,6 +12,7 @@ class StateObserver:
         self.image = None
         self.episode = None
         self.step = None
+        self.manouver = None
 
     def save_to_disk(self):
         # # Convert the image to a format that OpenCV can work with (BGR format)
@@ -51,6 +52,9 @@ class StateObserver:
 
         cv2.putText(image_sub, "Timnestamp:", (3, 50), font, 0.3, (255, 255, 255), 1, cv2.LINE_AA)
         cv2.putText(image_sub, f"{self.image.timestamp}", (3, 60), font, 0.3, (255, 255, 255), 1, cv2.LINE_AA)
+
+        cv2.putText(image_sub, "Manouver:", (3, 70), font, 0.3, (255, 255, 255), 1, cv2.LINE_AA)
+        cv2.putText(image_sub, f"{self.manouver}", (3, 80), font, 0.3, (255, 255, 255), 1, cv2.LINE_AA)
 
         self.image_sub = np.vstack((image_sub,))
 

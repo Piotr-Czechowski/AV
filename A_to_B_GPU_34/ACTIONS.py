@@ -42,7 +42,7 @@ class ACTIONS:
     ACTION_CONTROL = {
         # acc, br, steer
         0: [0.5, 0, 0],  # forward
-        1: [0.5, 0, -0.5],  # forward left
+        1: [0.5, 0, -0.5],  # no
         2: [0.5, 0, 0.5],  # forward right
         3: [0, 1, 0],  # brake
         4: [0, 1, -0.5],  # brake left
@@ -53,6 +53,21 @@ class ACTIONS:
         9: [0, 1, 0.2], #brake slight right
 
     }
+
+    # ACTION_CONTROL = {
+    #     # acc, br, steer
+    #     0: [1, 0, 0],  # forward
+    #     1: [0, 0, 0],  # no action
+    #     2: [0, 0, 0.5],  # sharp right right
+    #     3: [0, 0, -0.5],  # sharp left
+    #     4: [0, 0, 0.2],  # slight right
+    #     5: [0, 0, -0.2],  # slight left
+    #     6: [0, 0.5, 0], # brake
+    #     7: [0, 0.2, 0.2], #brake slight right
+    #     8: [0, 0.2, -0.2], #brake slight left
+    #     9: [0.4, 0, 0], # slight forward
+
+    # }
 
     ACTIONS_NAMES = {
         0: 'forward',

@@ -343,12 +343,12 @@ def handle_crash(results_queue):
         "learning_rate": lr
         }
         )
-        wandb.run.notes = "Img+speed+manouver. speed/100.Nowy model (nie ten z blokami rezydualnymi), z predkoscia oraz manewrem na wejsciu. Scenariusz 10 - randomowa trasa w kazdym epizodzie. Slight turns like:  9: [0, 1, 0.2], #brake slight right. Gradients logged. Stara/nowa  funkcja nagrody(sin, nacisk an jazde okolo 20 km/h). \n    " \
-        "speed_reward = -1.2 + speed/3" \
+        wandb.run.notes = "Town03. Img+speed+manouver. FOV = 60. speed/100.Nowy model (nie ten z blokami rezydualnymi), z predkoscia oraz manewrem na wejsciu. Scenariusz 13 - Krotkie skrety na roznych skrzyzowaniach. Slight turns like:  9: [0, 1, 0.2], #brake slight right. Gradients logged. Stara/nowa  funkcja nagrody(sin, nacisk an jazde okolo 20 km/h). Kamera (x = 0.3, z=2.5, pitch=-10)\n    " \
+        "speed_reward = -1.2 + 8*math.sin(speed/10)" \
         "if route_distance < 1:" \
         "   route_distance_reward = 1" \
         "else:" \
-        "   route_distance_reward = -speed/3. Startowanie w dwóch miejscach na przemian"
+        "   route_distance_reward = -8*math.sin(speed/10)."
     agent = DeepActorCriticAgent()
     agent.mean_reward = 0
     agent.episode = 0
@@ -363,7 +363,7 @@ def handle_crash(results_queue):
     episode_rewards = []  # Every episode's reward
     prev_checkpoint_mean_ep_rew = agent.best_mean_reward
     num_improved_episodes_before_checkpoint = 0  # To keep track of the num of ep with higher perf to save model
-    episodes_to_save_images = (1, 3, 4, 6, 10, 11, 8114, 8115, 8116, 8117, 8118, 8119)
+    episodes_to_save_images = (1, 5, 10, 43, 44, 50, 150, 400, 401, 402, 1000, 1001, 1002, 1003, 2001, 2002, 2003)
     max_speed = 0
     distance_from_goal = 0
     while 1:
@@ -393,7 +393,7 @@ def handle_crash(results_queue):
         state_rgb, speed_tensor = agent.environment.reset(save_image=save_image, episode = agent.episode)
 
         state_rgb = state_rgb / 255.0  # resize the tensor to [0, 1]
-        speed_tensor = speed_tensor/50.0
+        speed_tensor = speed_tensor/100.0
 
         done = False
         ep_reward = 0.0 
@@ -440,6 +440,7 @@ def handle_crash(results_queue):
 
             print(f'Saving image, {save_image}')
             if save_image:
+                agent.environment.state_observer.manouver = manouver
                 agent.environment.state_observer.action = action # To print action on the frame
                 agent.environment.state_observer.step = episode_step # To print action on the frame
                 agent.environment.state_observer.episode = agent.episode
