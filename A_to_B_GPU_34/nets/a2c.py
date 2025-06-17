@@ -436,24 +436,36 @@ class DiscreteActor(nn.Module):
             nn.ReLU()
         )
 
-        self.manouver_fc = nn.Sequential(
-            nn.Linear(3, 32),  # zakładamy 4 możliwe manewry
+        # self.manouver_fc = nn.Sequential(
+        #     nn.Linear(3, 32),  # zakładamy 4 możliwe manewry
+        #     nn.ReLU()
+        # )
+        
+        # # Łączymy wyjście z CNN (flattenowane do 256*4*4) z przetworzoną prędkością (32)
+        # self.fc = nn.Sequential(
+        #     nn.Linear(256 * 4 * 4 + 32 + 32, 512),  # dodajemy +32 z manewru
+        #     nn.ReLU(),
+        #     nn.Dropout(0.3),
+        #     nn.Linear(512, actor_shape)
+        # )
+        in_features = 256 * 4 * 4 + 32
+
+        # Wspólna część (dla wszystkich manewrów)
+        self.shared_fc = nn.Sequential(
+            nn.Linear(in_features, 128),
             nn.ReLU()
         )
-        
-        # Łączymy wyjście z CNN (flattenowane do 256*4*4) z przetworzoną prędkością (32)
-        self.fc = nn.Sequential(
-            nn.Linear(256 * 4 * 4 + 32 + 32, 512),  # dodajemy +32 z manewru
-            nn.ReLU(),
-            nn.Dropout(0.3),
-            nn.Linear(512, actor_shape)
-        )
+
+        # Osobne głowy dla każdego manewru
+        self.head0 = nn.Linear(128, actor_shape)  # manewr 0
+        self.head1 = nn.Linear(128, actor_shape)  # manewr 1
+        self.head2 = nn.Linear(128, actor_shape)  # manewr 2
 
     def forward(self, x, speed=None, manouver=None):
         # Normalizacja obrazu oraz przetwarzanie przez CNN
         x = x.to(self.device, dtype=torch.float32) / 255.0
         cnn_features = self.cnn(x)
-        cnn_features = cnn_features.view(x.size(0), -1)  # Flatten
+        cnn_features = cnn_features.view(cnn_features.size(0), -1)  # Flatten
         
         # Obsługa speed: jeśli brak, ustawiamy tensor zerowy
         if speed is None:
@@ -465,15 +477,32 @@ class DiscreteActor(nn.Module):
         
         speed_features = self.speed_fc(speed)
 
-        manouver = F.one_hot(manouver, num_classes=3).float().to(self.device)
-        manouver_features = self.manouver_fc(manouver)
+        # manouver = F.one_hot(manouver, num_classes=3).float().to(self.device)
+        # manouver_features = self.manouver_fc(manouver)
         
-        # Łączenie cech obrazu z cechami prędkości
-        # combined = torch.cat([cnn_features, speed_features], dim=1)
-        combined = torch.cat([cnn_features, speed_features, manouver_features], dim=1)
+        # # Łączenie cech obrazu z cechami prędkości
+        # # combined = torch.cat([cnn_features, speed_features], dim=1)
+        # combined = torch.cat([cnn_features, speed_features, manouver_features], dim=1)
 
-        logits = self.fc(combined)
-        return logits
+        # logits = self.fc(combined)
+        # return logits
+
+        features = torch.cat([cnn_features, speed_features], dim=1)
+        
+        shared_out = self.shared_fc(features)
+
+        # Zakładamy batch size = 1 (dla prostoty)
+        m = manouver.item()
+        if m == 0:
+            return self.head0(shared_out)
+        elif m == 1:
+            return self.head1(shared_out)
+        elif m == 2:
+            return self.head2(shared_out)
+        else:
+            raise ValueError(f"Nieznany manewr: {m}")
+
+
 
 import torch
 import torch.nn as nn
@@ -510,23 +539,36 @@ class Critic(nn.Module):
             nn.ReLU()
         )
 
-        self.manouver_fc = nn.Sequential(
-            nn.Linear(3, 32),  # zakładamy 4 możliwe manewry
+        # self.manouver_fc = nn.Sequential(
+        #     nn.Linear(3, 32),  # zakładamy 4 możliwe manewry
+        #     nn.ReLU()
+        # )
+        # # Łączymy wyjście z CNN z informacją o prędkości.
+        # self.fc = nn.Sequential(
+        #     nn.Linear(256 * 4 * 4 + 32 + 32, 512),  # dodajemy +32 z manewru
+        #     nn.ReLU(),
+        #     nn.Dropout(0.3),
+        #     nn.Linear(512, actor_shape)
+        # )
+        in_features = 256 * 4 * 4 + 32
+
+        # Wspólna część (dla wszystkich manewrów)
+        self.shared_fc = nn.Sequential(
+            nn.Linear(in_features, 128),
             nn.ReLU()
         )
-        # Łączymy wyjście z CNN z informacją o prędkości.
-        self.fc = nn.Sequential(
-            nn.Linear(256 * 4 * 4 + 32 + 32, 512),  # dodajemy +32 z manewru
-            nn.ReLU(),
-            nn.Dropout(0.3),
-            nn.Linear(512, actor_shape)
-        )
+
+        # Osobne głowy dla każdego manewru
+        self.head0 = nn.Linear(128, actor_shape)  # manewr 0
+        self.head1 = nn.Linear(128, actor_shape)  # manewr 1
+        self.head2 = nn.Linear(128, actor_shape)  # manewr 2
 
     def forward(self, x, speed=None, manouver=None):
         # Przetwarzanie obrazu oraz normalizacja
         x = x.to(self.device, dtype=torch.float32) / 255.0
+        
         cnn_features = self.cnn(x)
-        cnn_features = cnn_features.view(x.size(0), -1)
+        cnn_features = cnn_features.view(cnn_features.size(0), -1)
         
         # Obsługa wejścia dla prędkości
         if speed is None:
@@ -537,12 +579,26 @@ class Critic(nn.Module):
                 speed = speed.unsqueeze(1)
         
         speed_features = self.speed_fc(speed)
-        manouver = F.one_hot(manouver, num_classes=3).float().to(self.device)
-        manouver_features = self.manouver_fc(manouver)  
+        # manouver = F.one_hot(manouver, num_classes=3).float().to(self.device)
+        # manouver_features = self.manouver_fc(manouver)  
         
-        # Połączenie cech obrazu z cechami prędkości
-        # combined = torch.cat([cnn_features, speed_features], dim=1)
-        combined = torch.cat([cnn_features, speed_features, manouver_features], dim=1)
+        # # Połączenie cech obrazu z cechami prędkości
+        # # combined = torch.cat([cnn_features, speed_features], dim=1)
+        # combined = torch.cat([cnn_features, speed_features, manouver_features], dim=1)
 
-        logits = self.fc(combined)
-        return logits
+        # logits = self.fc(combined)
+        # return logits
+        features = torch.cat([cnn_features, speed_features], dim=1)
+        
+        shared_out = self.shared_fc(features)
+
+        # Zakładamy batch size = 1 (dla prostoty)
+        m = manouver.item()
+        if m == 0:
+            return self.head0(shared_out)
+        elif m == 1:
+            return self.head1(shared_out)
+        elif m == 2:
+            return self.head2(shared_out)
+        else:
+            raise ValueError(f"Nieznany manewr: {m}")
