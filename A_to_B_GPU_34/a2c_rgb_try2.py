@@ -120,7 +120,9 @@ class DeepActorCriticAgent(mp.Process):
         if self.action_type == 'discrete':
             self.action_shape = len(ac.ACTIONS_NAMES)
             self.policy = self.discrete_policy
-            self.actor = DeepDiscreteActor(state_shape, self.action_shape, device).to(device)
+            self.actor = DeepDiscreteActor(input_shape=state_shape, actor_shape=self.action_shape, device=device).to(device)
+
+            # self.actor = DeepDiscreteActor(state_shape, self.action_shape, device).to(device)
         # elif self.action_type == 'continuous':
         #     self.action_shape = 2
         #     self.policy = self.multi_variate_gaussian_policy
@@ -128,7 +130,8 @@ class DeepActorCriticAgent(mp.Process):
         else:
             self.log.err(f"Wrong action type: {self.action_type}, choose discrete or continuous")
 
-        self.critic = DeepCritic(state_shape, critic_shape, device).to(device)
+        # self.critic = DeepCritic(state_shape, critic_shape, device).to(device)
+        self.critic = DeepCritic(state_shape, critic_shape, embed_dim=128, device=device).to(device)
         self.actor_optimizer = torch.optim.Adam(self.actor.parameters(), lr=self.lr, weight_decay=1e-2)
         self.critic_optimizer = torch.optim.Adam(self.critic.parameters(), lr=self.lr, weight_decay=1e-2)
         self.mean_reward = 0
