@@ -69,7 +69,10 @@ MAP_POINTS_SC11 = [ (14,(-55.387177, 0.558450, 0.0)),
 MAP_POINTS_SC12 = (167, 165, 18, 200, 222, 105, 106, 1, 134, 3, 100, 139, 109, 190, 146, 188, 186, 184, 174, 126, 48, 233, 0, 32, 30, 44, 191, 51, 53, 238, 237, 235, 231, 229, 228, 225, 11, 85, 45, 247, 132, 252, 42)
 
 MAP_POINTS_SC13 = [(76, 22), (76, 226), (225, 137), (225, 91), (204, 112), (204, 122), (11, 104), (11, 137), (205, 112), (205, 116), (44, 89), (44, 52), (241, 103), (241, 102), (32, 124), (32, 83), (229, 103), (229, 88), (199, 110), (199, 117), (228, 102), (228, 88), (201, 11), (201, 198), (1, 105), (1, 100), (188, 107), (188, 73)]
-MAP_POINTS_SC14 = [(28, 154), (28, 155), (49, 132), (49, 129), (83, 89), (83, 225), (77, 200), (77,98), (54, 235), (54,234)] #right/straight
+MAP_POINTS_SC14 = [ 
+                    # (28, 154), (49, 132), (83, 225), (77, 200), (54, 235),
+                    (28, 155),  (49, 129), (83, 89), (77,98),  (54,234) 
+                ] #right/straight
 MAP_POINTS_SC15 = [(78, 76), (78, 92), (71, 131), (71, 130), (238, 130),(37, 161), (43, 89),(43,222), (204, 67), (204, 162) ] #left/straight
 def start_carla_server(args):
     return subprocess.Popen(f'CarlaUE4.exe ' + args, cwd=settings.CARLA_PATH, shell=True)
@@ -94,7 +97,7 @@ class CarlaEnv:
     """
     Create Carla environment
     """
-    def __init__(self, scenario, action_space='discrete', resX=200, resY=200, camera='semantic', port=port,
+    def __init__(self, scenario, action_space='discrete', resX=250, resY=250, camera='semantic', port=port,
                  manual_control=False, spawn_point=False, terminal_point=False, mp_density=25):
         # Run the server on 127.0.0.1/port
         #start_carla_server(f'-windowed -carla-server -fps=60 -ResX={serv_resx} -ResY={serv_resy} -quality-level=Low '
@@ -154,7 +157,7 @@ class CarlaEnv:
         # self.transform = carla.Transform(carla.Location(x=2.5, z=0.7))
         self.transform = carla.Transform(
             carla.Location(x=0.3, z=2.5),  # Kamera lekko z przodu, na wysokości ~oczu
-            carla.Rotation(pitch=-10)      # Pochylona w dół o 10 stopni
+            carla.Rotation(pitch=-10, yaw=25)      # Pochylona w dół o 10 stopni
         )
 
         self.manual_control = manual_control
@@ -184,6 +187,7 @@ class CarlaEnv:
         self.preview_camera_enabled = False
         self.done = False
         self.speed = 0
+        self.prev_speed = 0
 
         self.state_observer = StateObserver()
 
@@ -1183,7 +1187,7 @@ class CarlaEnv:
         else:
             self.car_control_discrete(action)
 
-    def step(self, episode, step, save_image=False):
+    def step(self, episode, step, save_image=False, on_junction=False):
         """
         Method which creates an episode as a set of steps
         :param action: car's action
@@ -1230,8 +1234,9 @@ class CarlaEnv:
         self.invasion_history_list = []
 
         reward, done = reward_function(self.collision_history_list, invasion_counter, self.speed, route_distance,
-                                             mp_static_reward, terminal_state_reward)
+                                             mp_static_reward, terminal_state_reward, on_junction, self.prev_speed)
 
+        self.prev_speed = self.speed
         # Terminal state obtained or collision
         self.done = self.done or done
 

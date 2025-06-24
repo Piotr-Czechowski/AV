@@ -401,323 +401,330 @@ import torch
 #         return logits
 
 ########################################### TEN CO WYZEJ ALE Z PREDKOSCIA
-# import torch
-# import torch.nn as nn
-# import torch.nn.functional as F
-
-# class DiscreteActor(nn.Module):
-#     def __init__(self, input_shape, actor_shape, device=torch.device("cuda")):
-#         super(DiscreteActor, self).__init__()
-#         self.device = device
-
-#         self.cnn = nn.Sequential(
-#             nn.Conv2d(input_shape[2], 32, kernel_size=3, stride=1, padding=1),
-#             nn.BatchNorm2d(32),
-#             nn.ReLU(),
-
-#             nn.Conv2d(32, 64, kernel_size=3, stride=2, padding=1),
-#             nn.BatchNorm2d(64),
-#             nn.ReLU(),
-
-#             nn.Conv2d(64, 128, kernel_size=3, stride=2, padding=1),
-#             nn.BatchNorm2d(128),
-#             nn.ReLU(),
-
-#             nn.Conv2d(128, 256, kernel_size=3, stride=2, padding=1),
-#             nn.BatchNorm2d(256),
-#             nn.ReLU(),
-
-#             nn.AdaptiveAvgPool2d((4, 4))  # Spłaszcza do 4x4 niezależnie od wejścia
-#         )
-        
-#         # Gałąź przetwarzająca prędkość – oczekujemy tensor o wymiarze [B, 1]
-#         self.speed_fc = nn.Sequential(
-#             nn.Linear(1, 32),
-#             nn.ReLU()
-#         )
-
-#         # self.manouver_fc = nn.Sequential(
-#         #     nn.Linear(3, 32),  # zakładamy 4 możliwe manewry
-#         #     nn.ReLU()
-#         # )
-        
-#         # # Łączymy wyjście z CNN (flattenowane do 256*4*4) z przetworzoną prędkością (32)
-#         # self.fc = nn.Sequential(
-#         #     nn.Linear(256 * 4 * 4 + 32 + 32, 512),  # dodajemy +32 z manewru
-#         #     nn.ReLU(),
-#         #     nn.Dropout(0.3),
-#         #     nn.Linear(512, actor_shape)
-#         # )
-#         in_features = 256 * 4 * 4 + 32
-
-#         # Wspólna część (dla wszystkich manewrów)
-#         self.shared_fc = nn.Sequential(
-#             nn.Linear(in_features, 128),
-#             nn.ReLU()
-#         )
-
-#         # Osobne głowy dla każdego manewru
-#         self.head0 = nn.Linear(128, actor_shape)  # manewr 0
-#         self.head1 = nn.Linear(128, actor_shape)  # manewr 1
-#         self.head2 = nn.Linear(128, actor_shape)  # manewr 2
-
-#     def forward(self, x, speed=None, manouver=None):
-#         # Normalizacja obrazu oraz przetwarzanie przez CNN
-#         x = x.to(self.device, dtype=torch.float32) / 255.0
-#         cnn_features = self.cnn(x)
-#         cnn_features = cnn_features.view(cnn_features.size(0), -1)  # Flatten
-        
-#         # Obsługa speed: jeśli brak, ustawiamy tensor zerowy
-#         if speed is None:
-#             speed = torch.zeros((x.size(0), 1), device=self.device)
-#         else:
-#             speed = speed.to(self.device, dtype=torch.float32)
-#             if speed.dim() == 1:
-#                 speed = speed.unsqueeze(1)  # Upewnij się, że kształt to [B, 1]
-        
-#         speed_features = self.speed_fc(speed)
-
-#         # manouver = F.one_hot(manouver, num_classes=3).float().to(self.device)
-#         # manouver_features = self.manouver_fc(manouver)
-        
-#         # # Łączenie cech obrazu z cechami prędkości
-#         # # combined = torch.cat([cnn_features, speed_features], dim=1)
-#         # combined = torch.cat([cnn_features, speed_features, manouver_features], dim=1)
-
-#         # logits = self.fc(combined)
-#         # return logits
-
-#         features = torch.cat([cnn_features, speed_features], dim=1)
-        
-#         shared_out = self.shared_fc(features)
-
-#         # Zakładamy batch size = 1 (dla prostoty)
-#         m = manouver.item()
-#         if m == 0:
-#             return self.head0(shared_out)
-#         elif m == 1:
-#             return self.head1(shared_out)
-#         elif m == 2:
-#             return self.head2(shared_out)
-#         else:
-#             raise ValueError(f"Nieznany manewr: {m}")
-
-
-
-# import torch
-# import torch.nn as nn
-# import torch.nn.functional as F
-
-# class Critic(nn.Module):
-#     def __init__(self, input_shape, actor_shape, device=torch.device("cuda")):
-#         super(Critic, self).__init__()
-#         self.device = device
-
-#         self.cnn = nn.Sequential(
-#             nn.Conv2d(input_shape[2], 32, kernel_size=3, stride=1, padding=1),
-#             nn.BatchNorm2d(32),
-#             nn.ReLU(),
-
-#             nn.Conv2d(32, 64, kernel_size=3, stride=2, padding=1),
-#             nn.BatchNorm2d(64),
-#             nn.ReLU(),
-
-#             nn.Conv2d(64, 128, kernel_size=3, stride=2, padding=1),
-#             nn.BatchNorm2d(128),
-#             nn.ReLU(),
-
-#             nn.Conv2d(128, 256, kernel_size=3, stride=2, padding=1),
-#             nn.BatchNorm2d(256),
-#             nn.ReLU(),
-
-#             nn.AdaptiveAvgPool2d((4, 4))  # Spłaszcza do 4x4 niezależnie od wejścia
-#         )
-        
-#         # Gałąź do przetwarzania prędkości
-#         self.speed_fc = nn.Sequential(
-#             nn.Linear(1, 32),
-#             nn.ReLU()
-#         )
-
-#         # self.manouver_fc = nn.Sequential(
-#         #     nn.Linear(3, 32),  # zakładamy 4 możliwe manewry
-#         #     nn.ReLU()
-#         # )
-#         # # Łączymy wyjście z CNN z informacją o prędkości.
-#         # self.fc = nn.Sequential(
-#         #     nn.Linear(256 * 4 * 4 + 32 + 32, 512),  # dodajemy +32 z manewru
-#         #     nn.ReLU(),
-#         #     nn.Dropout(0.3),
-#         #     nn.Linear(512, actor_shape)
-#         # )
-#         in_features = 256 * 4 * 4 + 32
-
-#         # Wspólna część (dla wszystkich manewrów)
-#         self.shared_fc = nn.Sequential(
-#             nn.Linear(in_features, 128),
-#             nn.ReLU()
-#         )
-
-#         # Osobne głowy dla każdego manewru
-#         self.head0 = nn.Linear(128, actor_shape)  # manewr 0
-#         self.head1 = nn.Linear(128, actor_shape)  # manewr 1
-#         self.head2 = nn.Linear(128, actor_shape)  # manewr 2
-
-#     def forward(self, x, speed=None, manouver=None):
-#         # Przetwarzanie obrazu oraz normalizacja
-#         x = x.to(self.device, dtype=torch.float32) / 255.0
-        
-#         cnn_features = self.cnn(x)
-#         cnn_features = cnn_features.view(cnn_features.size(0), -1)
-        
-#         # Obsługa wejścia dla prędkości
-#         if speed is None:
-#             speed = torch.zeros((x.size(0), 1), device=self.device)
-#         else:
-#             speed = speed.to(self.device, dtype=torch.float32)
-#             if speed.dim() == 1:
-#                 speed = speed.unsqueeze(1)
-        
-#         speed_features = self.speed_fc(speed)
-#         # manouver = F.one_hot(manouver, num_classes=3).float().to(self.device)
-#         # manouver_features = self.manouver_fc(manouver)  
-        
-#         # # Połączenie cech obrazu z cechami prędkości
-#         # # combined = torch.cat([cnn_features, speed_features], dim=1)
-#         # combined = torch.cat([cnn_features, speed_features, manouver_features], dim=1)
-
-#         # logits = self.fc(combined)
-#         # return logits
-#         features = torch.cat([cnn_features, speed_features], dim=1)
-        
-#         shared_out = self.shared_fc(features)
-
-#         # Zakładamy batch size = 1 (dla prostoty)
-#         m = manouver.item()
-#         if m == 0:
-#             return self.head0(shared_out)
-#         elif m == 1:
-#             return self.head1(shared_out)
-#         elif m == 2:
-#             return self.head2(shared_out)
-#         else:
-#             raise ValueError(f"Nieznany manewr: {m}")
-
-
-##### Attention is all you need:
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
 class DiscreteActor(nn.Module):
-    def __init__(self, input_shape, actor_shape, embed_dim=128, num_heads=4, device=torch.device("cuda")):
+    def __init__(self, input_shape, actor_shape, device=torch.device("cuda")):
         super(DiscreteActor, self).__init__()
         self.device = device
-        self.embed_dim = embed_dim
 
-        # CNN do ekstrakcji cech obrazu
         self.cnn = nn.Sequential(
             nn.Conv2d(input_shape[2], 32, kernel_size=3, stride=1, padding=1),
             nn.BatchNorm2d(32),
             nn.ReLU(),
+
             nn.Conv2d(32, 64, kernel_size=3, stride=2, padding=1),
             nn.BatchNorm2d(64),
             nn.ReLU(),
+
             nn.Conv2d(64, 128, kernel_size=3, stride=2, padding=1),
             nn.BatchNorm2d(128),
             nn.ReLU(),
-            nn.AdaptiveAvgPool2d((4, 4))
-        )
 
-        self.cnn_out_dim = 128 * 4 * 4
-        self.image_fc = nn.Linear(self.cnn_out_dim, embed_dim)
-        self.speed_fc = nn.Linear(1, embed_dim)
-        self.manouver_fc = nn.Embedding(3, embed_dim)
-
-        self.attention = nn.MultiheadAttention(embed_dim=embed_dim, num_heads=num_heads, batch_first=True)
-
-        self.actor_head = nn.Sequential(
-            nn.Linear(embed_dim, 128),
+            nn.Conv2d(128, 256, kernel_size=3, stride=2, padding=1),
+            nn.BatchNorm2d(256),
             nn.ReLU(),
-            nn.Dropout(0.2),
-            nn.Linear(128, actor_shape)
+
+            nn.AdaptiveAvgPool2d((4, 4))  # Spłaszcza do 4x4 niezależnie od wejścia
+        )
+        
+        # Gałąź przetwarzająca prędkość – oczekujemy tensor o wymiarze [B, 1]
+        self.speed_fc = nn.Sequential(
+            nn.Linear(1, 32),
+            nn.ReLU()
         )
 
-    def forward(self, x, speed, manouver):
-        # x: [B, C, H, W]
-        B = x.size(0)
+        # self.manouver_fc = nn.Sequential(
+        #     nn.Linear(3, 32),  # zakładamy 4 możliwe manewry
+        #     nn.ReLU()
+        # )
+        
+        # # Łączymy wyjście z CNN (flattenowane do 256*4*4) z przetworzoną prędkością (32)
+        # self.fc = nn.Sequential(
+        #     nn.Linear(256 * 4 * 4 + 32 + 32, 512),  # dodajemy +32 z manewru
+        #     nn.ReLU(),
+        #     nn.Dropout(0.3),
+        #     nn.Linear(512, actor_shape)
+        # )
+        in_features = 256 * 4 * 4 + 32
+
+        # Wspólna część (dla wszystkich manewrów)
+        self.shared_fc = nn.Sequential(
+            nn.Linear(in_features, 128),
+            nn.ReLU()
+        )
+
+        # Osobne głowy dla każdego manewru
+        self.head0 = nn.Linear(128, actor_shape)  # manewr 0
+        self.head1 = nn.Linear(128, actor_shape)  # manewr 1
+        self.head2 = nn.Linear(128, actor_shape)  # manewr 2
+
+    def forward(self, x, speed=None, manouver=None, on_juntion=None):
+        # Normalizacja obrazu oraz przetwarzanie przez CNN
         x = x.to(self.device, dtype=torch.float32) / 255.0
-        cnn_features = self.cnn(x).view(B, -1)
-        image_emb = self.image_fc(cnn_features)  # [B, embed_dim]
+        cnn_features = self.cnn(x)
+        cnn_features = cnn_features.view(cnn_features.size(0), -1)  # Flatten
+        
+        # Obsługa speed: jeśli brak, ustawiamy tensor zerowy
+        if speed is None:
+            speed = torch.zeros((x.size(0), 1), device=self.device)
+        else:
+            speed = speed.to(self.device, dtype=torch.float32)
+            if speed.dim() == 1:
+                speed = speed.unsqueeze(1)  # Upewnij się, że kształt to [B, 1]
+        
+        speed_features = self.speed_fc(speed)
 
-        speed = speed.to(self.device, dtype=torch.float32).view(B, 1)
-        speed_emb = self.speed_fc(speed)  # [B, embed_dim]
+        # manouver = F.one_hot(manouver, num_classes=3).float().to(self.device)
+        # manouver_features = self.manouver_fc(manouver)
+        
+        # # Łączenie cech obrazu z cechami prędkości
+        # # combined = torch.cat([cnn_features, speed_features], dim=1)
+        # combined = torch.cat([cnn_features, speed_features, manouver_features], dim=1)
 
-        manouver = manouver.to(self.device, dtype=torch.long)
-        manouver_emb = self.manouver_fc(manouver)  # [B, embed_dim]
+        # logits = self.fc(combined)
+        # return logits
 
-        # Tokeny: [B, 3, embed_dim]
-        tokens = torch.stack([image_emb, speed_emb, manouver_emb], dim=1)
+        features = torch.cat([cnn_features, speed_features], dim=1)
+        
+        shared_out = self.shared_fc(features)
 
-        # Self-attention
-        attn_out, _ = self.attention(tokens, tokens, tokens)  # [B, 3, embed_dim]
-        summary = attn_out[:, 0, :]  # Można też spróbować mean(attn_out, dim=1)
+        # Zakładamy batch size = 1 (dla prostoty)
+        m = manouver.item()
+        if m == 0:
+            return self.head0(shared_out)
+        elif m == 1:
+            return self.head1(shared_out)
+        elif m == 2:
+            return self.head2(shared_out)
+        else:
+            raise ValueError(f"Nieznany manewr: {m}")
 
-        return self.actor_head(summary)
-    
+
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
 
 class Critic(nn.Module):
-    def __init__(self, input_shape, critic_shape, embed_dim=128, num_heads=4, device=torch.device("cuda")):
+    def __init__(self, input_shape, actor_shape, device=torch.device("cuda")):
         super(Critic, self).__init__()
         self.device = device
-        self.embed_dim = embed_dim
 
-        # CNN do ekstrakcji cech obrazu
         self.cnn = nn.Sequential(
             nn.Conv2d(input_shape[2], 32, kernel_size=3, stride=1, padding=1),
             nn.BatchNorm2d(32),
             nn.ReLU(),
+
             nn.Conv2d(32, 64, kernel_size=3, stride=2, padding=1),
             nn.BatchNorm2d(64),
             nn.ReLU(),
+
             nn.Conv2d(64, 128, kernel_size=3, stride=2, padding=1),
             nn.BatchNorm2d(128),
             nn.ReLU(),
-            nn.AdaptiveAvgPool2d((4, 4))
-        )
 
-        self.cnn_out_dim = 128 * 4 * 4
-        self.image_fc = nn.Linear(self.cnn_out_dim, embed_dim)
-        self.speed_fc = nn.Linear(1, embed_dim)
-        self.manouver_fc = nn.Embedding(3, embed_dim)
-
-        self.attention = nn.MultiheadAttention(embed_dim=embed_dim, num_heads=num_heads, batch_first=True)
-
-        self.critic_head = nn.Sequential(
-            nn.Linear(embed_dim, 128),
+            nn.Conv2d(128, 256, kernel_size=3, stride=2, padding=1),
+            nn.BatchNorm2d(256),
             nn.ReLU(),
-            nn.Dropout(0.2),
-            nn.Linear(128, critic_shape)
+
+            nn.AdaptiveAvgPool2d((4, 4))  # Spłaszcza do 4x4 niezależnie od wejścia
+        )
+        
+        # Gałąź do przetwarzania prędkości
+        self.speed_fc = nn.Sequential(
+            nn.Linear(1, 32),
+            nn.ReLU()
         )
 
-    def forward(self, x, speed, manouver):
-        # x: [B, C, H, W]
-        B = x.size(0)
+        # self.manouver_fc = nn.Sequential(
+        #     nn.Linear(3, 32),  # zakładamy 4 możliwe manewry
+        #     nn.ReLU()
+        # )
+        # # Łączymy wyjście z CNN z informacją o prędkości.
+        # self.fc = nn.Sequential(
+        #     nn.Linear(256 * 4 * 4 + 32 + 32, 512),  # dodajemy +32 z manewru
+        #     nn.ReLU(),
+        #     nn.Dropout(0.3),
+        #     nn.Linear(512, actor_shape)
+        # )
+        in_features = 256 * 4 * 4 + 32
+
+        # Wspólna część (dla wszystkich manewrów)
+        self.shared_fc = nn.Sequential(
+            nn.Linear(in_features, 128),
+            nn.ReLU()
+        )
+
+        # Osobne głowy dla każdego manewru
+        self.head0 = nn.Linear(128, actor_shape)  # manewr 0
+        self.head1 = nn.Linear(128, actor_shape)  # manewr 1
+        self.head2 = nn.Linear(128, actor_shape)  # manewr 2
+
+    def forward(self, x, speed=None, manouver=None, on_junction=None):
+        # Przetwarzanie obrazu oraz normalizacja
         x = x.to(self.device, dtype=torch.float32) / 255.0
-        cnn_features = self.cnn(x).view(B, -1)
-        image_emb = self.image_fc(cnn_features)  # [B, embed_dim]
+        
+        cnn_features = self.cnn(x)
+        cnn_features = cnn_features.view(cnn_features.size(0), -1)
+        
+        # Obsługa wejścia dla prędkości
+        if speed is None:
+            speed = torch.zeros((x.size(0), 1), device=self.device)
+        else:
+            speed = speed.to(self.device, dtype=torch.float32)
+            if speed.dim() == 1:
+                speed = speed.unsqueeze(1)
+        
+        speed_features = self.speed_fc(speed)
+        # manouver = F.one_hot(manouver, num_classes=3).float().to(self.device)
+        # manouver_features = self.manouver_fc(manouver)  
+        
+        # # Połączenie cech obrazu z cechami prędkości
+        # # combined = torch.cat([cnn_features, speed_features], dim=1)
+        # combined = torch.cat([cnn_features, speed_features, manouver_features], dim=1)
 
-        speed = speed.to(self.device, dtype=torch.float32).view(B, 1)
-        speed_emb = self.speed_fc(speed)  # [B, embed_dim]
+        # logits = self.fc(combined)
+        # return logits
+        features = torch.cat([cnn_features, speed_features], dim=1)
+        
+        shared_out = self.shared_fc(features)
 
-        manouver = manouver.to(self.device, dtype=torch.long)
-        manouver_emb = self.manouver_fc(manouver)  # [B, embed_dim]
+        # Zakładamy batch size = 1 (dla prostoty)
+        m = manouver.item()
+        if m == 0:
+            return self.head0(shared_out)
+        elif m == 1:
+            return self.head1(shared_out)
+        elif m == 2:
+            return self.head2(shared_out)
+        else:
+            raise ValueError(f"Nieznany manewr: {m}")
 
-        # Tokeny: [B, 3, embed_dim]
-        tokens = torch.stack([image_emb, speed_emb, manouver_emb], dim=1)
 
-        # Self-attention
-        attn_out, _ = self.attention(tokens, tokens, tokens)  # [B, 3, embed_dim]
-        summary = attn_out[:, 0, :]  # Można też spróbować mean(attn_out, dim=1)
+##### Attention is all you need:
+# import torch
+# import torch.nn as nn
+# import torch.nn.functional as F
 
-        return self.critic_head(summary)
+# class DiscreteActor(nn.Module):
+#     def __init__(self, input_shape, actor_shape, embed_dim=128, num_heads=4, device=torch.device("cuda")):
+#         super(DiscreteActor, self).__init__()
+#         self.device = device
+#         self.embed_dim = embed_dim
+
+#         # CNN do ekstrakcji cech obrazu
+#         self.cnn = nn.Sequential(
+#             nn.Conv2d(input_shape[2], 32, kernel_size=3, stride=1, padding=1),
+#             nn.BatchNorm2d(32),
+#             nn.ReLU(),
+#             nn.Conv2d(32, 64, kernel_size=3, stride=2, padding=1),
+#             nn.BatchNorm2d(64),
+#             nn.ReLU(),
+#             nn.Conv2d(64, 128, kernel_size=3, stride=2, padding=1),
+#             nn.BatchNorm2d(128),
+#             nn.ReLU(),
+#             nn.AdaptiveAvgPool2d((4, 4))
+#         )
+
+#         self.cnn_out_dim = 128 * 4 * 4
+#         self.image_fc = nn.Linear(self.cnn_out_dim, embed_dim)
+#         self.speed_fc = nn.Linear(1, embed_dim)
+#         self.manouver_fc = nn.Embedding(3, embed_dim)
+
+#         self.attention = nn.MultiheadAttention(embed_dim=embed_dim, num_heads=num_heads)
+
+
+#         self.actor_head = nn.Sequential(
+#             nn.Linear(embed_dim, 128),
+#             nn.ReLU(),
+#             nn.Dropout(0.2),
+#             nn.Linear(128, actor_shape)
+#         )
+
+#     def forward(self, x, speed, manouver, on_junction):
+#         # x: [B, C, H, W]
+#         B = x.size(0)
+#         x = x.to(self.device, dtype=torch.float32) / 255.0
+#         cnn_features = self.cnn(x).view(B, -1)
+#         image_emb = self.image_fc(cnn_features)  # [B, embed_dim]
+
+#         speed = speed.to(self.device, dtype=torch.float32).view(B, 1)
+#         speed_emb = self.speed_fc(speed)  # [B, embed_dim]
+
+#         manouver = manouver.to(self.device, dtype=torch.long)
+#         manouver_emb = self.manouver_fc(manouver)  # [B, embed_dim]
+
+#         # Tokeny: [B, 3, embed_dim]
+#         tokens = torch.stack([image_emb, speed_emb, manouver_emb], dim=1)
+
+#         # Self-attention
+#         tokens = tokens.transpose(0, 1)  # [seq_len=3, batch_size, embed_dim]
+#         attn_out, _ = self.attention(tokens, tokens, tokens)
+#         attn_out = attn_out.transpose(0, 1)  # [batch_size, seq_len=3, embed_dim]
+
+#         summary = attn_out[:, 0, :]  # Można też spróbować mean(attn_out, dim=1)
+
+#         return self.actor_head(summary)
+    
+
+# class Critic(nn.Module):
+#     def __init__(self, input_shape, critic_shape, embed_dim=128, num_heads=4, device=torch.device("cuda")):
+#         super(Critic, self).__init__()
+#         self.device = device
+#         self.embed_dim = embed_dim
+
+#         # CNN do ekstrakcji cech obrazu
+#         self.cnn = nn.Sequential(
+#             nn.Conv2d(input_shape[2], 32, kernel_size=3, stride=1, padding=1),
+#             nn.BatchNorm2d(32),
+#             nn.ReLU(),
+#             nn.Conv2d(32, 64, kernel_size=3, stride=2, padding=1),
+#             nn.BatchNorm2d(64),
+#             nn.ReLU(),
+#             nn.Conv2d(64, 128, kernel_size=3, stride=2, padding=1),
+#             nn.BatchNorm2d(128),
+#             nn.ReLU(),
+#             nn.AdaptiveAvgPool2d((4, 4))
+#         )
+
+#         self.cnn_out_dim = 128 * 4 * 4
+#         self.image_fc = nn.Linear(self.cnn_out_dim, embed_dim)
+#         self.speed_fc = nn.Linear(1, embed_dim)
+#         self.manouver_fc = nn.Embedding(3, embed_dim)
+
+#         self.attention = nn.MultiheadAttention(embed_dim=embed_dim, num_heads=num_heads)
+
+#         self.critic_head = nn.Sequential(
+#             nn.Linear(embed_dim, 128),
+#             nn.ReLU(),
+#             nn.Dropout(0.2),
+#             nn.Linear(128, critic_shape)
+#         )
+
+#     def forward(self, x, speed, manouver, on_junction):
+#         # x: [B, C, H, W]
+#         B = x.size(0)
+#         x = x.to(self.device, dtype=torch.float32) / 255.0
+#         cnn_features = self.cnn(x).view(B, -1)
+#         image_emb = self.image_fc(cnn_features)  # [B, embed_dim]
+
+#         speed = speed.to(self.device, dtype=torch.float32).view(B, 1)
+#         speed_emb = self.speed_fc(speed)  # [B, embed_dim]
+
+#         manouver = manouver.to(self.device, dtype=torch.long)
+#         manouver_emb = self.manouver_fc(manouver)  # [B, embed_dim]
+
+#         # Tokeny: [B, 3, embed_dim]
+#         tokens = torch.stack([image_emb, speed_emb, manouver_emb], dim=1)
+
+#         # Self-attention
+#         tokens = tokens.transpose(0, 1)  # [seq_len=3, batch_size, embed_dim]
+#         attn_out, _ = self.attention(tokens, tokens, tokens)
+#         attn_out = attn_out.transpose(0, 1)  # [batch_size, seq_len=3, embed_dim]
+
+#         summary = attn_out[:, 0, :]  # Można też spróbować mean(attn_out, dim=1)
+
+#         return self.critic_head(summary)
