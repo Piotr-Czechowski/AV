@@ -68,7 +68,11 @@ MAP_POINTS_SC11 = [ (14,(-55.387177, 0.558450, 0.0)),
 
 MAP_POINTS_SC12 = (167, 165, 18, 200, 222, 105, 106, 1, 134, 3, 100, 139, 109, 190, 146, 188, 186, 184, 174, 126, 48, 233, 0, 32, 30, 44, 191, 51, 53, 238, 237, 235, 231, 229, 228, 225, 11, 85, 45, 247, 132, 252, 42)
 
-MAP_POINTS_SC13 = [(76, 22), (76, 226), (225, 137), (225, 91), (204, 112), (204, 122), (11, 104), (11, 137), (205, 112), (205, 116), (44, 89), (44, 52), (241, 103), (241, 102), (32, 124), (32, 83), (229, 103), (229, 88), (199, 110), (199, 117), (228, 102), (228, 88), (201, 11), (201, 198), (1, 105), (1, 100), (188, 107), (188, 73)]
+MAP_POINTS_SC13 = [
+    # (76, 22), (225, 137), (204, 112), (44, 89), (241, 103), 
+    # (225, 91), (204, 122), (11, 104), (205, 116), (32, 124), 
+    (76, 226), (11, 137), (205, 112),  (44, 52), (241, 102), #(32, 83), (229, 103), (229, 88), (199, 110), (199, 117), (228, 102), (228, 88), (201, 11), (201, 198), (1, 105), (1, 100), (188, 107), (188, 73)]
+]
 MAP_POINTS_SC14 = [ 
                     # (28, 154), (49, 132), (83, 225), (77, 200), (54, 235),
                     (28, 155),  (49, 129), (83, 89), (77,98),  (54,234) 
@@ -118,7 +122,7 @@ class CarlaEnv:
         else:
             self.log.warn(f"Client version: {client_ver}, Server version: {server_ver}")
 
-        self.world = self.client.load_world('Town03')
+        self.world = self.client.load_world('Town01')
 
 
 
@@ -157,7 +161,8 @@ class CarlaEnv:
         # self.transform = carla.Transform(carla.Location(x=2.5, z=0.7))
         self.transform = carla.Transform(
             carla.Location(x=0.3, z=2.5),  # Kamera lekko z przodu, na wysokości ~oczu
-            carla.Rotation(pitch=-10, yaw=25)      # Pochylona w dół o 10 stopni
+            # carla.Rotation(pitch=-10, yaw=25)      # Pochylona w dół o 10 stopni
+            carla.Rotation(pitch=-10) 
         )
 
         self.manual_control = manual_control
