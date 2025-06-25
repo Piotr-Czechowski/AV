@@ -12,6 +12,8 @@ import pdb
 import time
 import numpy as np
 import os
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+import gc
 
 from collections import namedtuple
 import torch
@@ -50,8 +52,8 @@ primary_port = settings.PORT
 action_type = settings.ACTION_TYPE
 camera_type = settings.CAMERA_TYPE
 load_model = settings.LOAD_MODEL
-model_incr_load = 'A_to_B_GPU_34/PC_models/currently_trained/synchr_200_semantic_camera_7_15_para_no_fish_140_3.pth'
-model_incr_save = 'A_to_B_GPU_34/PC_models/currently_trained/synchr_200_semantic_camera_7_15_para_no_fish_140_3'
+model_incr_load = 'A_to_B_GPU_34/PC_models/currently_trained/synchr_200_semantic_camera_7_15_para_scenario_15.pth'
+model_incr_save = 'A_to_B_GPU_34/PC_models/currently_trained/synchr_200_semantic_camera_7_15_para_scenario_15'
 
 gamma = settings.GAMMA
 lr = settings.LR
@@ -165,6 +167,8 @@ class DeepActorCriticAgent(mp.Process):
                                           manouver)  # Call to self.policy(obs) also populates self.value with V(obs)
         # action_distribution = self.policy(obs, speed)  # Call to self.policy(obs) also populates self.value with V(obs)
         if testing:
+            with torch.no_grad():
+                action_distribution = self.policy(obs, speed, manouver) 
             action = action_distribution.probs.argmax(dim=-1)
         else:
             action = action_distribution.sample()
@@ -173,7 +177,8 @@ class DeepActorCriticAgent(mp.Process):
 
         action = self.process_action(action)
         # Store the n-step trajectory while training. Skip storing the trajectories in test mode
-        self.trajectory.append(Transition(obs, self.value, action, log_prob_a))  # Construct the trajectory
+        if not testing:
+            self.trajectory.append(Transition(obs, self.value, action, log_prob_a))  # Construct the trajectory
         return action
 
     def discrete_policy(self, obs, speed, manouver):
@@ -381,9 +386,9 @@ def handle_crash(rank: int, world_size: int, shared_array: mp.Array, results_que
             wandb.init(
                 project="A_to_B",
                 resume="allow",
-                id="synchr_200_semantic_camera_7_15_para_no_fish_140_3-{}".format(rank),
+                id="synchr_200_semantic_camera_7_15_para_scenario_15-{}".format(rank),
                 config={
-                    "name": "synchr_200_semantic_camera_7_15_para_no_fish_140_3-{}".format(rank),
+                    "name": "synchr_200_semantic_camera_7_15_para_scenario_15-{}".format(rank),
                     "learning_rate": lr
                 }
             )
@@ -530,7 +535,7 @@ def handle_crash(rank: int, world_size: int, shared_array: mp.Array, results_que
             agent.save(model_incr_save + "-{}".format(rank))
 
             shared_array[rank] = agent.mean_reward
-            if agent.episode % 300 == 0:
+            if agent.episode % 200 == 0:
                 print(f'Models are being synchronized')
                 synchronize_models(agent, shared_array, device=device)
 
@@ -580,7 +585,7 @@ def training_process(rank, world_size, shared_array, results_queue):
 
 
 if __name__ == "__main__":
-    mp.set_start_method("spawn", force=True)
+    mp.set_start_method("spawn")
 
     world_size = torch.cuda.device_count()
     print(f"[Main] Detected {world_size} GPUs. Launching {world_size} workers.")
@@ -631,3 +636,4 @@ if __name__ == "__main__":
             time.sleep(5)
     except:
         print(f' --- Supervisor loop failed --- ')
+    
