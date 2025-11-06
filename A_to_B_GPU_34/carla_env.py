@@ -123,7 +123,7 @@ class CarlaEnv:
         else:
             self.log.warn(f"Client version: {client_ver}, Server version: {server_ver}")
 
-        self.world = self.client.load_world('Town01')
+        self.world = self.client.load_world('Town03')
 
 
 
