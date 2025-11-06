@@ -78,6 +78,7 @@ MAP_POINTS_SC14 = [
                     (28, 155),  (49, 129), (83, 89), (77,98),  (54,234) 
                 ] #right/straight
 MAP_POINTS_SC15 = [(78, 76), (78, 92), (71, 131), (71, 130), (238, 130),(37, 161), (43, 89),(43,222), (204, 67), (204, 162) ] #left/straight
+TESTING_SC = [(28, 154)]
 def start_carla_server(args):
     return subprocess.Popen(f'CarlaUE4.exe ' + args, cwd=settings.CARLA_PATH, shell=True)
 
@@ -301,6 +302,17 @@ class CarlaEnv:
                 self.spawn_point = carla.Transform(sp.location, sp.rotation)
             except TypeError:
                 print("Error while spawning")
+        elif self.scenario == 16:
+            try:
+                if self.goal_points_index == len(TESTING_SC)-1:
+                    self.goal_points_index = 0
+                else:
+                    self.goal_points_index = self.goal_points_index+1
+                sp_number = TESTING_SC[self.goal_points_index][0]
+                sp = self.map.get_spawn_points()[sp_number]
+                self.spawn_point = carla.Transform(sp.location, sp.rotation)
+            except TypeError:
+                print("Error while spawning")
         else:
             self.log.err(f"Invalid params: scenario: {self.scenario} or sp: {sp}, tp:{tp},"
                          f" mp_d:{mp_d}")
@@ -402,6 +414,10 @@ class CarlaEnv:
             self.goal_location_loc = self.goal_location_trans.location
         elif self.scenario == 15:
             sp_number = MAP_POINTS_SC15[self.goal_points_index][1]
+            self.goal_location_trans = self.map.get_spawn_points()[sp_number]
+            self.goal_location_loc = self.goal_location_trans.location
+        elif self.scenario == 16:
+            sp_number = TESTING_SC[self.goal_points_index][1]
             self.goal_location_trans = self.map.get_spawn_points()[sp_number]
             self.goal_location_loc = self.goal_location_trans.location
         else:
