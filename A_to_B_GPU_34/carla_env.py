@@ -343,9 +343,9 @@ class CarlaEnv:
         # return self.spectator
         spectator_coordinates = self.spawn_point.location
         location = spectator_coordinates
-        location.z = location.z + 30
+        location.z = location.z + 40
         self.spectator = self.world.get_spectator()
-        self.spectator.set_transform(carla.Transform(location, carla.Rotation(yaw=0, pitch=-90, roll=0)))
+        self.spectator.set_transform(carla.Transform(location, carla.Rotation(yaw=0, pitch=-70, roll=0)))
         return self.spectator
 
     def plan_the_route(self):
