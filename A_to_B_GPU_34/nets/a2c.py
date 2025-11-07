@@ -401,6 +401,154 @@ import torch
 #         return logits
 
 ########################################### TEN CO WYZEJ ALE Z PREDKOSCIA
+# import torch
+# import torch.nn as nn
+# import torch.nn.functional as F
+
+# class DiscreteActor(nn.Module):
+#     def __init__(self, input_shape, actor_shape, device=torch.device("cuda")):
+#         super(DiscreteActor, self).__init__()
+#         self.device = device
+
+#         self.cnn = nn.Sequential(
+#             nn.Conv2d(input_shape[2], 32, kernel_size=3, stride=1, padding=1),
+#             nn.BatchNorm2d(32),
+#             nn.ReLU(),
+
+#             nn.Conv2d(32, 64, kernel_size=3, stride=2, padding=1),
+#             nn.BatchNorm2d(64),
+#             nn.ReLU(),
+
+#             nn.Conv2d(64, 128, kernel_size=3, stride=2, padding=1),
+#             nn.BatchNorm2d(128),
+#             nn.ReLU(),
+
+#             nn.Conv2d(128, 256, kernel_size=3, stride=2, padding=1),
+#             nn.BatchNorm2d(256),
+#             nn.ReLU(),
+
+#             nn.AdaptiveAvgPool2d((4, 4))  # Spłaszcza do 4x4 niezależnie od wejścia
+#         )
+        
+#         # Gałąź przetwarzająca prędkość – oczekujemy tensor o wymiarze [B, 1]
+#         self.speed_fc = nn.Sequential(
+#             nn.Linear(1, 32),
+#             nn.ReLU()
+#         )
+
+#         self.manouver_fc = nn.Sequential(
+#             nn.Linear(3, 32),  # zakładamy 4 możliwe manewry
+#             nn.ReLU()
+#         )
+        
+#         # Łączymy wyjście z CNN (flattenowane do 256*4*4) z przetworzoną prędkością (32)
+#         self.fc = nn.Sequential(
+#             nn.Linear(256 * 4 * 4 + 32 + 32, 512),  # dodajemy +32 z manewru
+#             nn.ReLU(),
+#             nn.Dropout(0.3),
+#             nn.Linear(512, actor_shape)
+#         )
+
+#     def forward(self, x, speed=None, manouver=None):
+#         # Normalizacja obrazu oraz przetwarzanie przez CNN
+#         x = x.to(self.device, dtype=torch.float32) / 255.0
+#         cnn_features = self.cnn(x)
+#         cnn_features = cnn_features.view(x.size(0), -1)  # Flatten
+        
+#         # Obsługa speed: jeśli brak, ustawiamy tensor zerowy
+#         if speed is None:
+#             speed = torch.zeros((x.size(0), 1), device=self.device)
+#         else:
+#             speed = speed.to(self.device, dtype=torch.float32)
+#             if speed.dim() == 1:
+#                 speed = speed.unsqueeze(1)  # Upewnij się, że kształt to [B, 1]
+        
+#         speed_features = self.speed_fc(speed)
+
+#         manouver = F.one_hot(manouver, num_classes=3).float().to(self.device)
+#         manouver_features = self.manouver_fc(manouver)
+        
+#         # Łączenie cech obrazu z cechami prędkości
+#         # combined = torch.cat([cnn_features, speed_features], dim=1)
+#         combined = torch.cat([cnn_features, speed_features, manouver_features], dim=1)
+
+#         logits = self.fc(combined)
+#         return logits
+
+# import torch
+# import torch.nn as nn
+# import torch.nn.functional as F
+
+# class Critic(nn.Module):
+#     def __init__(self, input_shape, actor_shape, device=torch.device("cuda")):
+#         super(Critic, self).__init__()
+#         self.device = device
+
+#         self.cnn = nn.Sequential(
+#             nn.Conv2d(input_shape[2], 32, kernel_size=3, stride=1, padding=1),
+#             nn.BatchNorm2d(32),
+#             nn.ReLU(),
+
+#             nn.Conv2d(32, 64, kernel_size=3, stride=2, padding=1),
+#             nn.BatchNorm2d(64),
+#             nn.ReLU(),
+
+#             nn.Conv2d(64, 128, kernel_size=3, stride=2, padding=1),
+#             nn.BatchNorm2d(128),
+#             nn.ReLU(),
+
+#             nn.Conv2d(128, 256, kernel_size=3, stride=2, padding=1),
+#             nn.BatchNorm2d(256),
+#             nn.ReLU(),
+
+#             nn.AdaptiveAvgPool2d((4, 4))  # Spłaszcza do 4x4 niezależnie od wejścia
+#         )
+        
+#         # Gałąź do przetwarzania prędkości
+#         self.speed_fc = nn.Sequential(
+#             nn.Linear(1, 32),
+#             nn.ReLU()
+#         )
+
+#         self.manouver_fc = nn.Sequential(
+#             nn.Linear(3, 32),  # zakładamy 4 możliwe manewry
+#             nn.ReLU()
+#         )
+#         # Łączymy wyjście z CNN z informacją o prędkości.
+#         self.fc = nn.Sequential(
+#             nn.Linear(256 * 4 * 4 + 32 + 32, 512),  # dodajemy +32 z manewru
+#             nn.ReLU(),
+#             nn.Dropout(0.3),
+#             nn.Linear(512, actor_shape)
+#         )
+
+#     def forward(self, x, speed=None, manouver=None):
+#         # Przetwarzanie obrazu oraz normalizacja
+#         x = x.to(self.device, dtype=torch.float32) / 255.0
+#         cnn_features = self.cnn(x)
+#         cnn_features = cnn_features.view(x.size(0), -1)
+        
+#         # Obsługa wejścia dla prędkości
+#         if speed is None:
+#             speed = torch.zeros((x.size(0), 1), device=self.device)
+#         else:
+#             speed = speed.to(self.device, dtype=torch.float32)
+#             if speed.dim() == 1:
+#                 speed = speed.unsqueeze(1)
+        
+#         speed_features = self.speed_fc(speed)
+#         manouver = F.one_hot(manouver, num_classes=3).float().to(self.device)
+#         manouver_features = self.manouver_fc(manouver)  
+        
+#         # Połączenie cech obrazu z cechami prędkości
+#         # combined = torch.cat([cnn_features, speed_features], dim=1)
+#         combined = torch.cat([cnn_features, speed_features, manouver_features], dim=1)
+
+#         logits = self.fc(combined)
+#         return logits
+    
+########################################### MODEL BASE i plus jeden conv i jeden linear
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -427,54 +575,69 @@ class DiscreteActor(nn.Module):
             nn.BatchNorm2d(256),
             nn.ReLU(),
 
-            nn.AdaptiveAvgPool2d((4, 4))  # Spłaszcza do 4x4 niezależnie od wejścia
+            # --- ADDED CONV LAYER ---
+            nn.Conv2d(256, 512, kernel_size=3, stride=1, padding=1),
+            nn.BatchNorm2d(512),
+            nn.ReLU(),
+            # ------------------------
+
+            nn.AdaptiveAvgPool2d((4, 4))  # Flattens to 4x4 regardless of input
         )
         
-        # Gałąź przetwarzająca prędkość – oczekujemy tensor o wymiarze [B, 1]
+        # Branch for processing speed - expects a tensor of shape [B, 1]
         self.speed_fc = nn.Sequential(
             nn.Linear(1, 32),
             nn.ReLU()
         )
 
+        # Branch for processing maneuver
         self.manouver_fc = nn.Sequential(
-            nn.Linear(3, 32),  # zakładamy 4 możliwe manewry
+            nn.Linear(3, 32),  # Assuming 3 possible maneuvers
             nn.ReLU()
         )
         
-        # Łączymy wyjście z CNN (flattenowane do 256*4*4) z przetworzoną prędkością (32)
+        # We combine the output from CNN (flattened to 512*4*4) with processed speed (32) and maneuver (32)
+        # The input size is updated to reflect the new conv layer's output channels (512)
         self.fc = nn.Sequential(
-            nn.Linear(256 * 4 * 4 + 32 + 32, 512),  # dodajemy +32 z manewru
+            nn.Linear(512 * 4 * 4 + 32 + 32, 512),
             nn.ReLU(),
             nn.Dropout(0.3),
-            nn.Linear(512, actor_shape)
+            
+            # --- ADDED LINEAR LAYER ---
+            nn.Linear(512, 256),
+            nn.ReLU(),
+            # --------------------------
+
+            nn.Linear(256, actor_shape)
         )
 
     def forward(self, x, speed=None, manouver=None):
-        # Normalizacja obrazu oraz przetwarzanie przez CNN
+        # Normalize the image and process through CNN
         x = x.to(self.device, dtype=torch.float32) / 255.0
         cnn_features = self.cnn(x)
         cnn_features = cnn_features.view(x.size(0), -1)  # Flatten
         
-        # Obsługa speed: jeśli brak, ustawiamy tensor zerowy
+        # Handle speed: if none, set to a zero tensor
         if speed is None:
             speed = torch.zeros((x.size(0), 1), device=self.device)
         else:
             speed = speed.to(self.device, dtype=torch.float32)
             if speed.dim() == 1:
-                speed = speed.unsqueeze(1)  # Upewnij się, że kształt to [B, 1]
+                speed = speed.unsqueeze(1)  # Ensure shape is [B, 1]
         
         speed_features = self.speed_fc(speed)
 
+        # One-hot encode the maneuver
         manouver = F.one_hot(manouver, num_classes=3).float().to(self.device)
         manouver_features = self.manouver_fc(manouver)
         
-        # Łączenie cech obrazu z cechami prędkości
-        # combined = torch.cat([cnn_features, speed_features], dim=1)
+        # Combine image, speed, and maneuver features
         combined = torch.cat([cnn_features, speed_features, manouver_features], dim=1)
 
         logits = self.fc(combined)
         return logits
-
+    
+    
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -501,47 +664,63 @@ class Critic(nn.Module):
             nn.BatchNorm2d(256),
             nn.ReLU(),
 
-            nn.AdaptiveAvgPool2d((4, 4))  # Spłaszcza do 4x4 niezależnie od wejścia
+            # --- ADDED CONV LAYER ---
+            nn.Conv2d(256, 512, kernel_size=3, stride=1, padding=1),
+            nn.BatchNorm2d(512),
+            nn.ReLU(),
+            # ------------------------
+
+            nn.AdaptiveAvgPool2d((4, 4))  # Flattens to 4x4 regardless of input
         )
         
-        # Gałąź do przetwarzania prędkości
+        # Branch for processing speed - expects a tensor of shape [B, 1]
         self.speed_fc = nn.Sequential(
             nn.Linear(1, 32),
             nn.ReLU()
         )
 
+        # Branch for processing maneuver
         self.manouver_fc = nn.Sequential(
-            nn.Linear(3, 32),  # zakładamy 4 możliwe manewry
+            nn.Linear(3, 32),  # Assuming 3 possible maneuvers
             nn.ReLU()
         )
-        # Łączymy wyjście z CNN z informacją o prędkości.
+        
+        # We combine the output from CNN (flattened to 512*4*4) with processed speed (32) and maneuver (32)
+        # The input size is updated to reflect the new conv layer's output channels (512)
         self.fc = nn.Sequential(
-            nn.Linear(256 * 4 * 4 + 32 + 32, 512),  # dodajemy +32 z manewru
+            nn.Linear(512 * 4 * 4 + 32 + 32, 512),
             nn.ReLU(),
             nn.Dropout(0.3),
-            nn.Linear(512, actor_shape)
+            
+            # --- ADDED LINEAR LAYER ---
+            nn.Linear(512, 256),
+            nn.ReLU(),
+            # --------------------------
+
+            nn.Linear(256, actor_shape)
         )
 
     def forward(self, x, speed=None, manouver=None):
-        # Przetwarzanie obrazu oraz normalizacja
+        # Normalize the image and process through CNN
         x = x.to(self.device, dtype=torch.float32) / 255.0
         cnn_features = self.cnn(x)
-        cnn_features = cnn_features.view(x.size(0), -1)
+        cnn_features = cnn_features.view(x.size(0), -1)  # Flatten
         
-        # Obsługa wejścia dla prędkości
+        # Handle speed: if none, set to a zero tensor
         if speed is None:
             speed = torch.zeros((x.size(0), 1), device=self.device)
         else:
             speed = speed.to(self.device, dtype=torch.float32)
             if speed.dim() == 1:
-                speed = speed.unsqueeze(1)
+                speed = speed.unsqueeze(1)  # Ensure shape is [B, 1]
         
         speed_features = self.speed_fc(speed)
+
+        # One-hot encode the maneuver
         manouver = F.one_hot(manouver, num_classes=3).float().to(self.device)
-        manouver_features = self.manouver_fc(manouver)  
+        manouver_features = self.manouver_fc(manouver)
         
-        # Połączenie cech obrazu z cechami prędkości
-        # combined = torch.cat([cnn_features, speed_features], dim=1)
+        # Combine image, speed, and maneuver features
         combined = torch.cat([cnn_features, speed_features, manouver_features], dim=1)
 
         logits = self.fc(combined)
