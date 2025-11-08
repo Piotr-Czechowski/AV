@@ -27,6 +27,8 @@ from torch.distributions.multivariate_normal import MultivariateNormal
 from carla_env import CarlaEnv
 import carla
 from datetime import datetime
+# for new save and load
+from pathlib import Path
 
 
 # For RGB
@@ -54,8 +56,8 @@ port = settings.PORT
 action_type = settings.ACTION_TYPE
 camera_type = settings.CAMERA_TYPE
 load_model = settings.LOAD_MODEL
-model_incr_load = 'A_to_B_GPU_34/PC_models/currently_trained/worker_0.pth'
-model_incr_save = 'A_to_B_GPU_34/PC_models/currently_trained/worker_0'
+model_incr_load = 'A_to_B_GPU_34/PC_models/currently_trained/synchr_200_semantic_camera_7_15_img_right_manouver_enhanced_base_model_1_0.pth'
+model_incr_save = 'A_to_B_GPU_34/PC_models/currently_trained/synchr_200_semantic_camera_7_15_img_right_manouver_enhanced_base_model_1_0'
 
 gamma = settings.GAMMA
 lr = settings.LR
@@ -269,7 +271,10 @@ class DeepActorCriticAgent(mp.Process):
         for name, param in self.actor.named_parameters():
             if param.grad is not None:
                 if logging:
-                    wandb.log({f"gradients/actor/{name}": wandb.Histogram(param.grad.cpu().numpy())})
+                    try:
+                        wandb.log({f"gradients/actor/{name}": wandb.Histogram(param.grad.cpu().numpy())})
+                    except:
+                        pass
                 else:
                     pass
         self.actor_optimizer.step()
@@ -291,54 +296,144 @@ class DeepActorCriticAgent(mp.Process):
 
         return actor_loss, critic_loss, actor_lr, critic_lr
     
-    def save(self, name):
-        model_file_name = name + ".pth"
-        self_state = {"actor": self.actor.state_dict(),
-                       "actor_optimizer": self.actor_optimizer.state_dict(),
-                       "critic": self.critic.state_dict(),
-                       "critic_optimizer": self.critic_optimizer.state_dict(),
-                       "best_mean_reward": self.best_mean_reward,
-                       "best_reward": self.best_reward,
-                       "episode": self.episode,
-                       "mean_reward": self.mean_reward}
-        torch.save(self_state, model_file_name)
-        # print("self's state is saved to", model_file_name)
+    # def save(self, name):
+    #     model_file_name = name + ".pth"
+    #     if logging:
+    #         print(f'Model to save name {model_file_name}')
+    #     self_state = {"actor": self.actor.state_dict(),
+    #                    "actor_optimizer": self.actor_optimizer.state_dict(),
+    #                    "critic": self.critic.state_dict(),
+    #                    "critic_optimizer": self.critic_optimizer.state_dict(),
+    #                    "best_mean_reward": self.best_mean_reward,
+    #                    "best_reward": self.best_reward,
+    #                    "episode": self.episode,
+    #                    "mean_reward": self.mean_reward}
+    #     if logging:
+    #         print(f'Model path exists {os.path.exists(model_file_name)} model up dir exists {os.path.exists("/".join(model_file_name.split("/")[:-1]))}')
+    #     torch.save(self_state, model_file_name)
 
-    def load(self, name):
-        model_file_name = name
-        self_state = torch.load(model_file_name, map_location=lambda storage, loc: storage)
-        self.actor.load_state_dict(self_state["actor"])
-        self.critic.load_state_dict(self_state["critic"])
-        self.actor_optimizer.load_state_dict(self_state["actor_optimizer"])
-        self.critic_optimizer.load_state_dict(self_state["critic_optimizer"])
-        self.actor.to(device) #added
-        self.critic.to(device) #added
-        try:
-            self.mean_reward = self_state["mean_reward"]
-        except:
-            pass
-        try:
-            self.episode = self_state["episode"]
-        except: 
-            pass
-        self.best_mean_reward = self_state["best_mean_reward"]
-        self.best_reward = self_state["best_reward"]
-        # print("Loaded Advantage Actor-Critic model state from", model_file_name,
-        #       " which fetched a best mean reward of:", self.best_mean_reward,
-        #       " and an all time best reward of:", self.best_reward)
+    # def load(self, name):
+    #     model_file_name = name
+    #     self_state = torch.load(model_file_name, map_location=lambda storage, loc: storage)
+    #     self.actor.load_state_dict(self_state["actor"])
+    #     self.critic.load_state_dict(self_state["critic"])
+    #     self.actor_optimizer.load_state_dict(self_state["actor_optimizer"])
+    #     self.critic_optimizer.load_state_dict(self_state["critic_optimizer"])
+    #     self.actor.to(device) #added
+    #     self.critic.to(device) #added
+    #     try:
+    #         self.mean_reward = self_state["mean_reward"]
+    #     except:
+    #         pass
+    #     try:
+    #         self.episode = self_state["episode"]
+    #     except: 
+    #         pass
+    #     self.best_mean_reward = self_state["best_mean_reward"]
+    #     self.best_reward = self_state["best_reward"]
+    #     # print("Loaded Advantage Actor-Critic model state from", model_file_name,
+    #     #       " which fetched a best mean reward of:", self.best_mean_reward,
+    #     #       " and an all time best reward of:", self.best_reward)
+    
+    
+# Methods for new model
+    def save(self, name: str):
+        """
+        Saves the state of the models, optimizers, and training progress to a .pth file.
+        This version is more robust and provides clearer feedback.
+
+        Args:
+            name (str): The base name for the checkpoint file (e.g., 'checkpoints/carla_agent').
+                        The .pth extension will be added automatically.
+        """
+        # Use pathlib for modern and reliable path handling. It automatically
+        # handles different operating systems (Windows/Linux).
+        save_path = Path(name).with_suffix(".pth")
+        
+        # Ensure the parent directory exists before trying to save the file.
+        # This prevents errors if you're saving to a new folder.
+        save_path.parent.mkdir(parents=True, exist_ok=True)
+
+        if logging:
+            print(f"Saving checkpoint to: {save_path}")
+
+        # The core logic is the same, but we use slightly more descriptive keys.
+        # Calling .state_dict() on the new models automatically includes all sub-modules,
+        # including the SharedFeatureExtractor.
+        checkpoint = {
+            "actor_state_dict": self.actor.state_dict(),
+            "critic_state_dict": self.critic.state_dict(),
+            "actor_optimizer_state_dict": self.actor_optimizer.state_dict(),
+            "critic_optimizer_state_dict": self.critic_optimizer.state_dict(),
+            "best_mean_reward": self.best_mean_reward,
+            "best_reward": self.best_reward,
+            "episode": self.episode,
+            "mean_reward": self.mean_reward
+        }
+
+        # Save the checkpoint dictionary
+        torch.save(checkpoint, save_path)
+        if logging:
+            print(f"Checkpoint saved successfully.")
+
+    def load(self, name: str):
+        """
+        Loads the state of the models, optimizers, and training progress from a .pth file.
+        This version includes better error handling and safer dictionary access.
+
+        Args:
+            name (str): The full path to the checkpoint file (e.g., 'checkpoints/carla_agent.pth').
+        """
+        load_path = Path(name)
+        
+        if not load_path.is_file():
+            if logging:
+                print(f"Error: No checkpoint found at '{load_path}'. Starting from scratch.")
+            return
+
+        if logging:
+            print(f"Loading checkpoint from: {load_path}")
+        
+        # Load the checkpoint onto the correct device (CPU or GPU)
+        checkpoint = torch.load(load_path, map_location=device)
+
+        # Load the state dictionaries into the new model instances
+        self.actor.load_state_dict(checkpoint["actor_state_dict"])
+        self.critic.load_state_dict(checkpoint["critic_state_dict"])
+        
+        # Load the state for the optimizers
+        self.actor_optimizer.load_state_dict(checkpoint["actor_optimizer_state_dict"])
+        self.critic_optimizer.load_state_dict(checkpoint["critic_optimizer_state_dict"])
+
+        # Ensure models are on the correct device after loading
+        self.actor.to(device)
+        self.critic.to(device)
+
+        # Safely load training metadata using .get() with default values.
+        # This prevents errors if a checkpoint is missing a key.
+        self.episode = checkpoint.get("episode", 0)
+        self.mean_reward = checkpoint.get("mean_reward", -float('inf'))
+        self.best_mean_reward = checkpoint.get("best_mean_reward", -float('inf'))
+        self.best_reward = checkpoint.get("best_reward", -float('inf'))
+
+        if logging:
+            print("Checkpoint loaded successfully.")
+            print(f"Resumed from Episode: {self.episode}")
+            print(f"Best Mean Reward: {self.best_mean_reward:.2f}, Best Reward: {self.best_reward:.2f}")
         
 def handle_crash(results_queue):
     if logging:
+        print('Beginngin Weights and Biases initialization')
         wandb.init(
         # set the ##wandb project where this run will be logged
         project="A_to_B",
         # create or extend already logged run:
         resume="allow",
-        id="worker_0",  
+        id="synchr_200_semantic_camera_7_15_img_right_manouver_enhanced_base_model_1_0.pth",
 
         # track hyperparameters and run metadata
         config={
-        "name" : "synchr_200_semantic_camera_workers",
+        "name" : "synchr_200_semantic_camera_7_15_img_right_manouver_enhanced_base_model_1_0.pth",
         "learning_rate": lr
         }
         )
@@ -353,23 +448,29 @@ def handle_crash(results_queue):
     agent = DeepActorCriticAgent()
     agent.mean_reward = 0
     agent.episode = 0
+    print(f'Load a model from file')
     if os.path.isfile(model_incr_load):
         # print("model istnieje i jest wgrywany.")
         agent.load(model_incr_load)
+        print(f'Loaded model and episode is {agent.episode}')
     else:
         print("model jeszcze nie istnieje.")
 
     episode_rewards = []  # Every episode's reward
     prev_checkpoint_mean_ep_rew = agent.best_mean_reward
     num_improved_episodes_before_checkpoint = 0  # To keep track of the num of ep with higher perf to save model
-    episodes_to_save_images = (1, 2, 3, 4, 5, 10, 43, 44, 50, 150, 151, 152, 400, 401, 402, 1000, 1001, 1002, 1003, 2001, 2002, 2003, 10120, 10121, 10122, 10123, 10124)
+    episodes_to_save_images = (1, 5, 10, 43, 44, 50, 150, 400, 401, 402, 1000, 1001, 1002, 1003, 2001, 2002, 2003,
+                                3000, 3001, 3002, 3003, 3004, 3005, 3006, 3007, 3008, 3009, 3010,
+                                4100, 4101, 4102, 4103, 4104, 4105, 4106, 4107, 4108, 4109, 4110,
+                                6800, 6801, 6802, 6803, 6804, 6805, 6806, 6807, 6808, 6809, 6810,
+                                42010, 42011, 42012, 42013, 42014, 42015, 42016, 42017, 42018, 42019, 42020)
     max_speed = 0
     distance_from_goal = 0
     while 1:
         # with lock:
         agent.episode += 1
         print(agent.episode)
-        if agent.episode >= 25000:
+        if agent.episode >= 42030:
             break
                 # SET SYNCHRONOUS MODE
         # agent.environment.settings = agent.environment.world.get_settings()
@@ -439,6 +540,7 @@ def handle_crash(results_queue):
             # action = agent.get_action(state_rgb, speed_tensor, testing)
             action = agent.get_action(state_rgb, speed_tensor, manouver_tensor, testing, on_junction)
 
+            print(f'Saving image, {save_image}')
             if save_image:
                 agent.environment.state_observer.manouver = manouver
                 agent.environment.state_observer.action = action # To print action on the frame
@@ -447,7 +549,6 @@ def handle_crash(results_queue):
                 agent.environment.state_observer.save_to_disk()
                 agent.environment.state_observer.draw_related_values()
                 agent.environment.state_observer.save_together()
-
 
             if agent.action_type == 'discrete':
                 actions_counter[ac.ACTIONS_NAMES[agent.environment.action_space[action]]] += 1
@@ -481,6 +582,7 @@ def handle_crash(results_queue):
             state_rgb = new_state
             agent.global_step_num += 1
 
+        print(f'Episode {agent.episode} ended')
         episode_end_time = datetime.now()
         episode_time = episode_end_time - episode_start_time
         
@@ -489,13 +591,16 @@ def handle_crash(results_queue):
         # if agent.action_type == 'discrete':
         #     print(str(actions_counter))
 
+        print(f'Finalizing data to log to Weights and Biases')
         episode_rewards.append(ep_reward)
         agent.mean_reward = (agent.mean_reward * (min(100, agent.episode)-1) + ep_reward)/min(100, agent.episode) #mean reward from last 100 episodes
-        
         if ep_reward > agent.best_reward:
             agent.best_reward = ep_reward
         agent.save(model_incr_save)
         if logging:
+            print('Logging values of episode steps, episode duration [s], reward, episode, mean_reward etc.')
+            print(f'{datetime.now().strftime("%Y %B %d | %H:%M")}  Logging values of episode steps, episode duration [s], reward, episode, mean_reward etc.')
+            print(f'Episode {agent.episode}, and mean reward {agent.mean_reward}')
             wandb.log({"episode steps": episode_step, "episode duration [s]": episode_time.seconds,"reward": ep_reward, "episode": agent.episode, "mean_reward": agent.mean_reward, "max_speed": max_speed, "distance_from_goal": distance_from_goal})
 
         # print("Episode: {} \t ep_reward:{} \t mean_ep_rew:{}\t best_ep_reward:{} max_speed: {} distance_from_goal: {}".format(agent.episode,
