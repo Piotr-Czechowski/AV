@@ -5,7 +5,7 @@ SHOULD_USE_CUDA = 'cuda' if torch.cuda.is_available() else 'cpu'
 PORT = 2000  # Port on which the server is running
 ACTION_TYPE = 'discrete'  # 'discrete' or 'continuous'
 CAMERA_TYPE = 'semantic'  # 'rgb' or 'semantic'
-GAMMA = 0.9  # Discount factor
+GAMMA = 0.99  # Discount factor
 LR = 1e-4  # Learning rate
 USE_ENTROPY = True  # Entropy is a measure of chaos in a system
 # Using the measure of entropy it is easier to avoid getting stuck in a local optima
@@ -19,7 +19,7 @@ SLEEP_BETWEEN_ACTIONS = 0.2  # How many sec sleep between consecutive actions? E
 SHOW_CAM = False  # Vehicle's camera preview
 SERV_RESX = 640  # Server X resolution
 SERV_RESY = 480  # Server Y resolution
-SCENARIO = [16]  # List of scenarios on which the model is trained
+SCENARIO = [14]  # List of scenarios on which the model is trained
 TESTING = False
 SPAWNING_TYPE = 1 # 0 - random, 1 - at the beginning, 2 - in 2 different places one by one
 LOGGING = False

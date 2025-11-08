@@ -28,8 +28,8 @@ import subprocess
 import cv2
 
 from utils import reward_function
-from A_to_B_GPU_34.carla_navigation.global_route_planner import GlobalRoutePlanner
-from A_to_B_GPU_34.carla_navigation.global_route_planner_dao import GlobalRoutePlannerDAO
+from carla_navigation.global_route_planner import GlobalRoutePlanner
+from carla_navigation.global_route_planner_dao import GlobalRoutePlannerDAO
 from settings import SHOW_CAM
 from state_observer import StateObserver
 from carla_navigation.local_planner import RoadOption
@@ -108,7 +108,7 @@ class CarlaEnv:
         #start_carla_server(f'-windowed -carla-server -fps=60 -ResX={serv_resx} -ResY={serv_resy} -quality-level=Low '
         #                   f'-carla-world-port={port}')
         self.client = carla.Client("localhost", port)
-        self.client.set_timeout(30.0)
+        self.client.set_timeout(120.0)
         
         #for debugging
         # Enable to use colors
@@ -162,8 +162,8 @@ class CarlaEnv:
         # self.transform = carla.Transform(carla.Location(x=2.5, z=0.7))
         self.transform = carla.Transform(
             carla.Location(x=0.3, z=2.5),  # Kamera lekko z przodu, na wysokości ~oczu
-            # carla.Rotation(pitch=-10, yaw=25)      # Pochylona w dół o 10 stopni
-            carla.Rotation(pitch=-10) 
+            carla.Rotation(pitch=-10, yaw=25)      # Pochylona w dół o 10 stopni
+            # carla.Rotation(pitch=-10) 
         )
 
         self.manual_control = manual_control
@@ -232,13 +232,13 @@ class CarlaEnv:
 
         elif self.scenario == 5:
             # Little straight line and right turn
-            sp = self.map.get_spawn_points()[11]
+            sp = self.map.get_spawn_points()[13]
             sp.location.y += 10
             self.spawn_point = carla.Transform(sp.location, sp.rotation)
 
         elif self.scenario == 6:
             # Little straight line and left turn
-            sp = self.map.get_spawn_points()[12]
+            sp = self.map.get_spawn_points()[14]
             # sp.location.y -= 20
             self.spawn_point = carla.Transform(sp.location, sp.rotation)
 
