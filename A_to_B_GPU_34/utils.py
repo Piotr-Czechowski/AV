@@ -53,7 +53,7 @@ class ColoredPrint:
 
 
 def reward_function(collision_history_list, invasion_counter, speed, route_distance, mp_static_reward,
-                          terminal_state_reward):
+                          terminal_state_reward, on_junction, prev_speed):
 
     if len(collision_history_list) != 0 or route_distance >= 10:
         # There was a collision or if the distance between the vehicle and the lane was too large, end the episode
@@ -88,15 +88,19 @@ def reward_function(collision_history_list, invasion_counter, speed, route_dista
     # else:
     #     distance_and_speed = max(speed*(2 - route_distance), -5)
 
-    speed_reward = -1.2 + 8*math.sin(speed/10) # pik jest w okolicach 20 km/h
+    speed_reward = -1.2 + 4*math.sin(speed/10) # pik jest w okolicach 20 km/h
     if route_distance < 1.5:
         route_distance_reward = 1
+        if on_junction and speed_reward > 0:
+            route_distance_reward = route_distance_reward * 4
     else:
-        route_distance_reward = -8*math.sin(speed/10)
+        route_distance_reward = -4*math.sin(speed/10)
+
+
+
 
     # print("terminal_state_reward: ", terminal_state_reward, "col_reward: ", col_reward, "speed_reward: ",speed_reward, "route_distance_reward: ", route_distance_reward, "inv_reward: ", inv_reward, "mp_static_reward: ", mp_static_reward)
     reward = terminal_state_reward + col_reward + speed_reward + route_distance_reward + inv_reward + mp_static_reward
-
     # reward = terminal_state_reward + col_reward + distance_and_speed + inv_reward + mp_static_reward
 
     return reward, done
