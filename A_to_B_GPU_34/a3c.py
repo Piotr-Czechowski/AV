@@ -41,8 +41,8 @@ if torch.cuda.is_available():
 # global settings
 ACTION_TYPE = settings.ACTION_TYPE
 CAMERA_TYPE = settings.CAMERA_TYPE
-MODEL_LOAD_PATH = 'A_to_B_GPU_34/PC_models/currently_trained/synchr_test3.pth'
-MODEL_SAVE_PATH = 'A_to_B_GPU_34/PC_models/currently_trained/synchr_test3'
+MODEL_LOAD_PATH = 'A_to_B_GPU_34/PC_models/currently_trained/synchr_test3_3.pth'
+MODEL_SAVE_PATH = 'A_to_B_GPU_34/PC_models/currently_trained/synchr_test3_3'
 
 GAMMA = settings.GAMMA
 LR = settings.LR
@@ -52,7 +52,7 @@ SCENARIO = settings.SCENARIO
 TESTING = settings.TESTING
 
 # A3C specific settings
-NUM_WORKERS = 4
+NUM_WORKERS = 1
 NUMBER_OF_SERVERS_PER_GPU = 1
 n_gpus = torch.cuda.device_count()
 WORKER_GPUS = ([f'cuda:{g}' for g in range(n_gpus) for _ in range(NUMBER_OF_SERVERS_PER_GPU)])[:NUM_WORKERS]
@@ -719,12 +719,12 @@ if __name__ == "__main__":
         project="A_to_B",
         # create or extend already logged run:
         resume="allow",
-        id="synchr_test3.pth",
+        id="synchr_test3_3.pth",
 
         # track hyperparameters and run metadata
         config={
         "name" : "synchr_test3.pth",
-        "learning_rate": lr
+        "learning_rate": LR
         }
         )
         wandb.run.notes = "Town03. Img+speed+manouver. FOV = 60. speed/100.Nowy model (nie ten z blokami rezydualnymi), z predkoscia oraz manewrem na wejsciu. Scenariusz 13 - Krotkie skrety na roznych skrzyzowaniach. Slight turns like:  9: [0, 1, 0.2], #brake slight right. Gradients logged. Stara/nowa  funkcja nagrody(sin, nacisk an jazde okolo 20 km/h). Kamera (x = 0.3, z=2.5, pitch=-10)\n    " \
