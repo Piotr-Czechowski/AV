@@ -615,7 +615,7 @@ class DiscreteActor(nn.Module):
         # Normalize the image and process through CNN
         x = x.to(self.device, dtype=torch.float32) / 255.0
         cnn_features = self.cnn(x)
-        cnn_features = cnn_features.view(x.size(0), -1)  # Flatten
+        cnn_features = cnn_features.view(cnn_features.size(0), -1)  # Flatten
         
         # Handle speed: if none, set to a zero tensor
         if speed is None:
@@ -703,6 +703,7 @@ class Critic(nn.Module):
     def forward(self, x, speed=None, manouver=None):
         # Normalize the image and process through CNN
         x = x.to(self.device, dtype=torch.float32) / 255.0
+        
         cnn_features = self.cnn(x)
         cnn_features = cnn_features.view(x.size(0), -1)  # Flatten
         
