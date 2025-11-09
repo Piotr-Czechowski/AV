@@ -1,3 +1,4 @@
+# /net/tscratch/people/plgpczechow/AV/.venv/bin/python /net/tscratch/people/plgpczechow/AV/A_to_B_GPU_34/a3c.py
 import glob
 import time
 import numpy as np
@@ -457,6 +458,15 @@ class A3CWorker(mp.Process):
     
     def run(self):
         """Main worker loop"""
+        if LOGGING:
+            wandb.init(
+            project="A_to_B",
+            group="synchr_test3",                 # wspólna grupa dla wszystkich workerów
+            name=f"worker-{self.worker_id}",     # unikalna nazwa
+            resume="allow",
+            id="0002.pth",
+            config={"learning_rate": LR}
+        )
         logger.info("W%d started", self.worker_id)
         
         env = None
@@ -719,20 +729,20 @@ if __name__ == "__main__":
         project="A_to_B",
         # create or extend already logged run:
         resume="allow",
-        id="synchr_test3_3.pth",
+        id="synchr_test3.pth",
 
-        # track hyperparameters and run metadata
-        config={
-        "name" : "synchr_test3.pth",
-        "learning_rate": LR
-        }
-        )
-        wandb.run.notes = "Town03. Img+speed+manouver. FOV = 60. speed/100.Nowy model (nie ten z blokami rezydualnymi), z predkoscia oraz manewrem na wejsciu. Scenariusz 13 - Krotkie skrety na roznych skrzyzowaniach. Slight turns like:  9: [0, 1, 0.2], #brake slight right. Gradients logged. Stara/nowa  funkcja nagrody(sin, nacisk an jazde okolo 20 km/h). Kamera (x = 0.3, z=2.5, pitch=-10)\n    " \
-        "speed_reward = -1.2 + 8*math.sin(speed/10)" \
-        "if route_distance < 1:" \
-        "   route_distance_reward = 1" \
-        "else:" \
-        "   route_distance_reward = -8*math.sin(speed/10)."
+    #     # track hyperparameters and run metadata
+    #     config={
+    #     "name" : "synchr_test3.pth",
+    #     "learning_rate": LR
+    #     }
+    #     )
+    #     wandb.run.notes = "Town03. Img+speed+manouver. FOV = 60. speed/100.Nowy model (nie ten z blokami rezydualnymi), z predkoscia oraz manewrem na wejsciu. Scenariusz 13 - Krotkie skrety na roznych skrzyzowaniach. Slight turns like:  9: [0, 1, 0.2], #brake slight right. Gradients logged. Stara/nowa  funkcja nagrody(sin, nacisk an jazde okolo 20 km/h). Kamera (x = 0.3, z=2.5, pitch=-10)\n    " \
+    #     "speed_reward = -1.2 + 8*math.sin(speed/10)" \
+    #     "if route_distance < 1:" \
+    #     "   route_distance_reward = 1" \
+    #     "else:" \
+    #     "   route_distance_reward = -8*math.sin(speed/10)."
     
     # set multiprocessing start method
     mp.set_start_method('spawn')
