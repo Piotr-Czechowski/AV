@@ -402,10 +402,12 @@ class A3CWorker(mp.Process):
             return
         
         # average accumulated gradients 
-        avg_actor_grads = [(g*UPDATE_INTERVAL)/self.steps_since_update if g is not None else None 
+        avg_actor_grads = [g if g is not None else None 
                           for g in self.accumulated_actor_grads]
-        avg_critic_grads = [(g*UPDATE_INTERVAL) / self.steps_since_update if g is not None else None 
+        avg_critic_grads = [g if g is not None else None 
                            for g in self.accumulated_critic_grads]
+
+        
         
         # send to global network
         self.global_network.update_from_worker(
