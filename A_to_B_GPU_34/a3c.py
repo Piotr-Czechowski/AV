@@ -722,14 +722,14 @@ if __name__ == "__main__":
             ])
 
     # wandb setup
-    if LOGGING:
-        print('Beginngin Weights and Biases initialization')
-        wandb.init(
-        # set the ##wandb project where this run will be logged
-        project="A_to_B",
-        # create or extend already logged run:
-        resume="allow",
-        id="synchr_test3.pth",
+    # if LOGGING:
+    #     print('Beginngin Weights and Biases initialization')
+    #     wandb.init(
+    #     # set the ##wandb project where this run will be logged
+    #     project="A_to_B",
+    #     # create or extend already logged run:
+    #     resume="allow",
+    #     id="synchr_test3.pth",
 
     #     # track hyperparameters and run metadata
     #     config={
