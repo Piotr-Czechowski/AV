@@ -1,4 +1,6 @@
 # /net/tscratch/people/plgpczechow/AV/.venv/bin/python /net/tscratch/people/plgpczechow/AV/A_to_B_GPU_34/a3c.py
+#nohup /net/tscratch/people/plgpczechow/AV/.venv/bin/python /net/tscratch/people/plgpczechow/AV/A_to_B_GPU_34/a3c.py > a3c_out.log 2>&1 &
+
 import glob
 import time
 import numpy as np
@@ -42,13 +44,14 @@ if torch.cuda.is_available():
 # global settings
 ACTION_TYPE = settings.ACTION_TYPE
 CAMERA_TYPE = settings.CAMERA_TYPE
-MODEL_LOAD_PATH = 'A_to_B_GPU_34/PC_models/currently_trained/synchr_test3_3.pth'
-MODEL_SAVE_PATH = 'A_to_B_GPU_34/PC_models/currently_trained/synchr_test3_3'
+MODEL_LOAD_PATH = 'A_to_B_GPU_34/PC_models/currently_trained/synchr_test3_5.pth'
+MODEL_SAVE_PATH = 'A_to_B_GPU_34/PC_models/currently_trained/synchr_test3_5'
+EXP_ID = "0005.pth"
 
 GAMMA = settings.GAMMA
 LR = settings.LR
 USE_ENTROPY = settings.USE_ENTROPY
-ENTROPY_COEF = 0.001  # entropy regularization coefficient
+# ENTROPY_COEF = 0.001  # entropy regularization coefficient
 SCENARIO = settings.SCENARIO
 TESTING = settings.TESTING
 
@@ -253,7 +256,7 @@ class A3CWorker(mp.Process):
         # hyperparameters
         self.gamma = GAMMA
         self.use_entropy = USE_ENTROPY
-        self.entropy_coef = ENTROPY_COEF
+        # self.entropy_coef = ENTROPY_COEF
         
         # training state
         self.trajectory = []
@@ -297,6 +300,7 @@ class A3CWorker(mp.Process):
         value = self.critic(obs, speed, manouver)
         
         distribution = Categorical(logits=logits)
+        self.action_distribution = distribution
         
         if testing:
             with torch.no_grad():
@@ -356,9 +360,14 @@ class A3CWorker(mp.Process):
         critic_loss = torch.stack(critic_losses).mean()
         
         # add entropy bonus for exploration
-        if self.use_entropy and hasattr(self, 'last_distribution'):
-            entropy = self.last_distribution.entropy().mean()
-            actor_loss = actor_loss - self.entropy_coef * entropy
+        # if self.use_entropy and hasattr(self, 'last_distribution'):
+        #     entropy = self.last_distribution.entropy().mean()
+        #     actor_loss = actor_loss - self.entropy_coef * entropy
+
+        if self.use_entropy:
+            actor_loss = torch.stack(actor_losses).mean() - self.action_distribution.entropy().mean()
+        else:
+            actor_loss = torch.stack(actor_losses).mean()
         
         # compute gradients
         self.actor.zero_grad()
@@ -466,7 +475,7 @@ class A3CWorker(mp.Process):
             group="synchr_test3",                 # wspólna grupa dla wszystkich workerów
             name=f"worker-{self.worker_id}",     # unikalna nazwa
             resume="allow",
-            id="0002.pth",
+            id=EXP_ID,
             config={"learning_rate": LR}
         )
         logger.info("W%d started", self.worker_id)
@@ -580,9 +589,6 @@ class A3CWorker(mp.Process):
                                 # sync with global network after update
                                 self.sync_with_global()
                                 
-                                # save model periodically
-                                if self.episode_count % SAVE_INTERVAL == 0:
-                                    self.global_network.save(MODEL_SAVE_PATH)
                             
                             step_count = 0
                         
@@ -593,6 +599,10 @@ class A3CWorker(mp.Process):
                     torch.cuda.empty_cache()
                     
                     self.log_episode(current_episode, ep_reward, episode_step)
+                    
+                    if self.episode_count % SAVE_INTERVAL == 0:
+                        self.global_network.save(MODEL_SAVE_PATH)
+                    
                     self.retry_count = 0
                     
                 except RuntimeError as e:
@@ -755,8 +765,8 @@ if __name__ == "__main__":
     logger.info("Workers: %d | GPUs: %s", NUM_WORKERS, WORKER_GPUS)
     logger.info("LR: %.6f | Gamma: %.4f | Update interval: %d steps",
                LR, GAMMA, UPDATE_INTERVAL)
-    logger.info("Max grad norm: %.2f | Entropy coef: %.3f",
-               MAX_GRAD_NORM, ENTROPY_COEF)
+    # logger.info("Max grad norm: %.2f | Entropy coef: %.3f",
+    #            MAX_GRAD_NORM, ENTROPY_COEF)
     logger.info("=" * 80)
     
     # initialize global network

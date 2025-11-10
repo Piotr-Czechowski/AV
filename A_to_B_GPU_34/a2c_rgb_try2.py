@@ -56,8 +56,8 @@ port = settings.PORT
 action_type = settings.ACTION_TYPE
 camera_type = settings.CAMERA_TYPE
 load_model = settings.LOAD_MODEL
-model_incr_load = 'A_to_B_GPU_34/PC_models/currently_trained/synchr_200_semantic_camera_7_15_img_right_manouver_enhanced_base_model_1_0.pth'
-model_incr_save = 'A_to_B_GPU_34/PC_models/currently_trained/synchr_200_semantic_camera_7_15_img_right_manouver_enhanced_base_model_1_0'
+model_incr_load = 'A_to_B_GPU_34/PC_models/currently_trained/synchr_200_semantic_camera_7_15_img_right_manouver_enhanced_base_model_1_1.pth'
+model_incr_save = 'A_to_B_GPU_34/PC_models/currently_trained/synchr_200_semantic_camera_7_15_img_right_manouver_enhanced_base_model_1_1'
 
 gamma = settings.GAMMA
 lr = settings.LR
@@ -429,11 +429,11 @@ def handle_crash(results_queue):
         project="A_to_B",
         # create or extend already logged run:
         resume="allow",
-        id="synchr_200_semantic_camera_7_15_img_right_manouver_enhanced_base_model_1_0.pth",
+        id="synchr_200_semantic_camera_7_15_img_right_manouver_enhanced_base_model_1_1.pth",
 
         # track hyperparameters and run metadata
         config={
-        "name" : "synchr_200_semantic_camera_7_15_img_right_manouver_enhanced_base_model_1_0.pth",
+        "name" : "synchr_200_semantic_camera_7_15_img_right_manouver_enhanced_base_model_1_1.pth",
         "learning_rate": lr
         }
         )
@@ -540,7 +540,7 @@ def handle_crash(results_queue):
             # action = agent.get_action(state_rgb, speed_tensor, testing)
             action = agent.get_action(state_rgb, speed_tensor, manouver_tensor, testing)
 
-            print(f'Saving image, {save_image}')
+            # print(f'Saving image, {save_image}')
             if save_image:
                 agent.environment.state_observer.manouver = manouver
                 agent.environment.state_observer.action = action # To print action on the frame
