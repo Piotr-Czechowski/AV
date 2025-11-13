@@ -44,9 +44,9 @@ if torch.cuda.is_available():
 # global settings
 ACTION_TYPE = settings.ACTION_TYPE
 CAMERA_TYPE = settings.CAMERA_TYPE
-MODEL_LOAD_PATH = 'A_to_B_GPU_34/PC_models/currently_trained/synchr_test3_5.pth'
-MODEL_SAVE_PATH = 'A_to_B_GPU_34/PC_models/currently_trained/synchr_test3_5'
-EXP_ID = "0005.pth"
+MODEL_LOAD_PATH = 'A_to_B_GPU_34/PC_models/currently_trained/synchr_test3_7.pth'
+MODEL_SAVE_PATH = 'A_to_B_GPU_34/PC_models/currently_trained/synchr_test3_7'
+EXP_ID = "0007.pth"
 
 GAMMA = settings.GAMMA
 LR = settings.LR
@@ -165,29 +165,48 @@ class GlobalNetwork:
         logger.info("Optimizer: SharedAdam | LR: %.6f", LR)
         logger.info("=" * 80)
     
-    def update_from_worker(self, worker_id, actor_grads, critic_grads):
+    def update_from_worker(self, worker_id, actor_pack, critic_pack):
         """
         Update global network parameters using gradients from worker
         """
+        actor_names, actor_grads = actor_pack
+        critic_names, critic_grads = critic_pack
         with self.lock:
             # update actor
             self.actor_optimizer.zero_grad()
-            for param, grad in zip(self.actor.parameters(), actor_grads):
-                if grad is not None:
-                    param.grad = grad.to(self.device)
+            name2param_actor = dict(self.actor.named_parameters())
+            for name, grad in zip(actor_names, actor_grads):
+                if grad is None:
+                    continue
+                p = name2param_actor.get(name, None)
+                if p is None:
+                    raise RuntimeError(f"[A3C] Unknown actor param name from worker: {name}")
+                p.grad = grad.to(self.device)
+            # for param, grad in zip(self.actor.parameters(), actor_grads):
+            #     if grad is not None:
+            #         param.grad = grad.to(self.device)
             
             # gradient clipping for stability for actor
-            torch.nn.utils.clip_grad_norm_(self.actor.parameters(), MAX_GRAD_NORM)
+            # torch.nn.utils.clip_grad_norm_(self.actor.parameters(), MAX_GRAD_NORM)
             self.actor_optimizer.step()
             
             # update critic
             self.critic_optimizer.zero_grad()
-            for param, grad in zip(self.critic.parameters(), critic_grads):
-                if grad is not None:
-                    param.grad = grad.to(self.device)
-            
+            name2param_critic = dict(self.critic.named_parameters())
+
+            # for param, grad in zip(self.critic.parameters(), critic_grads):
+            #     if grad is not None:
+            #         param.grad = grad.to(self.device)
+                
+            for name, grad in zip(critic_names, critic_grads):
+                if grad is None:
+                    continue
+                p = name2param_critic.get(name, None)
+                if p is None:
+                    raise RuntimeError(f"[A3C] Unknown critic param name from worker: {name}")
+                p.grad = grad.to(self.device)
             # gradient clipping for stability for critic
-            torch.nn.utils.clip_grad_norm_(self.critic.parameters(), MAX_GRAD_NORM)
+            # torch.nn.utils.clip_grad_norm_(self.critic.parameters(), MAX_GRAD_NORM)
             self.critic_optimizer.step()
             
             self.total_updates.value += 1
@@ -374,36 +393,40 @@ class A3CWorker(mp.Process):
         actor_loss.backward(retain_graph=True)
         actor_grads = [p.grad.clone() if p.grad is not None else None 
                       for p in self.actor.parameters()]
+        actor_names = [n for n, _ in self.actor.named_parameters()]
+
         
         self.critic.zero_grad()
         critic_loss.backward()
         critic_grads = [p.grad.clone() if p.grad is not None else None 
                        for p in self.critic.parameters()]
+        critic_names = [n for n, _ in self.critic.named_parameters()]
+
         
-        # accumulate gradients
-        if len(self.accumulated_actor_grads) == 0:
-            self.accumulated_actor_grads = actor_grads
-            self.accumulated_critic_grads = critic_grads
-        else:
-            for i in range(len(actor_grads)):
-                if actor_grads[i] is not None:
-                    if self.accumulated_actor_grads[i] is not None:
-                        self.accumulated_actor_grads[i] += actor_grads[i]
-                    else:
-                        self.accumulated_actor_grads[i] = actor_grads[i]
+        # # accumulate gradients
+        # if len(self.accumulated_actor_grads) == 0:
+        #     self.accumulated_actor_grads = actor_grads
+        #     self.accumulated_critic_grads = critic_grads
+        # else:
+        #     for i in range(len(actor_grads)):
+        #         if actor_grads[i] is not None:
+        #             if self.accumulated_actor_grads[i] is not None:
+        #                 self.accumulated_actor_grads[i] += actor_grads[i]
+        #             else:
+        #                 self.accumulated_actor_grads[i] = actor_grads[i]
             
-            for i in range(len(critic_grads)):
-                if critic_grads[i] is not None:
-                    if self.accumulated_critic_grads[i] is not None:
-                        self.accumulated_critic_grads[i] += critic_grads[i]
-                    else:
-                        self.accumulated_critic_grads[i] = critic_grads[i]
+        #     for i in range(len(critic_grads)):
+        #         if critic_grads[i] is not None:
+        #             if self.accumulated_critic_grads[i] is not None:
+        #                 self.accumulated_critic_grads[i] += critic_grads[i]
+        #             else:
+        #                 self.accumulated_critic_grads[i] = critic_grads[i]
         
         # clear trajectory after computation
         self.trajectory.clear()
         self.rewards.clear()
         
-        return actor_loss.item(), critic_loss.item()
+        return actor_loss.item(), critic_loss.item(), (actor_names, actor_grads), (critic_names, critic_grads)
     
     def update_global_network(self):
         """Send accumulated gradients to global network"""
@@ -579,14 +602,22 @@ class A3CWorker(mp.Process):
                         
                         # update global network periodically
                         if not TESTING and (step_count >= UPDATE_INTERVAL or done):
-                            actor_loss, critic_loss = self.compute_gradients(
+                            actor_loss, critic_loss, (actor_names, actor_grads), (critic_names, critic_grads) = self.compute_gradients(
                                 next_state, done, speed, maneuver_tensor
                             )
                             
-                            if actor_loss is not None:
-                                self.steps_since_update += step_count
-                                self.update_global_network()
-                                # sync with global network after update
+                            # if actor_loss is not None:
+                            #     self.steps_since_update += step_count
+                            #     self.update_global_network()
+                            #     # sync with global network after update
+                            #     self.sync_with_global()
+                            
+                            if actor_grads is not None:
+                                self.global_network.update_from_worker(
+                                    self.worker_id,
+                                    (actor_names, actor_grads),
+                                    (critic_names, critic_grads)
+                                )
                                 self.sync_with_global()
                                 
                             
