@@ -44,9 +44,9 @@ if torch.cuda.is_available():
 # global settings
 ACTION_TYPE = settings.ACTION_TYPE
 CAMERA_TYPE = settings.CAMERA_TYPE
-MODEL_LOAD_PATH = 'A_to_B_GPU_34/PC_models/currently_trained/synchr_test3_7.pth'
-MODEL_SAVE_PATH = 'A_to_B_GPU_34/PC_models/currently_trained/synchr_test3_7'
-EXP_ID = "0007.pth"
+MODEL_LOAD_PATH = 'A_to_B_GPU_34/PC_models/currently_trained/synchr_test3_9.pth'
+MODEL_SAVE_PATH = 'A_to_B_GPU_34/PC_models/currently_trained/synchr_test3_9'
+EXP_ID = "0009.pth"
 
 GAMMA = settings.GAMMA
 LR = settings.LR
@@ -65,7 +65,7 @@ BASE_PORT = settings.PORT
 # Training parameters
 UPDATE_INTERVAL = 5  # accumulate gradients for N steps before update
 MAX_GRAD_NORM = 1.0  # gradient clipping threshold - used to avoid too big gradients
-SAVE_INTERVAL = 5  # save model every N episodes (per worker)
+SAVE_INTERVAL = 1  # save model every N episodes (per worker)
 
 # retrying settings
 MAX_RETRIES = 3
@@ -292,7 +292,7 @@ class A3CWorker(mp.Process):
         self.retry_count = 0
         
         # networks (local copies on GPU for fast forward passes)
-        state_shape = [200, 200, 3]
+        state_shape = [250, 250, 3]
         critic_shape = 1
         action_shape = len(ac.ACTIONS_NAMES)
         
@@ -503,8 +503,32 @@ class A3CWorker(mp.Process):
         )
         logger.info("W%d started", self.worker_id)
         
+        # === PRZYWRACANIE ŚREDNIEJ NAGRODY PO RESTARTCIE WORKERA ===
+        try:
+            with self.global_network.lock:
+                prev_mean = self.global_network.worker_mean_rewards[self.worker_id]
+        except Exception as e:
+            logger.warning("W%d cannot restore previous mean reward: %s",
+                        self.worker_id, str(e))
+            prev_mean = 0.0
+
+        if prev_mean != 0.0:
+            # Ustawiamy lokalną średnią na wartość z globalnej sieci
+            self.mean_reward = prev_mean
+
+            # Prewypełniamy historię nagród, żeby rolling-mean był spójny
+            # Zakładamy okno 100, zgodnie z log_episode
+            self.episode_rewards_history = [prev_mean] * 100
+            self.episode_count = 100
+
+            logger.info("W%d restored mean reward from global: %.3f",
+                        self.worker_id, prev_mean)
+        else:
+            logger.info("W%d no previous mean reward found (starting from scratch).",
+                        self.worker_id)
+
         env = None
-        episodes_to_save = (1, 2, 3, 5, 10, 50, 100, 200, 500)
+        episodes_to_save = (1, 2, 3, 5, 10, 50, 100, 250, 500)
         
         try:
             # initialize CARLA environment
@@ -512,7 +536,7 @@ class A3CWorker(mp.Process):
                 scenario=SCENARIO, spawn_point=False, terminal_point=False,
                 mp_density=25, port=self.port,
                 action_space=ACTION_TYPE, camera=CAMERA_TYPE,
-                resX=200, resY=200, manual_control=False
+                resX=250, resY=250, manual_control=False
             )
             
             while True:
@@ -592,7 +616,9 @@ class A3CWorker(mp.Process):
                         next_state, reward, done, _, speed, _ = env.step(
                             save_image=save_images, episode=current_episode, step=episode_step
                         )
-                        
+                        if save_images:
+                            env.state_observer.reward = reward
+
                         next_state = next_state/255.0
                         speed = speed / 100.0
                         
@@ -657,7 +683,7 @@ class A3CWorker(mp.Process):
                             scenario=SCENARIO, spawn_point=False, terminal_point=False,
                             mp_density=25, port=self.port,
                             action_space=ACTION_TYPE, camera=CAMERA_TYPE,
-                            resX=200, resY=200, manual_control=False
+                            resX=250, resY=250, manual_control=False
                         )
                         logger.info("W%d reconnected", self.worker_id)
                     else:
@@ -801,7 +827,7 @@ if __name__ == "__main__":
     logger.info("=" * 80)
     
     # initialize global network
-    state_shape = [200, 200, 3]
+    state_shape = [250, 250, 3]
     action_shape = len(ac.ACTIONS_NAMES)
     critic_shape = 1
     
