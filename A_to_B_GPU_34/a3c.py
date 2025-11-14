@@ -1,3 +1,6 @@
+# /net/tscratch/people/plgpczechow/AV/.venv/bin/python /net/tscratch/people/plgpczechow/AV/A_to_B_GPU_34/a3c.py
+#nohup /net/tscratch/people/plgpczechow/AV/.venv/bin/python /net/tscratch/people/plgpczechow/AV/A_to_B_GPU_34/a3c.py > a3c_out.log 2>&1 &
+
 import glob
 import time
 import numpy as np
@@ -41,18 +44,19 @@ if torch.cuda.is_available():
 # global settings
 ACTION_TYPE = settings.ACTION_TYPE
 CAMERA_TYPE = settings.CAMERA_TYPE
-MODEL_LOAD_PATH = 'A_to_B_GPU_34/PC_models/currently_trained/synchr_test3.pth'
-MODEL_SAVE_PATH = 'A_to_B_GPU_34/PC_models/currently_trained/synchr_test3'
+MODEL_LOAD_PATH = 'A_to_B_GPU_34/PC_models/currently_trained/synchr_test3_9.pth'
+MODEL_SAVE_PATH = 'A_to_B_GPU_34/PC_models/currently_trained/synchr_test3_9'
+EXP_ID = "0009.pth"
 
 GAMMA = settings.GAMMA
 LR = settings.LR
 USE_ENTROPY = settings.USE_ENTROPY
-ENTROPY_COEF = 0.001  # entropy regularization coefficient
+# ENTROPY_COEF = 0.001  # entropy regularization coefficient
 SCENARIO = settings.SCENARIO
 TESTING = settings.TESTING
 
 # A3C specific settings
-NUM_WORKERS = 4
+NUM_WORKERS = 1
 NUMBER_OF_SERVERS_PER_GPU = 1
 n_gpus = torch.cuda.device_count()
 WORKER_GPUS = ([f'cuda:{g}' for g in range(n_gpus) for _ in range(NUMBER_OF_SERVERS_PER_GPU)])[:NUM_WORKERS]
@@ -61,7 +65,7 @@ BASE_PORT = settings.PORT
 # Training parameters
 UPDATE_INTERVAL = 5  # accumulate gradients for N steps before update
 MAX_GRAD_NORM = 1.0  # gradient clipping threshold - used to avoid too big gradients
-SAVE_INTERVAL = 5  # save model every N episodes (per worker)
+SAVE_INTERVAL = 1  # save model every N episodes (per worker)
 
 # retrying settings
 MAX_RETRIES = 3
@@ -161,29 +165,48 @@ class GlobalNetwork:
         logger.info("Optimizer: SharedAdam | LR: %.6f", LR)
         logger.info("=" * 80)
     
-    def update_from_worker(self, worker_id, actor_grads, critic_grads):
+    def update_from_worker(self, worker_id, actor_pack, critic_pack):
         """
         Update global network parameters using gradients from worker
         """
+        actor_names, actor_grads = actor_pack
+        critic_names, critic_grads = critic_pack
         with self.lock:
             # update actor
             self.actor_optimizer.zero_grad()
-            for param, grad in zip(self.actor.parameters(), actor_grads):
-                if grad is not None:
-                    param.grad = grad.to(self.device)
+            name2param_actor = dict(self.actor.named_parameters())
+            for name, grad in zip(actor_names, actor_grads):
+                if grad is None:
+                    continue
+                p = name2param_actor.get(name, None)
+                if p is None:
+                    raise RuntimeError(f"[A3C] Unknown actor param name from worker: {name}")
+                p.grad = grad.to(self.device)
+            # for param, grad in zip(self.actor.parameters(), actor_grads):
+            #     if grad is not None:
+            #         param.grad = grad.to(self.device)
             
             # gradient clipping for stability for actor
-            torch.nn.utils.clip_grad_norm_(self.actor.parameters(), MAX_GRAD_NORM)
+            # torch.nn.utils.clip_grad_norm_(self.actor.parameters(), MAX_GRAD_NORM)
             self.actor_optimizer.step()
             
             # update critic
             self.critic_optimizer.zero_grad()
-            for param, grad in zip(self.critic.parameters(), critic_grads):
-                if grad is not None:
-                    param.grad = grad.to(self.device)
-            
+            name2param_critic = dict(self.critic.named_parameters())
+
+            # for param, grad in zip(self.critic.parameters(), critic_grads):
+            #     if grad is not None:
+            #         param.grad = grad.to(self.device)
+                
+            for name, grad in zip(critic_names, critic_grads):
+                if grad is None:
+                    continue
+                p = name2param_critic.get(name, None)
+                if p is None:
+                    raise RuntimeError(f"[A3C] Unknown critic param name from worker: {name}")
+                p.grad = grad.to(self.device)
             # gradient clipping for stability for critic
-            torch.nn.utils.clip_grad_norm_(self.critic.parameters(), MAX_GRAD_NORM)
+            # torch.nn.utils.clip_grad_norm_(self.critic.parameters(), MAX_GRAD_NORM)
             self.critic_optimizer.step()
             
             self.total_updates.value += 1
@@ -252,7 +275,7 @@ class A3CWorker(mp.Process):
         # hyperparameters
         self.gamma = GAMMA
         self.use_entropy = USE_ENTROPY
-        self.entropy_coef = ENTROPY_COEF
+        # self.entropy_coef = ENTROPY_COEF
         
         # training state
         self.trajectory = []
@@ -269,7 +292,7 @@ class A3CWorker(mp.Process):
         self.retry_count = 0
         
         # networks (local copies on GPU for fast forward passes)
-        state_shape = [200, 200, 3]
+        state_shape = [250, 250, 3]
         critic_shape = 1
         action_shape = len(ac.ACTIONS_NAMES)
         
@@ -296,6 +319,7 @@ class A3CWorker(mp.Process):
         value = self.critic(obs, speed, manouver)
         
         distribution = Categorical(logits=logits)
+        self.action_distribution = distribution
         
         if testing:
             with torch.no_grad():
@@ -355,45 +379,54 @@ class A3CWorker(mp.Process):
         critic_loss = torch.stack(critic_losses).mean()
         
         # add entropy bonus for exploration
-        if self.use_entropy and hasattr(self, 'last_distribution'):
-            entropy = self.last_distribution.entropy().mean()
-            actor_loss = actor_loss - self.entropy_coef * entropy
+        # if self.use_entropy and hasattr(self, 'last_distribution'):
+        #     entropy = self.last_distribution.entropy().mean()
+        #     actor_loss = actor_loss - self.entropy_coef * entropy
+
+        if self.use_entropy:
+            actor_loss = torch.stack(actor_losses).mean() - self.action_distribution.entropy().mean()
+        else:
+            actor_loss = torch.stack(actor_losses).mean()
         
         # compute gradients
         self.actor.zero_grad()
         actor_loss.backward(retain_graph=True)
         actor_grads = [p.grad.clone() if p.grad is not None else None 
                       for p in self.actor.parameters()]
+        actor_names = [n for n, _ in self.actor.named_parameters()]
+
         
         self.critic.zero_grad()
         critic_loss.backward()
         critic_grads = [p.grad.clone() if p.grad is not None else None 
                        for p in self.critic.parameters()]
+        critic_names = [n for n, _ in self.critic.named_parameters()]
+
         
-        # accumulate gradients
-        if len(self.accumulated_actor_grads) == 0:
-            self.accumulated_actor_grads = actor_grads
-            self.accumulated_critic_grads = critic_grads
-        else:
-            for i in range(len(actor_grads)):
-                if actor_grads[i] is not None:
-                    if self.accumulated_actor_grads[i] is not None:
-                        self.accumulated_actor_grads[i] += actor_grads[i]
-                    else:
-                        self.accumulated_actor_grads[i] = actor_grads[i]
+        # # accumulate gradients
+        # if len(self.accumulated_actor_grads) == 0:
+        #     self.accumulated_actor_grads = actor_grads
+        #     self.accumulated_critic_grads = critic_grads
+        # else:
+        #     for i in range(len(actor_grads)):
+        #         if actor_grads[i] is not None:
+        #             if self.accumulated_actor_grads[i] is not None:
+        #                 self.accumulated_actor_grads[i] += actor_grads[i]
+        #             else:
+        #                 self.accumulated_actor_grads[i] = actor_grads[i]
             
-            for i in range(len(critic_grads)):
-                if critic_grads[i] is not None:
-                    if self.accumulated_critic_grads[i] is not None:
-                        self.accumulated_critic_grads[i] += critic_grads[i]
-                    else:
-                        self.accumulated_critic_grads[i] = critic_grads[i]
+        #     for i in range(len(critic_grads)):
+        #         if critic_grads[i] is not None:
+        #             if self.accumulated_critic_grads[i] is not None:
+        #                 self.accumulated_critic_grads[i] += critic_grads[i]
+        #             else:
+        #                 self.accumulated_critic_grads[i] = critic_grads[i]
         
         # clear trajectory after computation
         self.trajectory.clear()
         self.rewards.clear()
         
-        return actor_loss.item(), critic_loss.item()
+        return actor_loss.item(), critic_loss.item(), (actor_names, actor_grads), (critic_names, critic_grads)
     
     def update_global_network(self):
         """Send accumulated gradients to global network"""
@@ -401,10 +434,12 @@ class A3CWorker(mp.Process):
             return
         
         # average accumulated gradients 
-        avg_actor_grads = [(g*UPDATE_INTERVAL)/self.steps_since_update if g is not None else None 
+        avg_actor_grads = [g if g is not None else None 
                           for g in self.accumulated_actor_grads]
-        avg_critic_grads = [(g*UPDATE_INTERVAL) / self.steps_since_update if g is not None else None 
+        avg_critic_grads = [g if g is not None else None 
                            for g in self.accumulated_critic_grads]
+
+        
         
         # send to global network
         self.global_network.update_from_worker(
@@ -457,10 +492,43 @@ class A3CWorker(mp.Process):
     
     def run(self):
         """Main worker loop"""
+        if LOGGING:
+            wandb.init(
+            project="A_to_B",
+            group="synchr_test3",                 # wspólna grupa dla wszystkich workerów
+            name=f"worker-{self.worker_id}",     # unikalna nazwa
+            resume="allow",
+            id=EXP_ID,
+            config={"learning_rate": LR}
+        )
         logger.info("W%d started", self.worker_id)
         
+        # === PRZYWRACANIE ŚREDNIEJ NAGRODY PO RESTARTCIE WORKERA ===
+        try:
+            with self.global_network.lock:
+                prev_mean = self.global_network.worker_mean_rewards[self.worker_id]
+        except Exception as e:
+            logger.warning("W%d cannot restore previous mean reward: %s",
+                        self.worker_id, str(e))
+            prev_mean = 0.0
+
+        if prev_mean != 0.0:
+            # Ustawiamy lokalną średnią na wartość z globalnej sieci
+            self.mean_reward = prev_mean
+
+            # Prewypełniamy historię nagród, żeby rolling-mean był spójny
+            # Zakładamy okno 100, zgodnie z log_episode
+            self.episode_rewards_history = [prev_mean] * 100
+            self.episode_count = 100
+
+            logger.info("W%d restored mean reward from global: %.3f",
+                        self.worker_id, prev_mean)
+        else:
+            logger.info("W%d no previous mean reward found (starting from scratch).",
+                        self.worker_id)
+
         env = None
-        episodes_to_save = (1, 2, 3, 5, 10, 50, 100, 200, 500)
+        episodes_to_save = (1, 2, 3, 5, 10, 50, 100, 250, 500)
         
         try:
             # initialize CARLA environment
@@ -468,7 +536,7 @@ class A3CWorker(mp.Process):
                 scenario=SCENARIO, spawn_point=False, terminal_point=False,
                 mp_density=25, port=self.port,
                 action_space=ACTION_TYPE, camera=CAMERA_TYPE,
-                resX=200, resY=200, manual_control=False
+                resX=250, resY=250, manual_control=False
             )
             
             while True:
@@ -548,7 +616,9 @@ class A3CWorker(mp.Process):
                         next_state, reward, done, _, speed, _ = env.step(
                             save_image=save_images, episode=current_episode, step=episode_step
                         )
-                        
+                        if save_images:
+                            env.state_observer.reward = reward
+
                         next_state = next_state/255.0
                         speed = speed / 100.0
                         
@@ -558,19 +628,24 @@ class A3CWorker(mp.Process):
                         
                         # update global network periodically
                         if not TESTING and (step_count >= UPDATE_INTERVAL or done):
-                            actor_loss, critic_loss = self.compute_gradients(
+                            actor_loss, critic_loss, (actor_names, actor_grads), (critic_names, critic_grads) = self.compute_gradients(
                                 next_state, done, speed, maneuver_tensor
                             )
                             
-                            if actor_loss is not None:
-                                self.steps_since_update += step_count
-                                self.update_global_network()
-                                # sync with global network after update
+                            # if actor_loss is not None:
+                            #     self.steps_since_update += step_count
+                            #     self.update_global_network()
+                            #     # sync with global network after update
+                            #     self.sync_with_global()
+                            
+                            if actor_grads is not None:
+                                self.global_network.update_from_worker(
+                                    self.worker_id,
+                                    (actor_names, actor_grads),
+                                    (critic_names, critic_grads)
+                                )
                                 self.sync_with_global()
                                 
-                                # save model periodically
-                                if self.episode_count % SAVE_INTERVAL == 0:
-                                    self.global_network.save(MODEL_SAVE_PATH)
                             
                             step_count = 0
                         
@@ -581,6 +656,10 @@ class A3CWorker(mp.Process):
                     torch.cuda.empty_cache()
                     
                     self.log_episode(current_episode, ep_reward, episode_step)
+                    
+                    if self.episode_count % SAVE_INTERVAL == 0:
+                        self.global_network.save(MODEL_SAVE_PATH)
+                    
                     self.retry_count = 0
                     
                 except RuntimeError as e:
@@ -604,7 +683,7 @@ class A3CWorker(mp.Process):
                             scenario=SCENARIO, spawn_point=False, terminal_point=False,
                             mp_density=25, port=self.port,
                             action_space=ACTION_TYPE, camera=CAMERA_TYPE,
-                            resX=200, resY=200, manual_control=False
+                            resX=250, resY=250, manual_control=False
                         )
                         logger.info("W%d reconnected", self.worker_id)
                     else:
@@ -712,27 +791,27 @@ if __name__ == "__main__":
             ])
 
     # wandb setup
-    if LOGGING:
-        print('Beginngin Weights and Biases initialization')
-        wandb.init(
-        # set the ##wandb project where this run will be logged
-        project="A_to_B",
-        # create or extend already logged run:
-        resume="allow",
-        id="synchr_test3.pth",
+    # if LOGGING:
+    #     print('Beginngin Weights and Biases initialization')
+    #     wandb.init(
+    #     # set the ##wandb project where this run will be logged
+    #     project="A_to_B",
+    #     # create or extend already logged run:
+    #     resume="allow",
+    #     id="synchr_test3.pth",
 
-        # track hyperparameters and run metadata
-        config={
-        "name" : "synchr_test3.pth",
-        "learning_rate": lr
-        }
-        )
-        wandb.run.notes = "Town03. Img+speed+manouver. FOV = 60. speed/100.Nowy model (nie ten z blokami rezydualnymi), z predkoscia oraz manewrem na wejsciu. Scenariusz 13 - Krotkie skrety na roznych skrzyzowaniach. Slight turns like:  9: [0, 1, 0.2], #brake slight right. Gradients logged. Stara/nowa  funkcja nagrody(sin, nacisk an jazde okolo 20 km/h). Kamera (x = 0.3, z=2.5, pitch=-10)\n    " \
-        "speed_reward = -1.2 + 8*math.sin(speed/10)" \
-        "if route_distance < 1:" \
-        "   route_distance_reward = 1" \
-        "else:" \
-        "   route_distance_reward = -8*math.sin(speed/10)."
+    #     # track hyperparameters and run metadata
+    #     config={
+    #     "name" : "synchr_test3.pth",
+    #     "learning_rate": LR
+    #     }
+    #     )
+    #     wandb.run.notes = "Town03. Img+speed+manouver. FOV = 60. speed/100.Nowy model (nie ten z blokami rezydualnymi), z predkoscia oraz manewrem na wejsciu. Scenariusz 13 - Krotkie skrety na roznych skrzyzowaniach. Slight turns like:  9: [0, 1, 0.2], #brake slight right. Gradients logged. Stara/nowa  funkcja nagrody(sin, nacisk an jazde okolo 20 km/h). Kamera (x = 0.3, z=2.5, pitch=-10)\n    " \
+    #     "speed_reward = -1.2 + 8*math.sin(speed/10)" \
+    #     "if route_distance < 1:" \
+    #     "   route_distance_reward = 1" \
+    #     "else:" \
+    #     "   route_distance_reward = -8*math.sin(speed/10)."
     
     # set multiprocessing start method
     mp.set_start_method('spawn')
@@ -743,12 +822,12 @@ if __name__ == "__main__":
     logger.info("Workers: %d | GPUs: %s", NUM_WORKERS, WORKER_GPUS)
     logger.info("LR: %.6f | Gamma: %.4f | Update interval: %d steps",
                LR, GAMMA, UPDATE_INTERVAL)
-    logger.info("Max grad norm: %.2f | Entropy coef: %.3f",
-               MAX_GRAD_NORM, ENTROPY_COEF)
+    # logger.info("Max grad norm: %.2f | Entropy coef: %.3f",
+    #            MAX_GRAD_NORM, ENTROPY_COEF)
     logger.info("=" * 80)
     
     # initialize global network
-    state_shape = [200, 200, 3]
+    state_shape = [250, 250, 3]
     action_shape = len(ac.ACTIONS_NAMES)
     critic_shape = 1
     

@@ -56,8 +56,8 @@ port = settings.PORT
 action_type = settings.ACTION_TYPE
 camera_type = settings.CAMERA_TYPE
 load_model = settings.LOAD_MODEL
-model_incr_load = 'A_to_B_GPU_34/PC_models/currently_trained/synchr_200_semantic_camera_7_15_img_right_manouver_enhanced_base_model_1_0.pth'
-model_incr_save = 'A_to_B_GPU_34/PC_models/currently_trained/synchr_200_semantic_camera_7_15_img_right_manouver_enhanced_base_model_1_0'
+model_incr_load = 'A_to_B_GPU_34/PC_models/currently_trained/synchr_200_semantic_camera_7_15_img_right_manouver_enhanced_base_model_1_1.pth'
+model_incr_save = 'A_to_B_GPU_34/PC_models/currently_trained/synchr_200_semantic_camera_7_15_img_right_manouver_enhanced_base_model_1_1'
 
 gamma = settings.GAMMA
 lr = settings.LR
@@ -169,14 +169,14 @@ class DeepActorCriticAgent(mp.Process):
 
     # def get_action(self, obs, speed, manouver):
     # def get_action(self, obs, speed, testing=False):
-    def get_action(self, obs, speed, manouver, testing=False, on_junction=False):
+    def get_action(self, obs, speed, manouver, testing=False):
 
         if testing:
             with torch.no_grad():
-                action_distribution = self.policy(obs, speed, manouver, on_junction) 
+                action_distribution = self.policy(obs, speed, manouver) 
             action = action_distribution.probs.argmax(dim=-1)
         else:
-            action_distribution = self.policy(obs, speed, manouver, on_junction) 
+            action_distribution = self.policy(obs, speed, manouver) 
             action = action_distribution.sample()
         
         log_prob_a = action_distribution.log_prob(action)
@@ -188,15 +188,15 @@ class DeepActorCriticAgent(mp.Process):
             self.trajectory.append(Transition(obs, self.value, action, log_prob_a)) 
         return action
 
-    def discrete_policy(self, obs, speed, manouver, on_junction):
+    def discrete_policy(self, obs, speed, manouver):
     # def discrete_policy(self, obs, speed):
         """
         Calculates a discrete/categorical distribution over actions given observations
         :param obs: self's observation
         :return: policy, a distribution over actions for the given observation
         """
-        logits = self.actor(obs, speed, manouver, on_junction)
-        value = self.critic(obs, speed, manouver, on_junction)
+        logits = self.actor(obs, speed, manouver)
+        value = self.critic(obs, speed, manouver)
         # logits = self.actor(obs, speed)
         # value = self.critic(obs, speed)
         self.logits = logits.to(torch.device("cuda"))
@@ -209,7 +209,7 @@ class DeepActorCriticAgent(mp.Process):
         self.action_distribution = Categorical(logits=self.logits)
         return self.action_distribution
 
-    def calculate_n_step_return(self, n_step_rewards, final_state, done, gamma, final_speed, manouver, on_junction):
+    def calculate_n_step_return(self, n_step_rewards, final_state, done, gamma, final_speed, manouver):
     # def calculate_n_step_return(self, n_step_rewards, final_state, done, gamma, final_speed):
 
         """A_to_B_GPU_34/PC_models/currently_trained/synchr_sc3_30_start_sc_3.pth
@@ -221,7 +221,7 @@ class DeepActorCriticAgent(mp.Process):
         """
         g_t_n_s = []
         with torch.no_grad():
-            g_t_n = torch.tensor([[0]]).float().to(device) if done else self.critic(final_state, final_speed, manouver, on_junction)
+            g_t_n = torch.tensor([[0]]).float().to(device) if done else self.critic(final_state, final_speed, manouver)
             # g_t_n = torch.tensor([[0]]).float().to(device) if done else self.critic(final_state, final_speed)
             for r_t in n_step_rewards[::-1]:  # Reverse order; From r_tpn to r_t
                 g_t_n = torch.tensor(r_t).float() + gamma * g_t_n
@@ -257,10 +257,10 @@ class DeepActorCriticAgent(mp.Process):
 
         return actor_loss, critic_loss
 
-    def optimize(self, final_state_rgb, done, final_speed, manouver, on_junction):
+    def optimize(self, final_state_rgb, done, final_speed, manouver):
     # def optimize(self, final_state_rgb, done, final_speed):
 
-        td_targets = self.calculate_n_step_return(self.rewards, final_state_rgb, done, self.gamma, final_speed, manouver, on_junction)
+        td_targets = self.calculate_n_step_return(self.rewards, final_state_rgb, done, self.gamma, final_speed, manouver)
         # td_targets = self.calculate_n_step_return(self.rewards, final_state_rgb, done, self.gamma, final_speed)
 
         actor_loss, critic_loss = self.calculate_loss(self.trajectory, td_targets)
@@ -429,11 +429,11 @@ def handle_crash(results_queue):
         project="A_to_B",
         # create or extend already logged run:
         resume="allow",
-        id="synchr_200_semantic_camera_7_15_img_right_manouver_enhanced_base_model_1_0.pth",
+        id="synchr_200_semantic_camera_7_15_img_right_manouver_enhanced_base_model_1_1.pth",
 
         # track hyperparameters and run metadata
         config={
-        "name" : "synchr_200_semantic_camera_7_15_img_right_manouver_enhanced_base_model_1_0.pth",
+        "name" : "synchr_200_semantic_camera_7_15_img_right_manouver_enhanced_base_model_1_1.pth",
         "learning_rate": lr
         }
         )
@@ -538,9 +538,9 @@ def handle_crash(results_queue):
 
             # action = agent.get_action(state_rgb)
             # action = agent.get_action(state_rgb, speed_tensor, testing)
-            action = agent.get_action(state_rgb, speed_tensor, manouver_tensor, testing, on_junction)
+            action = agent.get_action(state_rgb, speed_tensor, manouver_tensor, testing)
 
-            print(f'Saving image, {save_image}')
+            # print(f'Saving image, {save_image}')
             if save_image:
                 agent.environment.state_observer.manouver = manouver
                 agent.environment.state_observer.action = action # To print action on the frame
@@ -563,7 +563,7 @@ def handle_crash(results_queue):
             
             save_image = True if agent.episode in episodes_to_save_images else False
 
-            new_state, reward, done, route_distance, speed_tensor, distance_from_goal = agent.environment.step(save_image=save_image, episode=agent.episode, step=episode_step, on_junction=on_junction)
+            new_state, reward, done, route_distance, speed_tensor, distance_from_goal = agent.environment.step(save_image=save_image, episode=agent.episode, step=episode_step)
             agent.environment.state_observer.reward = reward
             if logging:
                 wandb.log({"step_reward": reward})
@@ -576,7 +576,7 @@ def handle_crash(results_queue):
                 done = True
             # print("Step number: ", step_num, "reward: ", reward, "ep_reward: ", ep_reward)
             if not testing and (step_num >= 5 or done):
-                actor_loss, critic_loss, actor_lr, critic_lr = agent.optimize(new_state, done, speed_tensor, manouver_tensor, on_junction)
+                actor_loss, critic_loss, actor_lr, critic_lr = agent.optimize(new_state, done, speed_tensor, manouver_tensor)
                 # actor_loss, critic_loss, actor_lr, critic_lr = agent.optimize(new_state, done, speed_tensor)
                 step_num = 0
             state_rgb = new_state
