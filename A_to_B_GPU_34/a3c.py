@@ -44,9 +44,9 @@ if torch.cuda.is_available():
 # global settings
 ACTION_TYPE = settings.ACTION_TYPE
 CAMERA_TYPE = settings.CAMERA_TYPE
-MODEL_LOAD_PATH = 'A_to_B_GPU_34/PC_models/currently_trained/synchr_test3_9.pth'
-MODEL_SAVE_PATH = 'A_to_B_GPU_34/PC_models/currently_trained/synchr_test3_9'
-EXP_ID = "0009.pth"
+MODEL_LOAD_PATH = 'A_to_B_GPU_34/PC_models/currently_trained/synchr_test3_13.pth'
+MODEL_SAVE_PATH = 'A_to_B_GPU_34/PC_models/currently_trained/synchr_test3_13'
+EXP_ID = "0013.pth"
 
 GAMMA = settings.GAMMA
 LR = settings.LR
@@ -56,8 +56,8 @@ SCENARIO = settings.SCENARIO
 TESTING = settings.TESTING
 
 # A3C specific settings
-NUM_WORKERS = 1
-NUMBER_OF_SERVERS_PER_GPU = 1
+NUM_WORKERS = 8
+NUMBER_OF_SERVERS_PER_GPU = 2
 n_gpus = torch.cuda.device_count()
 WORKER_GPUS = ([f'cuda:{g}' for g in range(n_gpus) for _ in range(NUMBER_OF_SERVERS_PER_GPU)])[:NUM_WORKERS]
 BASE_PORT = settings.PORT
@@ -77,6 +77,41 @@ LOG_FILE = 'log.csv'
 
 Transition = namedtuple("Transition", ["s", "value_s", "a", "log_prob_a"])
 
+
+def wandb_logger_process(log_queue):
+    if not LOGGING:
+        return
+
+    wandb.init(
+        project="A_to_B",
+        name="synchr_test3_11",      # np. nazwa całego treningu
+        resume="allow",
+        id=EXP_ID,
+        config={"learning_rate": LR}
+    )
+
+    logger.info("wandb logger process started")
+
+    while True:
+        record = log_queue.get()
+        if record is None:
+            break  # sygnał zakończenia
+
+        # record to słownik z informacjami z workera
+        worker_id = record.pop("worker_id", None)
+
+        metrics = {}
+        for k, v in record.items():
+            # np. reward -> worker/0/reward
+            if worker_id is not None and k not in ("episode", "global_step"):
+                metrics[f"worker/{worker_id}/{k}"] = v
+            else:
+                metrics[k] = v
+
+        wandb.log(metrics)
+
+    wandb.finish()
+    logger.info("wandb logger process finished")
 
 class SharedAdam(torch.optim.Adam):
     """
@@ -265,12 +300,14 @@ class A3CWorker(mp.Process):
     A3C Worker process
     """
     
-    def __init__(self, worker_id, global_network, port, device):
+    def __init__(self, worker_id, global_network, port, device, log_queue=None):
         super(A3CWorker, self).__init__()
         self.worker_id = worker_id
         self.global_network = global_network
         self.port = port
         self.device = torch.device(device)
+        self.log_queue = log_queue
+
         
         # hyperparameters
         self.gamma = GAMMA
@@ -480,8 +517,17 @@ class A3CWorker(mp.Process):
             logger.info("W%d Ep%d | R: %6.1f | Local mean: %6.1f | Global mean: %6.1f | Len: %3d | Steps: %6d",
                     self.worker_id, episode_num, ep_reward, self.mean_reward,
                     global_mean, episode_length, self.total_steps)
-            wandb.log({"episode steps": self.total_steps,"reward": ep_reward,
-                        "episode": episode_num, "global_mean_reward": global_mean})
+
+        if self.log_queue is not None:
+            self.log_queue.put({
+                "worker_id": self.worker_id,
+                "episode": episode_num,
+                "reward": ep_reward,
+                "local_mean_reward": self.mean_reward,
+                "global_mean_reward": global_mean,
+                "episode_length": episode_length,
+                "total_steps": self.total_steps,
+            })
         
         # log to CSV
         with open(LOG_FILE, 'a', newline='') as f:
@@ -491,16 +537,6 @@ class A3CWorker(mp.Process):
             ])
     
     def run(self):
-        """Main worker loop"""
-        if LOGGING:
-            wandb.init(
-            project="A_to_B",
-            group="synchr_test3",                 # wspólna grupa dla wszystkich workerów
-            name=f"worker-{self.worker_id}",     # unikalna nazwa
-            resume="allow",
-            id=EXP_ID,
-            config={"learning_rate": LR}
-        )
         logger.info("W%d started", self.worker_id)
         
         # === PRZYWRACANIE ŚREDNIEJ NAGRODY PO RESTARTCIE WORKERA ===
@@ -528,7 +564,7 @@ class A3CWorker(mp.Process):
                         self.worker_id)
 
         env = None
-        episodes_to_save = (1, 2, 3, 5, 10, 50, 100, 250, 500)
+        episodes_to_save = (1, 2, 3, 5, 10, 50, 100, 250, 500, 1000, 2000, 2245, 2250, 2280, 2320, 2321, 2322)
         
         try:
             # initialize CARLA environment
@@ -551,7 +587,7 @@ class A3CWorker(mp.Process):
                         current_episode = self.global_network.global_episode.value
                     
                     # reset environment
-                    save_images = current_episode in episodes_to_save
+                    save_images = (current_episode%200 == 0)
                     env.state_observer.reset()
                     state, speed = env.reset(save_image=save_images, episode=current_episode)
                     
@@ -708,7 +744,7 @@ class A3CWorker(mp.Process):
 # Handle one worker
 ###########################################################################
 
-def handle_workers(global_network):
+def handle_workers(global_network, log_queue=None):
     """
     Launch and monitor workers.
     Automatically restart crashed workers.
@@ -723,7 +759,7 @@ def handle_workers(global_network):
         port = BASE_PORT + (100 * worker_id)
         device = WORKER_GPUS[worker_id]
         
-        worker = A3CWorker(worker_id, global_network, port, device)
+        worker = A3CWorker(worker_id, global_network, port, device, log_queue)
         worker.start()
         workers[worker_id] = worker
         logger.info("W%d launched | Port: %d | Device: %s", worker_id, port, device)
@@ -760,7 +796,7 @@ def handle_workers(global_network):
                     port = BASE_PORT + (100 * worker_id)
                     device = WORKER_GPUS[worker_id]
                     
-                    worker = A3CWorker(worker_id, global_network, port, device)
+                    worker = A3CWorker(worker_id, global_network, port, device, log_queue)
                     worker.start()
                     workers[worker_id] = worker
                     logger.info("W%d restarted (total restarts: %d)",
@@ -815,7 +851,17 @@ if __name__ == "__main__":
     
     # set multiprocessing start method
     mp.set_start_method('spawn')
-    
+    log_queue = None
+    logger_process = None
+    if LOGGING:
+        log_queue = mp.Queue()
+        logger_process = mp.Process(
+            target=wandb_logger_process,
+            args=(log_queue,),
+            daemon=True
+        )
+        logger_process.start()
+        logger.info("wandb logger process spawned")    
     logger.info("=" * 80)
     logger.info("A3C Training")
     logger.info("=" * 80)
@@ -840,7 +886,14 @@ if __name__ == "__main__":
         logger.info("Starting training from scratch")
     
     # start training
-    handle_workers(global_network)
+    try:
+        # start training – PRZEKAZUJEMY log_queue
+        handle_workers(global_network, log_queue=log_queue)
+    finally:
+        # zakończ proces loggera
+        if LOGGING and log_queue is not None:
+            log_queue.put(None)      # sygnał STOP dla wandb_logger_process
+            logger_process.join(timeout=10)
     
     logger.info("=" * 80)
     logger.info("Training complete")
