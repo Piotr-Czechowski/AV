@@ -58,7 +58,7 @@ SCENARIO = settings.SCENARIO
 TESTING = settings.TESTING
 
 # A3C specific settings
-NUM_WORKERS = 8
+NUM_WORKERS = 4
 NUMBER_OF_SERVERS_PER_GPU = 2
 n_gpus = torch.cuda.device_count()
 WORKER_GPUS = ([f'cuda:{g}' for g in range(n_gpus) for _ in range(NUMBER_OF_SERVERS_PER_GPU)])[:NUM_WORKERS]
@@ -493,7 +493,7 @@ class A3CWorker(mp.Process):
         self.accumulated_critic_grads = []
         self.steps_since_update = 0
     
-    def log_episode(self, episode_num, ep_reward, episode_length):
+    def log_episode(self, episode_num, ep_reward, episode_length, distance_from_target=None):
         """Log episode statistics"""
         self.episode_rewards_history.append(ep_reward)
         self.episode_lengths.append(episode_length)
@@ -530,13 +530,16 @@ class A3CWorker(mp.Process):
                 "global_mean_reward": global_mean,
                 "episode_length": episode_length,
                 "total_steps": self.total_steps,
+                "distance_from_target": distance_from_target,
+
             })
         
         # log to CSV
         with open(LOG_FILE, 'a', newline='') as f:
             csv.writer(f).writerow([
                 self.worker_id, episode_num, ep_reward, self.mean_reward,
-                global_mean, episode_length, self.total_steps, self.total_updates_sent
+                global_mean, episode_length, self.total_steps, self.total_updates_sent,
+                distance_from_target
             ])
     
     def run(self):
@@ -603,6 +606,8 @@ class A3CWorker(mp.Process):
                     ep_reward = 0.0
                     step_count = 0
                     episode_step = 0
+                    last_distance_from_target = None
+
                     
                     # maneuver tracking
                     maneuver_idx = 0
@@ -652,7 +657,7 @@ class A3CWorker(mp.Process):
                         env.world.tick()
                         
                         # get next state
-                        next_state, reward, done, _, speed, _ = env.step(
+                        next_state, reward, done, _, speed, distance_from_target = env.step(
                             save_image=save_images, episode=current_episode, step=episode_step
                         )
                         if save_images:
@@ -664,6 +669,8 @@ class A3CWorker(mp.Process):
                         self.rewards.append(reward)
                         ep_reward += reward
                         step_count += 1
+                        last_distance_from_target = distance_from_target
+
                         
                         # update global network periodically
                         if not TESTING and (step_count >= UPDATE_INTERVAL or done):
@@ -694,7 +701,7 @@ class A3CWorker(mp.Process):
                     gc.collect()
                     torch.cuda.empty_cache()
                     
-                    self.log_episode(current_episode, ep_reward, episode_step)
+                    self.log_episode(current_episode, ep_reward, episode_step, distance_from_target=last_distance_from_target)
                     
                     if self.episode_count % SAVE_INTERVAL == 0:
                         self.global_network.save(MODEL_SAVE_PATH)
@@ -826,7 +833,8 @@ if __name__ == "__main__":
         with open(LOG_FILE, 'w', newline='') as f:
             csv.writer(f).writerow([
                 'worker_id', 'episode', 'reward', 'local_mean', 
-                'global_mean', 'length', 'total_steps', 'updates_sent'
+                'global_mean', 'length', 'total_steps', 'updates_sent',
+                'distance_from_target'
             ])
 
     # wandb setup
