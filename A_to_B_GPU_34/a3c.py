@@ -44,9 +44,11 @@ if torch.cuda.is_available():
 # global settings
 ACTION_TYPE = settings.ACTION_TYPE
 CAMERA_TYPE = settings.CAMERA_TYPE
-MODEL_LOAD_PATH = 'A_to_B_GPU_34/PC_models/currently_trained/synchr_test3_13.pth'
-MODEL_SAVE_PATH = 'A_to_B_GPU_34/PC_models/currently_trained/synchr_test3_13'
-EXP_ID = "0013.pth"
+# MODEL_LOAD_PATH = 'A_to_B_GPU_34/PC_models/currently_trained/synchr_4gpu_8workers_12h.pth'
+# MODEL_SAVE_PATH = 'A_to_B_GPU_34/PC_models/currently_trained/synchr_4gpu_8workers_12h'
+MODEL_LOAD_PATH = '/net/tscratch/people/plgbartoszkawa/AV/A_to_B_GPU_34/PC_models/currently_trained/synchr_4gpu_8workers_12h.pth'
+MODEL_SAVE_PATH = '/net/tscratch/people/plgbartoszkawa/AV/A_to_B_GPU_34/PC_models/currently_trained/synchr_4gpu_8workers_12h'
+# EXP_ID = "0013.pth"
 
 GAMMA = settings.GAMMA
 LR = settings.LR
@@ -60,6 +62,7 @@ NUM_WORKERS = 8
 NUMBER_OF_SERVERS_PER_GPU = 2
 n_gpus = torch.cuda.device_count()
 WORKER_GPUS = ([f'cuda:{g}' for g in range(n_gpus) for _ in range(NUMBER_OF_SERVERS_PER_GPU)])[:NUM_WORKERS]
+print(f'!!!!!!!!!!    WORKER_GPUS {WORKER_GPUS}')
 BASE_PORT = settings.PORT
 
 # Training parameters
@@ -81,12 +84,12 @@ Transition = namedtuple("Transition", ["s", "value_s", "a", "log_prob_a"])
 def wandb_logger_process(log_queue):
     if not LOGGING:
         return
-
+    os.environ['WANDB_INSECURE_DISABLE_SSL'] = 'true'
     wandb.init(
         project="A_to_B",
-        name="synchr_test3_11",      # np. nazwa całego treningu
+        name="synchr_4gpu_8workers_12h",      # np. nazwa całego treningu
         resume="allow",
-        id=EXP_ID,
+        # id=EXP_ID,
         config={"learning_rate": LR}
     )
 
