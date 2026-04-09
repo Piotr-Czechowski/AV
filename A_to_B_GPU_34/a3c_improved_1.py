@@ -67,9 +67,9 @@ if torch.cuda.is_available():
 # global settings
 ACTION_TYPE = settings.ACTION_TYPE
 CAMERA_TYPE = settings.CAMERA_TYPE
-MODEL_LOAD_PATH = 'A_to_B_GPU_34/PC_models/currently_trained/parallel_001_10_18.pth'
-MODEL_SAVE_PATH = 'A_to_B_GPU_34/PC_models/currently_trained/parallel_001_10_18'
-EXP_ID = "parallel_001_10_18.pth"
+MODEL_LOAD_PATH = 'A_to_B_GPU_34/PC_models/currently_trained/carla_to_chainer_011.pth'
+MODEL_SAVE_PATH = 'A_to_B_GPU_34/PC_models/currently_trained/carla_to_chainer_011'
+EXP_ID = "carla_to_chainer_011.pth"
 
 GAMMA = settings.GAMMA
 LR = settings.LR
@@ -78,15 +78,15 @@ SCENARIO = settings.SCENARIO
 TESTING = settings.TESTING
 
 # A3C specific settings
-NUM_WORKERS = 10
-NUMBER_OF_SERVERS_PER_GPU = 2
+NUM_WORKERS = 1
+NUMBER_OF_SERVERS_PER_GPU = 1
 n_gpus = torch.cuda.device_count()
 WORKER_GPUS = ([f'cuda:{g}' for g in range(n_gpus) for _ in range(NUMBER_OF_SERVERS_PER_GPU)])[:NUM_WORKERS]
 print(f'!!!!!!!!!!    WORKER_GPUS {WORKER_GPUS}')
 BASE_PORT = settings.PORT
 
 # Training parameters
-T_MAX = 20
+T_MAX = 5
 MAX_GRAD_NORM = 40.0
 ENTROPY_COEF = 0.01
 VALUE_LOSS_COEF = 1.0
@@ -476,7 +476,7 @@ class A3CWorker(mp.Process):
         value_loss = 0
 
         for G_t, V_s, log_prob in zip(returns, values, log_probs):
-            advantage = G_t - V_s.detach()
+            advantage = G_t - V_s
             policy_loss = policy_loss - log_prob * advantage
             value_loss = value_loss + VALUE_LOSS_COEF * F.smooth_l1_loss(V_s, G_t)
 
@@ -486,7 +486,7 @@ class A3CWorker(mp.Process):
         # backward (GPU)
         self.actor.zero_grad()
         self.critic.zero_grad()
-        total_loss.backward()
+        total_loss.backward(retain_graph=True)
 
         # gradient clipping (GPU)
         torch.nn.utils.clip_grad_norm_(self.actor.parameters(), MAX_GRAD_NORM)
@@ -685,7 +685,8 @@ class A3CWorker(mp.Process):
                         ep_reward += reward
                         step_count += 1
                         last_distance_from_target = distance_from_target
-
+                        if ep_reward <= -6:
+                            done = True
                         # update global network periodically
                         if not TESTING and (step_count >= T_MAX or done):
                             if isinstance(next_state, np.ndarray):

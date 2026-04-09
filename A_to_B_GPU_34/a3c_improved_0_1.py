@@ -67,9 +67,9 @@ if torch.cuda.is_available():
 # global settings
 ACTION_TYPE = settings.ACTION_TYPE
 CAMERA_TYPE = settings.CAMERA_TYPE
-MODEL_LOAD_PATH = 'A_to_B_GPU_34/PC_models/currently_trained/carla_to_chainer_002.pth'
-MODEL_SAVE_PATH = 'A_to_B_GPU_34/PC_models/currently_trained/carla_to_chainer_002'
-EXP_ID = "carla_to_chainer_002.pth"
+MODEL_LOAD_PATH = 'A_to_B_GPU_34/PC_models/currently_trained/carla_to_chainer_009.pth'
+MODEL_SAVE_PATH = 'A_to_B_GPU_34/PC_models/currently_trained/carla_to_chainer_009'
+EXP_ID = "carla_to_chainer_009.pth"
 
 GAMMA = settings.GAMMA
 LR = settings.LR
@@ -457,25 +457,45 @@ class A3CWorker(mp.Process):
         values = batch.value_s
         log_probs = batch.log_prob_a
 
-        policy_loss = 0
-        value_loss = 0
+        # policy_loss = 0
+        # value_loss = 0
+
+        # for G_t, V_s, log_prob in zip(returns, values, log_probs):
+        #     advantage = G_t - V_s
+        #     policy_loss = policy_loss - log_prob * advantage
+        #     value_loss = value_loss + VALUE_LOSS_COEF * F.smooth_l1_loss(V_s, G_t)
+
+        # entropy = self.action_distribution.entropy().mean()
+        # total_loss = policy_loss + value_loss - ENTROPY_COEF * entropy
+
+        # # backward (GPU)
+        # self.actor.zero_grad()
+        # self.critic.zero_grad()
+        # total_loss.backward(retain_graph=True)
+        actor_losses = []
+        critic_losses = []
 
         for G_t, V_s, log_prob in zip(returns, values, log_probs):
-            advantage = G_t - V_s.detach()
-            policy_loss = policy_loss - log_prob * advantage
-            value_loss = value_loss + VALUE_LOSS_COEF * F.smooth_l1_loss(V_s, G_t)
+            td_err = G_t - V_s  # bez detach, jak w a2c.py
+            actor_losses.append(-log_prob * td_err)
+            critic_losses.append(F.smooth_l1_loss(V_s, G_t))
 
-        entropy = self.action_distribution.entropy().mean()
-        total_loss = policy_loss + value_loss - ENTROPY_COEF * entropy
+        actor_loss = torch.stack(actor_losses).mean()
+        if USE_ENTROPY:
+            actor_loss = actor_loss - self.action_distribution.entropy().mean()
+        critic_loss = torch.stack(critic_losses).mean()
 
-        # backward (GPU)
+        # dwa osobne backward(), jak w a2c.py
         self.actor.zero_grad()
+        actor_loss.backward(retain_graph=True)
+
         self.critic.zero_grad()
-        total_loss.backward()
+        critic_loss.backward()
+
 
         # gradient clipping (GPU)
-        torch.nn.utils.clip_grad_norm_(self.actor.parameters(), MAX_GRAD_NORM)
-        torch.nn.utils.clip_grad_norm_(self.critic.parameters(), MAX_GRAD_NORM)
+        # torch.nn.utils.clip_grad_norm_(self.actor.parameters(), MAX_GRAD_NORM)
+        # torch.nn.utils.clip_grad_norm_(self.critic.parameters(), MAX_GRAD_NORM)
 
         # transfer gradients GPU->CPU
         transfer_grads_to_shared(self.actor, self.global_network.actor)

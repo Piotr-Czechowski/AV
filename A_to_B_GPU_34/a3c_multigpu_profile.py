@@ -1,26 +1,14 @@
-# Nasz algorytm, usprawniony przez Bartka
-# /net/tscratch/people/plgpczechow/AV/.venv/bin/python /net/tscratch/people/plgpczechow/AV/A_to_B_GPU_34/a3c_multigpu.py
-# nohup /net/tscratch/people/plgpczechow/AV/.venv/bin/python /net/tscratch/people/plgpczechow/AV/A_to_B_GPU_34/a3c_multigpu.py > a3c_out.log 2>&1 &
+# Nasz algorytm, usprawniony przez Bartka — wersja z profilingiem
+# Profiling wzorowany na rozwiązaniu z Chainera:
+# cProfile na całym run() workera, zapis do pliku profile-{PID}.out
 
 """
-A3C Multi-GPU Implementation
+A3C Multi-GPU Implementation — wersja z cProfile
 
-Based on:
-- V. Mnih et al. (2016) "Asynchronous Methods for Deep Reinforcement Learning"
-- https://github.com/ikostrikov/pytorch-a3c
-- https://github.com/carla-simulator/reinforcement-learning
-
-Key modifications for Multi-GPU:
-1. Global model on CPU (shared memory)
-2. Local models on GPU (for fast inference)
-3. Gradient transfer GPU->CPU by copying (not reference)
-4. SharedAdam with shared state in shared memory
-5. Hogwild! style updates (no locks on weight updates)
-
-Performance optimizations:
-- T_MAX = 20 (fewer GPU<->CPU transfers)
-- SYNC_EVERY_N_UPDATES = 1 (sync after every update)
-- SAVE_INTERVAL = 50 (less frequent saving)
+Profiling:
+- Każdy worker zapisuje plik profile-{PID}.out do katalogu PROFILE_DIR
+- Wzorowane na Chainerze: cProfile.runctx na całej funkcji run workera
+- Wyniki można analizować przez: python -m pstats profile-XXXX.out
 """
 
 import glob
@@ -32,6 +20,7 @@ import gc
 import logging
 from logging.handlers import RotatingFileHandler
 import csv
+import cProfile
 
 from collections import namedtuple
 import torch
@@ -57,19 +46,17 @@ LOGGING = settings.LOGGING
 # Configuration
 ###########################################################################
 
-# use same seed
 SEED = 52
 torch.manual_seed(SEED)
 np.random.seed(SEED)
 if torch.cuda.is_available():
     torch.cuda.manual_seed_all(SEED)
 
-# global settings
 ACTION_TYPE = settings.ACTION_TYPE
 CAMERA_TYPE = settings.CAMERA_TYPE
-MODEL_LOAD_PATH = 'A_to_B_GPU_34/PC_models/currently_trained/carla_to_chainer_002.pth'
-MODEL_SAVE_PATH = 'A_to_B_GPU_34/PC_models/currently_trained/carla_to_chainer_002'
-EXP_ID = "carla_to_chainer_002.pth"
+MODEL_LOAD_PATH = 'A_to_B_GPU_34/PC_models/currently_trained/parallel_004_4.pth'
+MODEL_SAVE_PATH = 'A_to_B_GPU_34/PC_models/currently_trained/parallel_004_4'
+EXP_ID = "parallel_004_4.pth"
 
 GAMMA = settings.GAMMA
 LR = settings.LR
@@ -77,29 +64,32 @@ USE_ENTROPY = settings.USE_ENTROPY
 SCENARIO = settings.SCENARIO
 TESTING = settings.TESTING
 
-# A3C specific settings
-NUM_WORKERS = 1
-NUMBER_OF_SERVERS_PER_GPU = 1
+NUM_WORKERS = 2
+NUMBER_OF_SERVERS_PER_GPU = 2
 n_gpus = torch.cuda.device_count()
 WORKER_GPUS = ([f'cuda:{g}' for g in range(n_gpus) for _ in range(NUMBER_OF_SERVERS_PER_GPU)])[:NUM_WORKERS]
 print(f'!!!!!!!!!!    WORKER_GPUS {WORKER_GPUS}')
 BASE_PORT = settings.PORT
 
-# Training parameters
-T_MAX = 5
+T_MAX = 20
 MAX_GRAD_NORM = 40.0
 ENTROPY_COEF = 0.01
 VALUE_LOSS_COEF = 1.0
 SAVE_INTERVAL = 20
 SYNC_EVERY_N_UPDATES = 1
 
-# retrying settings
 MAX_RETRIES = 3
 CARLA_TIMEOUT_WAIT = 60
 WORKER_CHECK_INTERVAL = 5
 
-# Logging
 LOG_FILE = 'log.csv'
+
+# Katalog zapisu plików profilingu — wzorowany na Chainerze
+PROFILE_DIR = 'profiles'
+
+# Limit epizodów po którym worker kończy się sam i zapisuje profil
+# Analogicznie do --steps w Chainerze
+MAX_EPISODES = 50
 
 Transition = namedtuple("Transition", ["s", "value_s", "a", "log_prob_a"])
 
@@ -154,29 +144,62 @@ def wandb_logger_process(log_queue, shutdown_event):
         logger.info("wandb logger process finished")
 
 
-class SharedAdam(torch.optim.Adam):
+class SharedRMSprop(torch.optim.Optimizer):
     """
-    Shared Adam optimizer for A3C.
+    Shared RMSprop optimizer dla A3C — wzorowany na Chainerze.
 
-    State (exp_avg, exp_avg_sq, step) is shared between workers,
-    ensuring consistent adaptive learning rates.
+    W porównaniu do SharedAdam:
+    - Brak licznika kroków (step) — eliminuje race condition przy Hogwild!
+    - Brak warstw abstrakcji (maybe_fallback, wrapper) — bezpośrednie operacje
+    - Stan (ms) pre-alokowany w shared memory przed startem workerów
+    - Operacje addcmul_/addcdiv_ zamiast pętli — wektoryzowane na CPU
+
+    Z profilingu: SharedAdam zajmował 103s z 345s (30% czasu workera).
+    SharedRMSprop powinien być znacznie szybszy dzięki prostszej implementacji.
     """
-    def __init__(self, params, lr=1e-3, betas=(0.9,0.999), eps=1e-8, weight_decay=0):
-        super(SharedAdam, self).__init__(params, lr=lr, betas=betas, eps=eps, weight_decay=weight_decay)
+    def __init__(self, params, lr=1e-4, alpha=0.99, eps=1e-8, weight_decay=0):
+        defaults = dict(lr=lr, alpha=alpha, eps=eps, weight_decay=weight_decay)
+        super(SharedRMSprop, self).__init__(params, defaults)
+
+        # Pre-alokacja stanu w shared memory — wzór Chainera
         for group in self.param_groups:
             for p in group['params']:
                 state = self.state[p]
-                state['step'] = torch.zeros(1)
-                state['exp_avg'] = torch.zeros_like(p.data)
-                state['exp_avg_sq'] = torch.zeros_like(p.data)
-                # place in shared memory
-                state['step'].share_memory_()
-                state['exp_avg'].share_memory_()
-                state['exp_avg_sq'].share_memory_()
+                state['ms'] = torch.zeros_like(p.data)
+                state['ms'].share_memory_()
+
+    def step(self, closure=None):
+        loss = None
+        if closure is not None:
+            loss = closure()
+
+        for group in self.param_groups:
+            lr = group['lr']
+            alpha = group['alpha']
+            eps = group['eps']
+            weight_decay = group['weight_decay']
+
+            for p in group['params']:
+                if p.grad is None:
+                    continue
+
+                grad = p.grad.data
+                state = self.state[p]
+                ms = state['ms']
+
+                if weight_decay != 0:
+                    grad = grad.add(p.data, alpha=weight_decay)
+
+                # ms = alpha * ms + (1 - alpha) * grad^2
+                ms.mul_(alpha).addcmul_(grad, grad, value=1 - alpha)
+
+                # param -= lr * grad / (sqrt(ms) + eps)
+                p.data.addcdiv_(grad, ms.sqrt().add_(eps), value=-lr)
+
+        return loss
 
 
 def setup_logger(log_file='logs/a3c_training.log', level=logging.INFO):
-    """Setup unified logger for all components"""
     formatter = logging.Formatter(
         '%(asctime)s [%(levelname)s] %(message)s',
         datefmt='%Y-%m-%d %H:%M:%S'
@@ -204,22 +227,38 @@ logger = setup_logger()
 
 
 ###########################################################################
-# Gradient Transfer Function
+# Chainer-style Gradient Transfer and Parameter Sync
 ###########################################################################
 
-def transfer_grads_to_shared(local_model, shared_model):
+def sync_params_to_local(global_model, local_model):
     """
-    Copy gradients from local_model (GPU) to shared_model (CPU).
-
-    Unlike ensure_shared_grads (reference, zero-copy),
-    this function COPIES data, which is necessary for GPU->CPU transfer.
-
-    Executed at EVERY update.
+    Kopiuje wagi z globalnego modelu (CPU, shared memory)
+    do lokalnego modelu (GPU).
+    Wzorowane na Chainerze: bezpośredni zapis data.copy_() — zero alokacji.
     """
-    for local_param, shared_param in zip(local_model.parameters(),
-                                          shared_model.parameters()):
-        if local_param.grad is not None:
-            shared_param.grad = local_param.grad.cpu()
+    for global_param, local_param in zip(
+        global_model.parameters(),
+        local_model.parameters()
+    ):
+        local_param.data.copy_(global_param.data)
+
+
+def transfer_grads_to_shared(local_model, global_model):
+    """
+    Kopiuje gradienty z lokalnego modelu (GPU)
+    do globalnego modelu (CPU, shared memory).
+    Wzorowane na Chainerze: zapisuje do pre-alokowanych tensorów.
+    """
+    for local_param, global_param in zip(
+        local_model.parameters(),
+        global_model.parameters()
+    ):
+        if local_param.grad is None:
+            continue
+        if global_param.grad is None:
+            global_param.grad = torch.zeros_like(global_param.data)
+            global_param.grad.share_memory_()
+        global_param.grad.data.copy_(local_param.grad.data)
 
 
 ###########################################################################
@@ -227,38 +266,28 @@ def transfer_grads_to_shared(local_model, shared_model):
 ###########################################################################
 
 class GlobalNetwork:
-    """
-    Global network in shared memory (CPU).
-
-    Architecture:
-    - actor and critic on CPU with share_memory()
-    - SharedAdam with shared state
-    - No locks on weight updates (Hogwild!)
-    """
+    """Global network in shared memory (CPU)."""
 
     def __init__(self, state_shape, action_shape, critic_shape):
         self.device = torch.device('cpu')
 
-        # networks on CPU
         self.actor = DeepDiscreteActor(state_shape, action_shape, 'cpu').to(self.device)
         self.critic = DeepCritic(state_shape, critic_shape, 'cpu').to(self.device)
 
-        # shared memory
         self.actor.share_memory()
         self.critic.share_memory()
 
-        # optimizers with shared state
-        self.actor_optimizer = SharedAdam(self.actor.parameters(), lr=LR, weight_decay=1e-2)
-        self.critic_optimizer = SharedAdam(self.critic.parameters(), lr=LR, weight_decay=1e-2)
+        self._init_shared_grads()
 
-        # shared statistics
+        self.actor_optimizer = SharedRMSprop(self.actor.parameters(), lr=LR, weight_decay=1e-2)
+        self.critic_optimizer = SharedRMSprop(self.critic.parameters(), lr=LR, weight_decay=1e-2)
+
         self.global_episode = mp.Value('i', 0)
         self.total_updates = mp.Value('i', 0)
         self.best_reward = mp.Value('d', -float('inf'))
         self.global_mean_reward = mp.Value('d', 0.0)
         self.worker_mean_rewards = mp.Array('d', [0.0] * NUM_WORKERS)
 
-        # locks only for stats and save/load
         self.stats_lock = mp.Lock()
         self.save_lock = mp.Lock()
 
@@ -267,12 +296,22 @@ class GlobalNetwork:
         logger.info("Actor params: %d | Critic params: %d",
                    sum(p.numel() for p in self.actor.parameters()),
                    sum(p.numel() for p in self.critic.parameters()))
-        logger.info("Optimizer: SharedAdam | LR: %.6f | T_MAX: %d | Workers: %d",
+        logger.info("Optimizer: SharedRMSprop (Chainer-style) | LR: %.6f | T_MAX: %d | Workers: %d",
                    LR, T_MAX, NUM_WORKERS)
+        logger.info("Gradient sync: Chainer-style (pre-allocated shared tensors)")
         logger.info("=" * 80)
 
+    def _init_shared_grads(self):
+        """Pre-alokuje tensory gradientów w shared memory (wzór Chainera)."""
+        for param in self.actor.parameters():
+            param.grad = torch.zeros_like(param.data)
+            param.grad.share_memory_()
+        for param in self.critic.parameters():
+            param.grad = torch.zeros_like(param.data)
+            param.grad.share_memory_()
+        logger.info("Shared gradient tensors pre-allocated in shared memory")
+
     def save(self, path):
-        """Save global network and optimizer state"""
         with self.save_lock:
             state = {
                 "actor": self.actor.state_dict(),
@@ -290,7 +329,6 @@ class GlobalNetwork:
                        self.best_reward.value, self.global_mean_reward.value)
 
     def load(self, path):
-        """Load global network and optimizer state"""
         state = torch.load(path, map_location=self.device)
 
         with self.save_lock:
@@ -304,12 +342,13 @@ class GlobalNetwork:
             self.global_episode.value = state.get("global_episode", 0)
             self.total_updates.value = state.get("total_updates", 0)
 
+            self._init_shared_grads()
+
             logger.info("Model loaded | Ep: %d | Updates: %d | Best: %.1f | Mean: %.1f",
                        self.global_episode.value, self.total_updates.value,
                        self.best_reward.value, self.global_mean_reward.value)
 
     def update_stats(self, worker_id, mean_reward, episode_reward):
-        """Update shared statistics"""
         is_new_best = False
 
         with self.stats_lock:
@@ -326,13 +365,11 @@ class GlobalNetwork:
             return self.global_mean_reward.value, is_new_best
 
     def increment_episode(self):
-        """Increment global episode counter"""
         with self.stats_lock:
             self.global_episode.value += 1
             return self.global_episode.value
 
     def increment_updates(self):
-        """Increment global updates counter"""
         self.total_updates.value += 1
         return self.total_updates.value
 
@@ -344,14 +381,7 @@ class GlobalNetwork:
 class A3CWorker(mp.Process):
     """
     A3C Worker process running on GPU.
-
-    Flow:
-    1. sync_with_global() - copy weights CPU->GPU
-    2. Collect T_MAX steps of experience (GPU)
-    3. Compute loss and backward (GPU)
-    4. transfer_grads_to_shared() - copy gradients GPU->CPU
-    5. optimizer.step() - update weights (CPU, shared memory)
-    6. Repeat
+    Wersja z profilingiem cProfile — wzorowana na Chainerze.
     """
 
     def __init__(self, worker_id, global_network, port, device,
@@ -375,7 +405,6 @@ class A3CWorker(mp.Process):
 
         self.episode_rewards_history = []
 
-        # networks (initialized in run() after fork)
         self.actor = None
         self.critic = None
         self._initialized = False
@@ -384,7 +413,6 @@ class A3CWorker(mp.Process):
                    self.worker_id, self.port, self.device)
 
     def _init_networks(self):
-        """Initialize local networks on GPU (after fork)"""
         if self._initialized:
             return
 
@@ -400,12 +428,11 @@ class A3CWorker(mp.Process):
         logger.info("W%d networks initialized on %s", self.worker_id, self.device)
 
     def sync_with_global(self):
-        """Copy weights from global network (CPU) to local network (GPU)"""
-        self.actor.load_state_dict(self.global_network.actor.state_dict())
-        self.critic.load_state_dict(self.global_network.critic.state_dict())
+        """Chainer-style: data.copy_() zamiast load_state_dict."""
+        sync_params_to_local(self.global_network.actor, self.actor)
+        sync_params_to_local(self.global_network.critic, self.critic)
 
     def get_action(self, obs, speed, manouver, testing=False):
-        """Get action from policy"""
         logits = self.actor(obs, speed, manouver)
         value = self.critic(obs, speed, manouver)
 
@@ -426,21 +453,9 @@ class A3CWorker(mp.Process):
         return action_np, distribution
 
     def compute_and_apply_gradients(self, final_state, done, final_speed, manouver):
-        """
-        Compute gradients and update global model.
-
-        Steps:
-        1. Calculate n-step returns
-        2. Compute policy + value + entropy loss
-        3. backward() on local model (GPU)
-        4. Clip gradients (GPU)
-        5. Transfer gradients GPU->CPU
-        6. optimizer.step() on global model (CPU)
-        """
         if len(self.trajectory) == 0:
             return
 
-        # calculate n-step returns
         returns = []
         with torch.no_grad():
             if done:
@@ -452,7 +467,6 @@ class A3CWorker(mp.Process):
             R = reward + self.gamma * R
             returns.insert(0, R)
 
-        # compute losses
         batch = Transition(*zip(*self.trajectory))
         values = batch.value_s
         log_probs = batch.log_prob_a
@@ -468,20 +482,17 @@ class A3CWorker(mp.Process):
         entropy = self.action_distribution.entropy().mean()
         total_loss = policy_loss + value_loss - ENTROPY_COEF * entropy
 
-        # backward (GPU)
         self.actor.zero_grad()
         self.critic.zero_grad()
         total_loss.backward()
 
-        # gradient clipping (GPU)
         torch.nn.utils.clip_grad_norm_(self.actor.parameters(), MAX_GRAD_NORM)
         torch.nn.utils.clip_grad_norm_(self.critic.parameters(), MAX_GRAD_NORM)
 
-        # transfer gradients GPU->CPU
+        # Chainer-style: zapis do pre-alokowanych shared tensorów
         transfer_grads_to_shared(self.actor, self.global_network.actor)
         transfer_grads_to_shared(self.critic, self.global_network.critic)
 
-        # optimizer step (CPU, shared memory)
         self.global_network.actor_optimizer.step()
         self.global_network.critic_optimizer.step()
 
@@ -492,7 +503,6 @@ class A3CWorker(mp.Process):
         self.rewards.clear()
 
     def log_episode(self, episode_num, ep_reward, episode_length, distance_from_target=None):
-        """Log episode statistics"""
         self.episode_rewards_history.append(ep_reward)
 
         window = min(100, len(self.episode_rewards_history))
@@ -536,12 +546,13 @@ class A3CWorker(mp.Process):
         except:
             pass
 
-    def run(self):
-        logger.info("W%d started", self.worker_id)
-
+    def _run_worker(self):
+        """
+        Właściwa logika workera — profilowana przez cProfile.
+        Wydzielona z run() analogicznie do train_loop w Chainerze.
+        """
         self._init_networks()
 
-        # restore previous mean reward
         try:
             prev_mean = self.global_network.worker_mean_rewards[self.worker_id]
             if prev_mean != 0.0:
@@ -555,7 +566,6 @@ class A3CWorker(mp.Process):
         env = None
 
         try:
-            # initialize CARLA environment
             env = CarlaEnv(
                 scenario=SCENARIO, spawn_point=False, terminal_point=False,
                 mp_density=25, port=self.port,
@@ -564,20 +574,33 @@ class A3CWorker(mp.Process):
             )
 
             while not (self.shutdown_event and self.shutdown_event.is_set()):
+                # Zatrzymaj worker gdy globalna liczba epizodów osiągnie MAX_EPISODES
+                # Wszyscy workerzy razem wykonują MAX_EPISODES epizodów —
+                # pozwala porównywać czas dla różnej liczby workerów
+                if self.global_network.global_episode.value >= MAX_EPISODES:
+                    logger.info(
+                        "W%d stopping — global episodes reached %d/%d",
+                        self.worker_id,
+                        self.global_network.global_episode.value,
+                        MAX_EPISODES
+                    )
+                    print(
+                        f"W{self.worker_id} stopping — global episodes "
+                        f"{self.global_network.global_episode.value}/{MAX_EPISODES}",
+                        flush=True
+                    )
+                    break
+
                 try:
-                    # update episode counter
                     self.episode_count += 1
                     current_episode = self.global_network.increment_episode()
 
-                    # sync with global network
                     self.sync_with_global()
 
-                    # reset environment
                     save_images = (current_episode % 200 == 0)
                     env.state_observer.reset()
                     state, speed = env.reset(save_image=save_images, episode=current_episode)
 
-                    # normalize inputs
                     state = state / 255.0
                     speed = speed / 100.0
 
@@ -591,12 +614,10 @@ class A3CWorker(mp.Process):
                     maneuver = env.car_decisions[maneuver_idx]
                     maneuver_tensor = torch.tensor([maneuver], device=self.device)
 
-                    # run episode
                     while not done:
                         episode_step += 1
                         self.total_steps += 1
 
-                        # prepare state tensor
                         if isinstance(state, np.ndarray):
                             state_tensor = torch.from_numpy(state).float().unsqueeze(0).to(self.device)
                         else:
@@ -606,7 +627,6 @@ class A3CWorker(mp.Process):
 
                         speed_tensor = torch.tensor([[speed]], dtype=torch.float32, device=self.device)
 
-                        # update maneuver if needed
                         _, left_junction = env.planner.on_junction(env.vehicle.get_location())
                         if left_junction:
                             maneuver_idx += 1
@@ -616,12 +636,10 @@ class A3CWorker(mp.Process):
                                 maneuver = 1
                             maneuver_tensor = torch.tensor([maneuver], device=self.device)
 
-                        # get action
                         action, self.last_distribution = self.get_action(
                             state_tensor, speed_tensor, maneuver_tensor, TESTING
                         )
 
-                        # save observation if needed
                         if save_images:
                             env.state_observer.manouver = maneuver
                             env.state_observer.action = action
@@ -631,19 +649,15 @@ class A3CWorker(mp.Process):
                             env.state_observer.draw_related_values()
                             env.state_observer.save_together()
 
-                        # execute action in environment
                         env.step_apply_action(action)
 
-                        # clear image queue
                         while not env.image_queue.empty():
                             _ = env.image_queue.get()
 
-                        # CARLA ticks
                         env.world.tick()
                         env.step_apply_action(action)
                         env.world.tick()
 
-                        # get next state
                         next_state, reward, done, _, next_speed, distance_from_target = env.step(
                             save_image=save_images, episode=current_episode, step=episode_step
                         )
@@ -659,7 +673,6 @@ class A3CWorker(mp.Process):
                         step_count += 1
                         last_distance_from_target = distance_from_target
 
-                        # update global network periodically
                         if not TESTING and (step_count >= T_MAX or done):
                             if isinstance(next_state, np.ndarray):
                                 next_state_tensor = torch.from_numpy(next_state).float().unsqueeze(0).to(self.device)
@@ -674,7 +687,6 @@ class A3CWorker(mp.Process):
                                 next_state_tensor, done, next_speed_tensor, maneuver_tensor
                             )
 
-                            # sync after update
                             if not done and self.local_updates % SYNC_EVERY_N_UPDATES == 0:
                                 self.sync_with_global()
 
@@ -683,22 +695,20 @@ class A3CWorker(mp.Process):
                         state = next_state
                         speed = next_speed
 
-                    # episode finished
                     gc.collect()
                     if self.device.type == 'cuda':
                         torch.cuda.empty_cache()
 
-                    self.log_episode(current_episode, ep_reward, episode_step, distance_from_target=last_distance_from_target)
+                    self.log_episode(current_episode, ep_reward, episode_step,
+                                     distance_from_target=last_distance_from_target)
 
                     if self.episode_count % SAVE_INTERVAL == 0:
                         self.global_network.save(MODEL_SAVE_PATH)
 
                 except RuntimeError as e:
                     if "time-out" in str(e):
-                        logger.warning("W%d CARLA timeout, reconnecting...",
-                                     self.worker_id)
+                        logger.warning("W%d CARLA timeout, reconnecting...", self.worker_id)
 
-                        # reconnect
                         if env:
                             env.world = None
                             env.client = None
@@ -729,22 +739,46 @@ class A3CWorker(mp.Process):
                     pass
             logger.info("W%d terminated", self.worker_id)
 
+    def run(self):
+        """
+        Punkt wejścia procesu workera.
+        Wzorowane na Chainerze: cProfile.runctx opakowuje całą logikę workera.
+        Plik profilu zapisywany do PROFILE_DIR/profile-{PID}.out
+        """
+        logger.info("W%d started (with cProfile)", self.worker_id)
+
+        os.makedirs(PROFILE_DIR, exist_ok=True)
+        from datetime import datetime
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        profile_path = os.path.join(PROFILE_DIR, f'profile-worker{self.worker_id}-{timestamp}.out')
+
+        logger.info("W%d profile will be saved to: %s", self.worker_id, profile_path)
+        print(f"W{self.worker_id} profile will be saved to: {profile_path}", flush=True)
+
+        try:
+            profiler = cProfile.Profile()
+            profiler.enable()
+            self._run_worker()
+            profiler.disable()
+            profiler.dump_stats(profile_path)
+            logger.info("W%d profile saved successfully: %s", self.worker_id, profile_path)
+            print(f"W{self.worker_id} profile saved successfully: {profile_path}", flush=True)
+        except Exception as e:
+            logger.error("W%d profiling error: %s", self.worker_id, str(e), exc_info=True)
+            raise
+
 
 ###########################################################################
 # Handle workers
 ###########################################################################
 
 def handle_workers(global_network, log_queue=None, shutdown_event=None):
-    """
-    Launch and monitor workers.
-    Automatically restart crashed workers.
-    """
+    """Launch and monitor workers. Automatically restart crashed workers."""
     workers = {}
     restart_counts = {i: 0 for i in range(NUM_WORKERS)}
 
     logger.info("Launching %d workers...", NUM_WORKERS)
 
-    # start workers
     for worker_id in range(NUM_WORKERS):
         port = BASE_PORT + (100 * worker_id)
         device = WORKER_GPUS[worker_id]
@@ -761,7 +795,6 @@ def handle_workers(global_network, log_queue=None, shutdown_event=None):
         workers[worker_id] = worker
         logger.info("W%d launched | Port: %d | Device: %s", worker_id, port, device)
 
-    # monitor workers
     try:
         while not (shutdown_event and shutdown_event.is_set()):
             time.sleep(WORKER_CHECK_INTERVAL)
@@ -820,7 +853,6 @@ def handle_workers(global_network, log_queue=None, shutdown_event=None):
 ###########################################################################
 
 if __name__ == "__main__":
-    # initialize CSV log
     if not os.path.exists(LOG_FILE):
         with open(LOG_FILE, 'w', newline='') as f:
             csv.writer(f).writerow([
@@ -829,33 +861,32 @@ if __name__ == "__main__":
                 'distance_from_target'
             ])
 
+    os.makedirs(PROFILE_DIR, exist_ok=True)
+
     mp.set_start_method('spawn')
 
     shutdown_event = mp.Event()
     log_queue = mp.Queue(maxsize=1000) if LOGGING else None
 
     logger.info("=" * 80)
-    logger.info("A3C Multi-GPU Training")
+    logger.info("A3C Multi-GPU Training (Chainer-style sync + cProfile)")
     logger.info("=" * 80)
     logger.info("Workers: %d | GPUs: %s", NUM_WORKERS, WORKER_GPUS)
-    logger.info("LR: %.6f | Gamma: %.4f | T_MAX: %d steps",
-               LR, GAMMA, T_MAX)
+    logger.info("LR: %.6f | Gamma: %.4f | T_MAX: %d steps", LR, GAMMA, T_MAX)
+    logger.info("Profile output: %s/profile-{{PID}}.out", PROFILE_DIR)
     logger.info("=" * 80)
 
-    # initialize global network
     state_shape = [250, 250, 3]
     action_shape = len(ac.ACTIONS_NAMES)
     critic_shape = 1
 
     global_network = GlobalNetwork(state_shape, action_shape, critic_shape)
 
-    # load existing model if available
     if os.path.isfile(MODEL_LOAD_PATH):
         global_network.load(MODEL_LOAD_PATH)
     else:
         logger.info("Starting training from scratch")
 
-    # W&B logger
     logger_process = None
     if LOGGING and log_queue is not None and WANDB_AVAILABLE:
         logger_process = mp.Process(
@@ -866,7 +897,6 @@ if __name__ == "__main__":
         logger_process.start()
         logger.info("wandb logger process spawned")
 
-    # start training
     try:
         handle_workers(global_network, log_queue=log_queue, shutdown_event=shutdown_event)
     except KeyboardInterrupt:

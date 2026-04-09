@@ -68,9 +68,9 @@ np.random.seed(SEED)
 # global settings
 ACTION_TYPE = settings.ACTION_TYPE
 CAMERA_TYPE = settings.CAMERA_TYPE
-MODEL_LOAD_PATH = 'A_to_B_GPU_34/PC_models/currently_trained/parallel_001_10_18.pth'
-MODEL_SAVE_PATH = 'A_to_B_GPU_34/PC_models/currently_trained/parallel_001_10_18'
-EXP_ID = "parallel_001_10_18.pth"
+MODEL_LOAD_PATH = 'A_to_B_GPU_34/PC_models/currently_trained/carla_to_chainer_006.pth'
+MODEL_SAVE_PATH = 'A_to_B_GPU_34/PC_models/currently_trained/carla_to_chainer_006'
+EXP_ID = "carla_to_chainer_006.pth"
 
 GAMMA = settings.GAMMA
 LR = settings.LR
@@ -79,13 +79,13 @@ SCENARIO = settings.SCENARIO
 TESTING = settings.TESTING
 
 # A3C specific settings
-NUM_WORKERS = 10
+NUM_WORKERS = 4
 WORKER_GPUS = ['cpu'] * NUM_WORKERS
 print(f'!!!!!!!!!!    WORKER_DEVICES {WORKER_GPUS}')
 BASE_PORT = settings.PORT
 
 # Training parameters
-T_MAX = 20
+T_MAX = 5
 MAX_GRAD_NORM = 40.0
 ENTROPY_COEF = 0.01
 VALUE_LOSS_COEF = 1.0
@@ -475,7 +475,7 @@ class A3CWorker(mp.Process):
         value_loss = 0
 
         for G_t, V_s, log_prob in zip(returns, values, log_probs):
-            advantage = G_t - V_s.detach()
+            advantage = G_t - V_s
             policy_loss = policy_loss - log_prob * advantage
             value_loss = value_loss + VALUE_LOSS_COEF * F.smooth_l1_loss(V_s, G_t)
 
@@ -485,7 +485,7 @@ class A3CWorker(mp.Process):
         # backward (GPU)
         self.actor.zero_grad()
         self.critic.zero_grad()
-        total_loss.backward()
+        total_loss.backward(retain_graph=True)
 
         # gradient clipping (GPU)
         torch.nn.utils.clip_grad_norm_(self.actor.parameters(), MAX_GRAD_NORM)
