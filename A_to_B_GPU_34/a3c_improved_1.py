@@ -2,6 +2,8 @@
 # /net/tscratch/people/plgpczechow/AV/.venv/bin/python /net/tscratch/people/plgpczechow/AV/A_to_B_GPU_34/a3c_multigpu.py
 # nohup /net/tscratch/people/plgpczechow/AV/.venv/bin/python /net/tscratch/people/plgpczechow/AV/A_to_B_GPU_34/a3c_multigpu.py > a3c_out.log 2>&1 &
 
+# Liczenie nagrody
+# apply_action pomiedzy tick()'ami
 """
 A3C Multi-GPU Implementation
 
@@ -67,9 +69,9 @@ if torch.cuda.is_available():
 # global settings
 ACTION_TYPE = settings.ACTION_TYPE
 CAMERA_TYPE = settings.CAMERA_TYPE
-MODEL_LOAD_PATH = 'A_to_B_GPU_34/PC_models/currently_trained/carla_to_chainer_011.pth'
-MODEL_SAVE_PATH = 'A_to_B_GPU_34/PC_models/currently_trained/carla_to_chainer_011'
-EXP_ID = "carla_to_chainer_011.pth"
+MODEL_LOAD_PATH = 'A_to_B_GPU_34/PC_models/currently_trained/carla_to_chainer_012_3.pth'
+MODEL_SAVE_PATH = 'A_to_B_GPU_34/PC_models/currently_trained/carla_to_chainer_012_3'
+EXP_ID = "carla_to_chainer_012_3.pth"
 
 GAMMA = settings.GAMMA
 LR = settings.LR
@@ -472,25 +474,29 @@ class A3CWorker(mp.Process):
         values = batch.value_s
         log_probs = batch.log_prob_a
 
-        policy_loss = 0
-        value_loss = 0
+        actor_losses = []
+        critic_losses = []
 
         for G_t, V_s, log_prob in zip(returns, values, log_probs):
-            advantage = G_t - V_s
-            policy_loss = policy_loss - log_prob * advantage
-            value_loss = value_loss + VALUE_LOSS_COEF * F.smooth_l1_loss(V_s, G_t)
-
-        entropy = self.action_distribution.entropy().mean()
-        total_loss = policy_loss + value_loss - ENTROPY_COEF * entropy
-
-        # backward (GPU)
+            td_err = G_t - V_s
+            actor_losses.append(-log_prob * td_err)
+            critic_losses.append(F.smooth_l1_loss(V_s, G_t))
+        
+        actor_loss = torch.stack(actor_losses).mean()
+        if USE_ENTROPY:
+            actor_loss = actor_loss - self.action_distribution.entropy().mean()
+        critic_loss = torch.stack(critic_losses).mean()
+ 
+        # dwa osobne backward()
         self.actor.zero_grad()
+        actor_loss.backward(retain_graph=True)
+ 
         self.critic.zero_grad()
-        total_loss.backward(retain_graph=True)
+        critic_loss.backward()
 
         # gradient clipping (GPU)
-        torch.nn.utils.clip_grad_norm_(self.actor.parameters(), MAX_GRAD_NORM)
-        torch.nn.utils.clip_grad_norm_(self.critic.parameters(), MAX_GRAD_NORM)
+        # torch.nn.utils.clip_grad_norm_(self.actor.parameters(), MAX_GRAD_NORM)
+        # torch.nn.utils.clip_grad_norm_(self.critic.parameters(), MAX_GRAD_NORM)
 
         # transfer gradients GPU->CPU
         transfer_grads_to_shared(self.actor, self.global_network.actor)
@@ -667,7 +673,7 @@ class A3CWorker(mp.Process):
 
                         # CARLA ticks
                         env.world.tick()
-                        # env.step_apply_action(action)
+                        env.step_apply_action(action)
                         env.world.tick()
 
                         # get next state
@@ -685,8 +691,6 @@ class A3CWorker(mp.Process):
                         ep_reward += reward
                         step_count += 1
                         last_distance_from_target = distance_from_target
-                        if ep_reward <= -6:
-                            done = True
                         # update global network periodically
                         if not TESTING and (step_count >= T_MAX or done):
                             if isinstance(next_state, np.ndarray):
