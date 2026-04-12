@@ -54,6 +54,8 @@ except ImportError:
     WANDB_AVAILABLE = False
 
 LOGGING = settings.LOGGING
+FILE_LOGGING = settings.FILE_LOGGING # zapis do pliku logu
+
 
 ###########################################################################
 # Configuration
@@ -69,9 +71,9 @@ if torch.cuda.is_available():
 # global settings
 ACTION_TYPE = settings.ACTION_TYPE
 CAMERA_TYPE = settings.CAMERA_TYPE
-MODEL_LOAD_PATH = 'A_to_B_GPU_34/PC_models/currently_trained/carla_to_chainer_012_3_4w.pth'
-MODEL_SAVE_PATH = 'A_to_B_GPU_34/PC_models/currently_trained/carla_to_chainer_012_3_4w'
-EXP_ID = "carla_to_chainer_012_3_4w.pth"
+MODEL_LOAD_PATH = 'A_to_B_GPU_34/PC_models/currently_trained/carla_to_chainer_013_4_8w_10u_10s_profiled.pth'
+MODEL_SAVE_PATH = 'A_to_B_GPU_34/PC_models/currently_trained/carla_to_chainer_013_4_8w_10u_10s_profiled'
+EXP_ID = "carla_to_chainer_013_4_8w_10u_10s_profiled.pth"
 
 GAMMA = settings.GAMMA
 LR = settings.LR
@@ -80,7 +82,7 @@ SCENARIO = settings.SCENARIO
 TESTING = settings.TESTING
 
 # A3C specific settings
-NUM_WORKERS = 4
+NUM_WORKERS = 8
 NUMBER_OF_SERVERS_PER_GPU = 2
 n_gpus = torch.cuda.device_count()
 WORKER_GPUS = ([f'cuda:{g}' for g in range(n_gpus) for _ in range(NUMBER_OF_SERVERS_PER_GPU)])[:NUM_WORKERS]
@@ -88,11 +90,11 @@ print(f'!!!!!!!!!!    WORKER_GPUS {WORKER_GPUS}')
 BASE_PORT = settings.PORT
 
 # Training parameters
-T_MAX = 5
+T_MAX = 10
 MAX_GRAD_NORM = 40.0
 ENTROPY_COEF = 0.01
 VALUE_LOSS_COEF = 1.0
-SAVE_INTERVAL = 20
+SAVE_INTERVAL = 200
 SYNC_EVERY_N_UPDATES = 1
 
 # retrying settings
@@ -125,8 +127,9 @@ def wandb_logger_process(log_queue, shutdown_event):
             "max_grad_norm": MAX_GRAD_NORM,
         }
     )
-
-    logger.info("wandb logger process started")
+    wandb.define_metric("*", step_metric="global_step")
+    if settings.FILE_LOGGING:
+        logger.info("wandb logger process started")
 
     try:
         while not shutdown_event.is_set():
@@ -271,6 +274,7 @@ class GlobalNetwork:
         # shared statistics
         self.global_episode = mp.Value('i', 0)
         self.total_updates = mp.Value('i', 0)
+        self.global_steps = mp.Value('i', 0)  # total env steps across all workers
         self.best_reward = mp.Value('d', -float('inf'))
         self.global_mean_reward = mp.Value('d', 0.0)
         self.worker_mean_rewards = mp.Array('d', [0.0] * NUM_WORKERS)
@@ -278,15 +282,15 @@ class GlobalNetwork:
         # locks only for stats and save/load
         self.stats_lock = mp.Lock()
         self.save_lock = mp.Lock()
-
-        logger.info("=" * 80)
-        logger.info("Global Network initialized")
-        logger.info("Actor params: %d | Critic params: %d",
-                   sum(p.numel() for p in self.actor.parameters()),
-                   sum(p.numel() for p in self.critic.parameters()))
-        logger.info("Optimizer: SharedAdam | LR: %.6f | T_MAX: %d | Workers: %d",
-                   LR, T_MAX, NUM_WORKERS)
-        logger.info("=" * 80)
+        if settings.FILE_LOGGING:
+            logger.info("=" * 80)
+            logger.info("Global Network initialized")
+            logger.info("Actor params: %d | Critic params: %d",
+                    sum(p.numel() for p in self.actor.parameters()),
+                    sum(p.numel() for p in self.critic.parameters()))
+            logger.info("Optimizer: SharedAdam | LR: %.6f | T_MAX: %d | Workers: %d",
+                    LR, T_MAX, NUM_WORKERS)
+            logger.info("=" * 80)
 
     def save(self, path):
         """Save global network and optimizer state"""
@@ -299,12 +303,15 @@ class GlobalNetwork:
                 "global_mean_reward": self.global_mean_reward.value,
                 "best_reward": self.best_reward.value,
                 "global_episode": self.global_episode.value,
-                "total_updates": self.total_updates.value
+                "total_updates": self.total_updates.value,
+                "global_steps": self.global_steps.value, 
             }
             torch.save(state, path + ".pth")
-            logger.info("Model saved | Ep: %d | Updates: %d | Best: %.1f | Mean: %.1f",
-                       self.global_episode.value, self.total_updates.value,
-                       self.best_reward.value, self.global_mean_reward.value)
+            if settings.FILE_LOGGING:
+                logger.info("Model saved | Ep: %d | Updates: %d | GSteps: %d | Best: %.1f | Mean: %.1f",
+                        self.global_episode.value, self.total_updates.value,
+                        self.global_steps.value,
+                        self.best_reward.value, self.global_mean_reward.value)
 
     def load(self, path):
         """Load global network and optimizer state"""
@@ -320,10 +327,13 @@ class GlobalNetwork:
             self.best_reward.value = state.get("best_reward", -float('inf'))
             self.global_episode.value = state.get("global_episode", 0)
             self.total_updates.value = state.get("total_updates", 0)
+            self.global_steps.value = state.get("global_steps", 0)    # <-- ZMIANA 2
 
-            logger.info("Model loaded | Ep: %d | Updates: %d | Best: %.1f | Mean: %.1f",
-                       self.global_episode.value, self.total_updates.value,
-                       self.best_reward.value, self.global_mean_reward.value)
+            if settings.FILE_LOGGING:
+                logger.info("Model loaded | Ep: %d | Updates: %d | GSteps: %d | Best: %.1f | Mean: %.1f",
+                        self.global_episode.value, self.total_updates.value,
+                        self.global_steps.value,
+                        self.best_reward.value, self.global_mean_reward.value)
 
     def update_stats(self, worker_id, mean_reward, episode_reward):
         """Update shared statistics"""
@@ -395,10 +405,11 @@ class A3CWorker(mp.Process):
         # networks (initialized in run() after fork)
         self.actor = None
         self.critic = None
-        self._initialized = False
 
-        logger.info("W%d initialized | Port: %d | Device: %s",
-                   self.worker_id, self.port, self.device)
+        self._initialized = False
+        if settings.FILE_LOGGING:
+            logger.info("W%d initialized | Port: %d | Device: %s",
+                    self.worker_id, self.port, self.device)
 
     def _init_networks(self):
         """Initialize local networks on GPU (after fork)"""
@@ -414,7 +425,8 @@ class A3CWorker(mp.Process):
 
         self.sync_with_global()
         self._initialized = True
-        logger.info("W%d networks initialized on %s", self.worker_id, self.device)
+        if settings.FILE_LOGGING:
+            logger.info("W%d networks initialized on %s", self.worker_id, self.device)
 
     def sync_with_global(self):
         """Copy weights from global network (CPU) to local network (GPU)"""
@@ -522,12 +534,13 @@ class A3CWorker(mp.Process):
         global_mean, is_new_best = self.global_network.update_stats(
             self.worker_id, self.mean_reward, ep_reward
         )
+        global_step = self.global_network.global_steps.value
 
-        if is_new_best:
+        if is_new_best and settings.FILE_LOGGING:
             logger.info("!!! NEW BEST REWARD: %.1f (W%d, Ep%d)",
                       ep_reward, self.worker_id, episode_num)
 
-        if LOGGING:
+        if settings.FILE_LOGGING:
             logger.info("W%d Ep%d | R: %6.1f | Local mean: %6.1f | Global mean: %6.1f | Len: %3d | Steps: %6d",
                     self.worker_id, episode_num, ep_reward, self.mean_reward,
                     global_mean, episode_length, self.total_steps)
@@ -537,6 +550,7 @@ class A3CWorker(mp.Process):
                 self.log_queue.put_nowait({
                     "worker_id": self.worker_id,
                     "episode": episode_num,
+                    "global_step": global_step,              # <-- ZMIANA 3
                     "reward": ep_reward,
                     "local_mean_reward": self.mean_reward,
                     "global_mean_reward": global_mean,
@@ -552,7 +566,8 @@ class A3CWorker(mp.Process):
                 csv.writer(f).writerow([
                     self.worker_id, episode_num, ep_reward, self.mean_reward,
                     global_mean, episode_length, self.total_steps,
-                    self.global_network.total_updates.value, distance_from_target
+                    self.global_network.total_updates.value, global_step,   # <-- ZMIANA 4
+                    distance_from_target
                 ])
         except:
             pass
@@ -560,6 +575,12 @@ class A3CWorker(mp.Process):
     def run(self):
             # --- CPU thread limiting (critical for multi-process scaling) ---
         import os
+        import cProfile
+        import pstats
+        import io
+        
+        profiler = cProfile.Profile()
+        profiler.enable()
         os.environ["OMP_NUM_THREADS"] = "1"
         os.environ["MKL_NUM_THREADS"] = "1"
         os.environ["OPENBLAS_NUM_THREADS"] = "1"
@@ -570,7 +591,8 @@ class A3CWorker(mp.Process):
         torch.set_num_threads(1)
         torch.set_num_interop_threads(1)
         # ---------------------------------------------------------------
-        logger.info("W%d started", self.worker_id)
+        if settings.FILE_LOGGING:
+            logger.info("W%d started", self.worker_id)
 
         self._init_networks()
 
@@ -580,7 +602,8 @@ class A3CWorker(mp.Process):
             if prev_mean != 0.0:
                 self.mean_reward = prev_mean
                 self.episode_rewards_history = [prev_mean] * 100
-                logger.info("W%d restored mean reward from global: %.3f",
+                if settings.FILE_LOGGING:
+                    logger.info("W%d restored mean reward from global: %.3f",
                             self.worker_id, prev_mean)
         except:
             pass
@@ -628,6 +651,8 @@ class A3CWorker(mp.Process):
                     while not done:
                         episode_step += 1
                         self.total_steps += 1
+                        self.global_network.global_steps.value += 1
+
 
                         # prepare state tensor
                         if isinstance(state, np.ndarray):
@@ -655,14 +680,14 @@ class A3CWorker(mp.Process):
                         )
 
                         # save observation if needed
-                        if save_images:
-                            env.state_observer.manouver = maneuver
-                            env.state_observer.action = action
-                            env.state_observer.step = episode_step
-                            env.state_observer.episode = current_episode
-                            env.state_observer.save_to_disk()
-                            env.state_observer.draw_related_values()
-                            env.state_observer.save_together()
+                        # if save_images:
+                        #     env.state_observer.manouver = maneuver
+                        #     env.state_observer.action = action
+                        #     env.state_observer.step = episode_step
+                        #     env.state_observer.episode = current_episode
+                        #     env.state_observer.save_to_disk()
+                        #     env.state_observer.draw_related_values()
+                        #     env.state_observer.save_together()
 
                         # execute action in environment
                         env.step_apply_action(action)
@@ -673,7 +698,7 @@ class A3CWorker(mp.Process):
 
                         # CARLA ticks
                         env.world.tick()
-                        env.step_apply_action(action)
+                        # env.step_apply_action(action)
                         env.world.tick()
 
                         # get next state
@@ -714,7 +739,10 @@ class A3CWorker(mp.Process):
 
                         state = next_state
                         speed = next_speed
-
+                    if self.episode_count % 50 == 0:
+                        profiler.disable()
+                        profiler.dump_stats(f'profile_worker_{self.worker_id}.out')
+                        profiler.enable()
                     # episode finished
                     gc.collect()
                     if self.device.type == 'cuda':
@@ -743,23 +771,30 @@ class A3CWorker(mp.Process):
                             action_space=ACTION_TYPE, camera=CAMERA_TYPE,
                             resX=250, resY=250, manual_control=False
                         )
-                        logger.info("W%d reconnected", self.worker_id)
+                        if settings.FILE_LOGGING:
+                            logger.info("W%d reconnected", self.worker_id)
                     else:
                         raise
 
         except KeyboardInterrupt:
-            logger.info("W%d interrupted", self.worker_id)
+            if settings.FILE_LOGGING:
+                logger.info("W%d interrupted", self.worker_id)
+            else:
+                pass
         except Exception as e:
             logger.error("W%d crashed: %s", self.worker_id, str(e), exc_info=True)
             raise
         finally:
+            profiler.disable()
+            profiler.dump_stats(f'profile_worker_{self.worker_id}.out')
             if env:
                 try:
                     env.world = None
                     env.client = None
                 except:
                     pass
-            logger.info("W%d terminated", self.worker_id)
+            if settings.FILE_LOGGING:
+                logger.info("W%d terminated", self.worker_id)
 
 
 ###########################################################################
@@ -773,8 +808,8 @@ def handle_workers(global_network, log_queue=None, shutdown_event=None):
     """
     workers = {}
     restart_counts = {i: 0 for i in range(NUM_WORKERS)}
-
-    logger.info("Launching %d workers...", NUM_WORKERS)
+    if settings.FILE_LOGGING:
+        logger.info("Launching %d workers...", NUM_WORKERS)
 
     # start workers
     for worker_id in range(NUM_WORKERS):
@@ -791,7 +826,8 @@ def handle_workers(global_network, log_queue=None, shutdown_event=None):
         )
         worker.start()
         workers[worker_id] = worker
-        logger.info("W%d launched | Port: %d | Device: %s", worker_id, port, device)
+        if settings.FILE_LOGGING:
+            logger.info("W%d launched | Port: %d | Device: %s", worker_id, port, device)
 
     # monitor workers
     try:
@@ -815,7 +851,8 @@ def handle_workers(global_network, log_queue=None, shutdown_event=None):
                             pass
 
                     wait_time = float(os.getenv('CARLA_SERVER_START_PERIOD', '30.0'))
-                    logger.info("W%d waiting %.1fs for CARLA...", worker_id, wait_time)
+                    if settings.FILE_LOGGING:
+                        logger.info("W%d waiting %.1fs for CARLA...", worker_id, wait_time)
                     time.sleep(wait_time)
 
                     port = BASE_PORT + (100 * worker_id)
@@ -831,11 +868,13 @@ def handle_workers(global_network, log_queue=None, shutdown_event=None):
                     )
                     worker.start()
                     workers[worker_id] = worker
-                    logger.info("W%d restarted (total restarts: %d)",
+                    if settings.FILE_LOGGING:
+                        logger.info("W%d restarted (total restarts: %d)",
                               worker_id, restart_counts[worker_id])
 
     except KeyboardInterrupt:
-        logger.info("Stopping all workers...")
+        if settings.FILE_LOGGING:
+            logger.info("Stopping all workers...")
         if shutdown_event:
             shutdown_event.set()
         for worker in workers.values():
@@ -843,8 +882,8 @@ def handle_workers(global_network, log_queue=None, shutdown_event=None):
                 worker.terminate()
         for worker in workers.values():
             worker.join(timeout=5)
-
-    logger.info("Training finished. Restart counts: %s", restart_counts)
+    if settings.FILE_LOGGING:
+        logger.info("Training finished. Restart counts: %s", restart_counts)
 
 
 ###########################################################################
@@ -858,21 +897,23 @@ if __name__ == "__main__":
             csv.writer(f).writerow([
                 'worker_id', 'episode', 'reward', 'local_mean',
                 'global_mean', 'length', 'total_steps', 'total_updates',
-                'distance_from_target'
+                'global_step', 'distance_from_target'                      # <-- ZMIANA 5
             ])
+
 
     mp.set_start_method('spawn')
 
     shutdown_event = mp.Event()
     log_queue = mp.Queue(maxsize=1000) if LOGGING else None
 
-    logger.info("=" * 80)
-    logger.info("A3C Multi-GPU Training")
-    logger.info("=" * 80)
-    logger.info("Workers: %d | GPUs: %s", NUM_WORKERS, WORKER_GPUS)
-    logger.info("LR: %.6f | Gamma: %.4f | T_MAX: %d steps",
-               LR, GAMMA, T_MAX)
-    logger.info("=" * 80)
+    if settings.FILE_LOGGING:
+        logger.info("=" * 80)
+        logger.info("A3C Multi-GPU Training")
+        logger.info("=" * 80)
+        logger.info("Workers: %d | GPUs: %s", NUM_WORKERS, WORKER_GPUS)
+        logger.info("LR: %.6f | Gamma: %.4f | T_MAX: %d steps",
+                LR, GAMMA, T_MAX)
+        logger.info("=" * 80)
 
     # initialize global network
     state_shape = [250, 250, 3]
@@ -885,7 +926,8 @@ if __name__ == "__main__":
     if os.path.isfile(MODEL_LOAD_PATH):
         global_network.load(MODEL_LOAD_PATH)
     else:
-        logger.info("Starting training from scratch")
+        if settings.FILE_LOGGING:
+            logger.info("Starting training from scratch")
 
     # W&B logger
     logger_process = None
@@ -896,13 +938,17 @@ if __name__ == "__main__":
             name="WandBLogger"
         )
         logger_process.start()
-        logger.info("wandb logger process spawned")
+        if settings.FILE_LOGGING:
+            logger.info("wandb logger process spawned")
 
     # start training
     try:
         handle_workers(global_network, log_queue=log_queue, shutdown_event=shutdown_event)
     except KeyboardInterrupt:
-        logger.info("Interrupted")
+        if settings.FILE_LOGGING:
+            logger.info("Interrupted")
+        else:
+            pass
     finally:
         shutdown_event.set()
 
@@ -916,7 +962,7 @@ if __name__ == "__main__":
             logger_process.join(timeout=10)
             if logger_process.is_alive():
                 logger_process.terminate()
-
-        logger.info("=" * 80)
-        logger.info("Training complete")
-        logger.info("=" * 80)
+        if settings.FILE_LOGGING:
+            logger.info("=" * 80)
+            logger.info("Training complete")
+            logger.info("=" * 80)
