@@ -1,16 +1,6 @@
-# Nasz algorytm, usprawniony przez Bartka a nastepnie przez Piotrka
-# /net/tscratch/people/plgpczechow/AV/.venv/bin/python /net/tscratch/people/plgpczechow/AV/A_to_B_GPU_34/a3c_multigpu.py
-# nohup /net/tscratch/people/plgpczechow/AV/.venv/bin/python /net/tscratch/people/plgpczechow/AV/A_to_B_GPU_34/a3c_multigpu.py > a3c_out.log 2>&1 &
-
-# Liczenie nagrody
-# apply_action pomiedzy tick()'ami
 """
 A3C Multi-GPU Implementation
 
-Based on:
-- V. Mnih et al. (2016) "Asynchronous Methods for Deep Reinforcement Learning"
-- https://github.com/ikostrikov/pytorch-a3c
-- https://github.com/carla-simulator/reinforcement-learning
 
 Key modifications for Multi-GPU:
 1. Global model on CPU (shared memory)
@@ -20,9 +10,9 @@ Key modifications for Multi-GPU:
 5. Hogwild! style updates (no locks on weight updates)
 
 Performance optimizations:
-- T_MAX = 20 (fewer GPU<->CPU transfers)
+- T_MAX = 10 (fewer GPU<->CPU transfers)
 - SYNC_EVERY_N_UPDATES = 1 (sync after every update)
-- SAVE_INTERVAL = 50 (less frequent saving)
+- SAVE_INTERVAL = 200 (less frequent saving)
 """
 
 import glob
@@ -71,9 +61,9 @@ if torch.cuda.is_available():
 # global settings
 ACTION_TYPE = settings.ACTION_TYPE
 CAMERA_TYPE = settings.CAMERA_TYPE
-MODEL_LOAD_PATH = 'A_to_B_GPU_34/PC_models/currently_trained/carla_to_chainer_013_4_8w_10u_10s_profiled.pth'
-MODEL_SAVE_PATH = 'A_to_B_GPU_34/PC_models/currently_trained/carla_to_chainer_013_4_8w_10u_10s_profiled'
-EXP_ID = "carla_to_chainer_013_4_8w_10u_10s_profiled.pth"
+MODEL_LOAD_PATH = 'A_to_B_GPU_34/PC_models/currently_trained/carla_to_chainer_013_5_8w_10u_10s_profiled.pth'
+MODEL_SAVE_PATH = 'A_to_B_GPU_34/PC_models/currently_trained/carla_to_chainer_013_5_8w_10u_10s_profiled'
+EXP_ID = "carla_to_chainer_013_5_8w_10u_10s_profiled.pth"
 
 GAMMA = settings.GAMMA
 LR = settings.LR
@@ -335,21 +325,34 @@ class GlobalNetwork:
                         self.global_steps.value,
                         self.best_reward.value, self.global_mean_reward.value)
 
-    def update_stats(self, worker_id, mean_reward, episode_reward):
-        """Update shared statistics"""
-        is_new_best = False
+    # def update_stats(self, worker_id, mean_reward, episode_reward):
+    #     """Update shared statistics"""
+    #     is_new_best = False
 
+    #     with self.stats_lock:
+    #         if episode_reward > self.best_reward.value:
+    #             self.best_reward.value = episode_reward
+    #             is_new_best = True
+
+    #         self.worker_mean_rewards[worker_id] = mean_reward
+
+    #         active = [r for r in self.worker_mean_rewards[:] if r != 0]
+    #         if active:
+    #             self.global_mean_reward.value = sum(active) / len(active)
+
+    #         return self.global_mean_reward.value, is_new_best
+                
+    def update_stats(self, worker_id, mean_reward, episode_reward, episode_length):
+        is_new_best = False
         with self.stats_lock:
+            self.global_steps.value += episode_length  # ← dodane
             if episode_reward > self.best_reward.value:
                 self.best_reward.value = episode_reward
                 is_new_best = True
-
             self.worker_mean_rewards[worker_id] = mean_reward
-
             active = [r for r in self.worker_mean_rewards[:] if r != 0]
             if active:
                 self.global_mean_reward.value = sum(active) / len(active)
-
             return self.global_mean_reward.value, is_new_best
 
     def increment_episode(self):
@@ -531,8 +534,12 @@ class A3CWorker(mp.Process):
         window = min(100, len(self.episode_rewards_history))
         self.mean_reward = np.mean(self.episode_rewards_history[-window:])
 
+        # global_mean, is_new_best = self.global_network.update_stats(
+        #     self.worker_id, self.mean_reward, ep_reward
+        # )
+        # global_step = self.global_network.global_steps.value
         global_mean, is_new_best = self.global_network.update_stats(
-            self.worker_id, self.mean_reward, ep_reward
+            self.worker_id, self.mean_reward, ep_reward, episode_length
         )
         global_step = self.global_network.global_steps.value
 
@@ -651,7 +658,7 @@ class A3CWorker(mp.Process):
                     while not done:
                         episode_step += 1
                         self.total_steps += 1
-                        self.global_network.global_steps.value += 1
+                        # self.global_network.global_steps.value += 1
 
 
                         # prepare state tensor
