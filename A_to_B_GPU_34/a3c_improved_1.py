@@ -325,22 +325,6 @@ class GlobalNetwork:
                         self.global_steps.value,
                         self.best_reward.value, self.global_mean_reward.value)
 
-    # def update_stats(self, worker_id, mean_reward, episode_reward):
-    #     """Update shared statistics"""
-    #     is_new_best = False
-
-    #     with self.stats_lock:
-    #         if episode_reward > self.best_reward.value:
-    #             self.best_reward.value = episode_reward
-    #             is_new_best = True
-
-    #         self.worker_mean_rewards[worker_id] = mean_reward
-
-    #         active = [r for r in self.worker_mean_rewards[:] if r != 0]
-    #         if active:
-    #             self.global_mean_reward.value = sum(active) / len(active)
-
-    #         return self.global_mean_reward.value, is_new_best
                 
     def update_stats(self, worker_id, mean_reward, episode_reward, episode_length):
         is_new_best = False
