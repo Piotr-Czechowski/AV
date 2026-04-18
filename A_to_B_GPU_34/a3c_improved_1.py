@@ -61,9 +61,9 @@ if torch.cuda.is_available():
 # global settings
 ACTION_TYPE = settings.ACTION_TYPE
 CAMERA_TYPE = settings.CAMERA_TYPE
-MODEL_LOAD_PATH = 'A_to_B_GPU_34/PC_models/currently_trained/carla_to_chainer_013_5_8w_10u_10s_profiled.pth'
-MODEL_SAVE_PATH = 'A_to_B_GPU_34/PC_models/currently_trained/carla_to_chainer_013_5_8w_10u_10s_profiled'
-EXP_ID = "carla_to_chainer_013_5_8w_10u_10s_profiled.pth"
+MODEL_LOAD_PATH = 'A_to_B_GPU_34/PC_models/currently_trained/carla_to_chainer_013_13_12w_10u_10s_profiled.pth'
+MODEL_SAVE_PATH = 'A_to_B_GPU_34/PC_models/currently_trained/carla_to_chainer_013_13_12w_10u_10s_profiled'
+EXP_ID = "carla_to_chainer_013_13_12w_10u_10s_profiled_continued_3.pth"
 
 GAMMA = settings.GAMMA
 LR = settings.LR
@@ -72,7 +72,7 @@ SCENARIO = settings.SCENARIO
 TESTING = settings.TESTING
 
 # A3C specific settings
-NUM_WORKERS = 8
+NUM_WORKERS = 12
 NUMBER_OF_SERVERS_PER_GPU = 2
 n_gpus = torch.cuda.device_count()
 WORKER_GPUS = ([f'cuda:{g}' for g in range(n_gpus) for _ in range(NUMBER_OF_SERVERS_PER_GPU)])[:NUM_WORKERS]
@@ -84,7 +84,7 @@ T_MAX = 10
 MAX_GRAD_NORM = 40.0
 ENTROPY_COEF = 0.01
 VALUE_LOSS_COEF = 1.0
-SAVE_INTERVAL = 200
+SAVE_INTERVAL = 50
 SYNC_EVERY_N_UPDATES = 1
 
 # retrying settings
