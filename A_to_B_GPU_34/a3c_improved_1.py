@@ -12,7 +12,7 @@ Key modifications for Multi-GPU:
 Performance optimizations:
 - T_MAX = 10 (fewer GPU<->CPU transfers)
 - SYNC_EVERY_N_UPDATES = 1 (sync after every update)
-- SAVE_INTERVAL = 200 (less frequent saving)
+- SAVE_INTERVAL = 50
 """
 
 import glob
