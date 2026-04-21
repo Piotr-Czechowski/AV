@@ -554,7 +554,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 class DiscreteActor(nn.Module):
-    def __init__(self, input_shape, actor_shape, device=torch.device("cuda")):
+    def __init__(self, input_shape, actor_shape, device=torch.device("cpu")):
         super(DiscreteActor, self).__init__()
         self.device = device
 
@@ -613,7 +613,9 @@ class DiscreteActor(nn.Module):
 
     def forward(self, x, speed=None, manouver=None):
         # Normalize the image and process through CNN
-        x = x.to(self.device, dtype=torch.float32) / 255.0
+        # x = x.to(self.device, dtype=torch.float32) / 255.0
+        x = x.to(self.device, dtype=torch.float32)
+
         cnn_features = self.cnn(x)
         cnn_features = cnn_features.view(cnn_features.size(0), -1)  # Flatten
         
@@ -643,7 +645,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 class Critic(nn.Module):
-    def __init__(self, input_shape, actor_shape, device=torch.device("cuda")):
+    def __init__(self, input_shape, actor_shape, device=torch.device("cpu")):
         super(Critic, self).__init__()
         self.device = device
 
@@ -702,7 +704,9 @@ class Critic(nn.Module):
 
     def forward(self, x, speed=None, manouver=None):
         # Normalize the image and process through CNN
-        x = x.to(self.device, dtype=torch.float32) / 255.0
+        # x = x.to(self.device, dtype=torch.float32) / 255.0
+        x = x.to(self.device, dtype=torch.float32)
+
         
         cnn_features = self.cnn(x)
         cnn_features = cnn_features.view(x.size(0), -1)  # Flatten
