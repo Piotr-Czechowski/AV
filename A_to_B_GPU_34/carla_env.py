@@ -1264,15 +1264,14 @@ class CarlaEnv:
         if self.step_counter >= how_many_steps:
             self.done = True
         try:
-            image1 = self.image_queue.get()
+            image1 = self.image_queue.get(timeout=2.0)
         except queue.Empty:
-            print("Timeout: brak obrazu w kolejce")
-            image1 = None
+            raise RuntimeError("time-out waiting for camera image")
+
         try:
-            image = self.image_queue.get() #2 frames are put on the queue between two consecutive steps
+            image = self.image_queue.get(timeout=2.0)
         except queue.Empty:
-            print("Timeout: brak obrazu w kolejce")
-            image = None
+            raise RuntimeError("time-out waiting for camera image")
         self.state_observer.image = image
 
         # if save_image:
