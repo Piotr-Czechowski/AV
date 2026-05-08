@@ -205,6 +205,32 @@ class CarlaEnv:
 
         self.walker = None
         self.walker_controller = None
+
+        tesla = self.blueprint_library.filter('model3')[0]
+        tesla.set_attribute('role_name', 'ego')
+        for attempt in range(MAX_ATTEMPTS):
+            self.vehicle = self.world.try_spawn_actor(tesla, self.spawn_point)
+            if self.vehicle is not None:
+                print(f"Pojazd zespawnowany w próbie {attempt + 1}")
+                break
+            time.sleep(WAIT_TIME)
+
+
+        if self.camera_type == 'rgb':
+            self.add_rgb_camera()
+        elif self.camera_type == 'semantic':
+            self.add_semantic_camera()
+        else:
+            self.log.err(f"Wrong camera type. Pick rgb or semantic, not: {self.camera_type}")
+
+        time.sleep(4)
+        
+        self.settings = self.world.get_settings()
+        self.settings.synchronous_mode = True
+        self.settings.fixed_delta_seconds = 0.1
+        self.settings.max_substep_delta_time = 0.01
+        self.settings.max_substeps = 10
+        self.world.apply_settings(self.settings)
      
 
     def create_scenario(self, sp, tp, mp_d):
@@ -373,123 +399,141 @@ class CarlaEnv:
         self.planner.setup()
 
         if self.scenario == 1:
-            self.goal_location_loc = carla.Location(x=50, y=203.913498, z=0.275307)
-            self.goal_location_trans = carla.Transform(self.goal_location_loc)
+            goal_location_loc = carla.Location(x=50, y=203.913498, z=0.275307)
+            goal_location_trans = carla.Transform(goal_location_loc)
 
         elif self.scenario == 2:
-            self.goal_location_loc = carla.Location(x=100, y=203.788742, z=1.3)
-            self.goal_location_trans = carla.Transform(self.goal_location_loc)
+            goal_location_loc = carla.Location(x=100, y=203.788742, z=1.3)
+            goal_location_trans = carla.Transform(goal_location_loc)
 
         elif self.scenario in [3, 5]:
-            self.goal_location_loc = carla.Location(x=-55.387177, y=0.558450, z=0.0)
-            self.goal_location_trans = carla.Transform(self.goal_location_loc)
+            goal_location_loc = carla.Location(x=-55.387177, y=0.558450, z=0.0)
+            goal_location_trans = carla.Transform(goal_location_loc)
 
         elif self.scenario in [4, 6]:
-            self.goal_location_loc = carla.Location(x=-105.387177, y=-3.140184, z=0.0)
-            self.goal_location_trans = carla.Transform(self.goal_location_loc)
+            goal_location_loc = carla.Location(x=-105.387177, y=-3.140184, z=0.0)
+            goal_location_trans = carla.Transform(goal_location_loc)
         elif self.scenario == 8:
-            self.goal_location_loc = carla.Location(x=74, y=-40, z=1.0)
-            self.goal_location_trans = carla.Transform(self.goal_location_loc)
+            goal_location_loc = carla.Location(x=74, y=-40, z=1.0)
+            goal_location_trans = carla.Transform(goal_location_loc)
         elif self.scenario == 10:
             self.goal_points_index = random.randint(0,len(MAP_POINTS_SC10)-1)
             x, y, z = MAP_POINTS_SC10[self.goal_points_index]
-            self.goal_location_loc = carla.Location(x=x, y=y, z=z)
-            self.goal_location_trans = carla.Transform(self.goal_location_loc)
+            goal_location_loc = carla.Location(x=x, y=y, z=z)
+            goal_location_trans = carla.Transform(goal_location_loc)
         elif self.scenario == 11:
             x, y, z = MAP_POINTS_SC11[self.goal_points_index][1]
-            self.goal_location_loc = carla.Location(x=x, y=y, z=z)
-            self.goal_location_trans = carla.Transform(self.goal_location_loc)
+            goal_location_loc = carla.Location(x=x, y=y, z=z)
+            goal_location_trans = carla.Transform(goal_location_loc)
         elif self.scenario == 12:
             spawn_points = self.world.get_map().get_spawn_points()
             valid_spawn_points = [sp for i, sp in enumerate(spawn_points) if i != self.goal_points_index]
-            self.goal_location_trans = random.choice(valid_spawn_points)
-            self.goal_location_loc = self.goal_location_trans.location
+            goal_location_trans = random.choice(valid_spawn_points)
+            goal_location_loc = goal_location_trans.location
         elif self.scenario == 13:
             sp_number = MAP_POINTS_SC13[self.goal_points_index][1]
-            self.goal_location_trans = self.map.get_spawn_points()[sp_number]
-            self.goal_location_loc = self.goal_location_trans.location
+            goal_location_trans = self.map.get_spawn_points()[sp_number]
+            goal_location_loc = goal_location_trans.location
         elif self.scenario == 14:
             sp_number = MAP_POINTS_SC14[self.goal_points_index][1]
-            self.goal_location_trans = self.map.get_spawn_points()[sp_number]
-            self.goal_location_loc = self.goal_location_trans.location
+            goal_location_trans = self.map.get_spawn_points()[sp_number]
+            goal_location_loc = goal_location_trans.location
         elif self.scenario == 15:
             sp_number = MAP_POINTS_SC15[self.goal_points_index][1]
-            self.goal_location_trans = self.map.get_spawn_points()[sp_number]
-            self.goal_location_loc = self.goal_location_trans.location
+            goal_location_trans = self.map.get_spawn_points()[sp_number]
+            goal_location_loc = goal_location_trans.location
         elif self.scenario == 16:
             sp_number = TESTING_SC[self.goal_points_index][1]
-            self.goal_location_trans = self.map.get_spawn_points()[sp_number]
-            self.goal_location_loc = self.goal_location_trans.location
+            goal_location_trans = self.map.get_spawn_points()[sp_number]
+            goal_location_loc = goal_location_trans.location
         else:
             # self.goal_location_loc = way_points[self.goal_point].transform.location
             # self.goal_location_trans = way_points[self.goal_point].transform
-            self.goal_location_loc = carla.Location(x=-6.5, y=-44, z=0.0)
-            self.goal_location_trans = carla.Transform(self.goal_location_loc)
+            goal_location_loc = carla.Location(x=-6.5, y=-44, z=0.0)
+            goal_location_trans = carla.Transform(goal_location_loc)
 
-        self.route = self.planner.trace_route(self.spawn_point_loc, self.goal_location_loc)
+        route = self.planner.trace_route(self.spawn_point_loc, goal_location_loc)
 
         # Delete duplicates (for some reason there are duplicates in self.route)
         _ = []
         # decisions = [el2 for el1, el2 in self.route]
         # decisions = [decisions[index] for index in range(len(decisions)) if index==0 or decisions[index] != decisions[index-1]]
-        decisions = [el2 for el1, el2 in self.route]
+        decisions = [el2 for el1, el2 in route]
         decisions = [decisions[index] for index in range(len(decisions)) if (index==0 or decisions[index] != decisions[index-1]) and decisions[index] != RoadOption.LANEFOLLOW and decisions[index] != RoadOption.CHANGELANELEFT and decisions[index] != RoadOption.CHANGELANERIGHT]
         decisions = [DECISIONS_DICT[el] for el in decisions]
 
-        for i in range(len(self.route) - 1):
-            current_point = self.route[i][0].transform
-            next_point = self.route[i + 1][0].transform
+        for i in range(len(route) - 1):
+            current_point = route[i][0].transform
+            next_point = route[i + 1][0].transform
 
             if current_point == next_point:
                 pass
             else:
-                _.append(self.route[i])
+                _.append(route[i])
 
         # Append the last route point
-        _.append(self.route[-1])
+        _.append(route[-1])
 
-        self.route = _
+        route = _
 
-        self._draw_optimal_route_lines(self.route, draw=draw)
+        self._draw_optimal_route_lines(goal_location_trans, route, draw=draw)
         self.car_decisions = decisions
         self.car_decisions.append(1)
         print(f"Manouvers to make in this episode: {self.car_decisions}")
 
 
-        return self.goal_location_trans, self.goal_location_loc, self.route
+        return goal_location_trans, goal_location_loc, route
 
-    def spawn_car(self, spawning_type=1, episode=None):
-        """
-        Spawn a car
-        :return: vehicle
-        """
+    # def spawn_car(self, spawning_type=1, episode=None):
+    #     """
+    #     Spawn a car
+    #     :return: vehicle
+    #     """
 
-        tesla = self.blueprint_library.filter('model3')[0]
-        tesla.set_attribute('role_name', 'ego')
-        if spawning_type==0:
-            self.spawn_point = random.choice(self.route)[0].transform
-        elif spawning_type == 1:
-            # self.spawn_point.location.x -= 9
-            pass
-        elif spawning_type==2:
-            if bool(episode%2):
-                self.spawn_point = self.route[0][0].transform
-            else:
-                self.spawn_point = self.route[-120][0].transform
-        # self.spawn_point.location.z = 20.0 # żeby nie był za nisko
+    #     tesla = self.blueprint_library.filter('model3')[0]
+    #     tesla.set_attribute('role_name', 'ego')
+    #     for attempt in range(MAX_ATTEMPTS):
+    #         self.vehicle = self.world.try_spawn_actor(tesla, self.spawn_point)
+    #         if self.vehicle is not None:
+    #             print(f"Pojazd zespawnowany w próbie {attempt + 1}")
+    #             break
+    #         time.sleep(WAIT_TIME)
+
+
+    #     tesla = self.blueprint_library.filter('model3')[0]
+    #     tesla.set_attribute('role_name', 'ego')
+    #     if spawning_type==0:
+    #         self.spawn_point = random.choice(self.route)[0].transform
+    #     elif spawning_type == 1:
+    #         # self.spawn_point.location.x -= 9
+    #         pass
+    #     elif spawning_type==2:
+    #         if bool(episode%2):
+    #             self.spawn_point = self.route[0][0].transform
+    #         else:
+    #             self.spawn_point = self.route[-120][0].transform
+    #     # self.spawn_point.location.z = 20.0 # żeby nie był za nisko
         
-        for attempt in range(MAX_ATTEMPTS):
-            self.vehicle = self.world.try_spawn_actor(tesla, self.spawn_point)
-            if self.vehicle is not None:
-                print(f"Pojazd zespawnowany w próbie {attempt + 1}")
-                break
-            time.sleep(WAIT_TIME)
-        else:
-            raise RuntimeError("Nie udało się zespawnować pojazdu po kilku próbach.")
+    #     for attempt in range(MAX_ATTEMPTS):
+    #         self.vehicle = self.world.try_spawn_actor(tesla, self.spawn_point)
+    #         if self.vehicle is not None:
+    #             print(f"Pojazd zespawnowany w próbie {attempt + 1}")
+    #             break
+    #         time.sleep(WAIT_TIME)
+    #     else:
+    #         raise RuntimeError("Nie udało się zespawnować pojazdu po kilku próbach.")
 
-        self.actor_list.append(self.vehicle)
+    #     self.actor_list.append(self.vehicle)
 
-        return self.vehicle
+    #     return self.vehicle
+    
+    def move_car_to_starting_point(self):
+        """
+        Move the car to the starting point
+        """
+        self.vehicle.set_transform(self.spawn_point)
+        time.sleep(1)
+
 
     def create_action_space(self, action_space):
         if action_space == 'discrete':
@@ -689,7 +733,7 @@ class CarlaEnv:
         """
         self.invasion_history_list.append(invasion)
 
-    def _draw_optimal_route_lines(self, route, draw):
+    def _draw_optimal_route_lines(self, goal_location_trans, route, draw):
         """
         Draw optimal route between initial point and terminal point
         :param route: list of tuples
@@ -732,7 +776,7 @@ class CarlaEnv:
                 pass
 
         # Add terminal point
-        self.middle_goals.append(self.goal_location_trans)
+        self.middle_goals.append(goal_location_trans)
 
         # Do not need middle points anymore
         if draw:
@@ -767,7 +811,7 @@ class CarlaEnv:
                 add_middle_goals.append([middle_goal, self.middle_goals[i + 1], factor])
 
         # Get middle points for long lines
-        self.middle_points(add_middle_goals)
+        self.middle_points(add_middle_goals, route)
 
         # Static reward from middle points
         self.stat_reward_mp = []
@@ -892,7 +936,7 @@ class CarlaEnv:
 
         return distance
 
-    def middle_points(self, middle_points_list):
+    def middle_points(self, middle_points_list, route):
         """
 
         :param middle_points_list: list of [m1: Carla transform, m2: Carla transform,
@@ -903,9 +947,9 @@ class CarlaEnv:
             mp_list = [middle_point[0], middle_point[1]]
             factor = middle_point[2]
             if factor > 0:
-                self.calculate_middle_points(mp_list, factor)
+                self.calculate_middle_points(mp_list, factor, route)
 
-    def calculate_middle_points(self, mp_list, factor):
+    def calculate_middle_points(self, mp_list, factor, route):
         """
         Calculate a list of middle points between two points and append it to self.middle_points
         :param mp_list: list of 2 points of Carla transform
@@ -943,7 +987,7 @@ class CarlaEnv:
                   Let's fix that by compering those values with route from carla method
                 """
                 for mp in new_mp:
-                    for r in self.route:
+                    for r in route:
                         r = r[0].transform.location
 
                         x_diff = abs(mp.location.x - r.x)
@@ -1055,31 +1099,25 @@ class CarlaEnv:
         """
         Rest variables at the end of each episode
         """
-        self.destroy_agents()
-        self.actor_list = []
+        # self.destroy_agents()
+        # self.actor_list = []
 
 
-        old_world = self.client.get_world()
-        if old_world is not None:
-            prev_world_id = old_world.id
-            del old_world
-        else:
-            prev_world_id = None
+        # old_world = self.client.get_world()
+        # if old_world is not None:
+            # prev_world_id = old_world.id
+            # del old_world
+        # else:
+            # prev_world_id = None
         
 
-        self.world = self.client.reload_world()
+        # self.world = self.client.reload_world()
         
         spawn_points = self.world.get_map().get_spawn_points()
         for i, spawn_point in enumerate(spawn_points):
             location = spawn_point.location
             self.world.debug.draw_string(location, str(i), draw_shadow=False, color=carla.Color(r=0, g=255, b=0), life_time=120.0)
         
-        self.settings = self.world.get_settings()
-        self.settings.synchronous_mode = True
-        self.settings.fixed_delta_seconds = 0.1
-        self.settings.max_substep_delta_time = 0.01
-        self.settings.max_substeps = 10
-        self.world.apply_settings(self.settings)
 
         # self.world = self.client.reload_world()
 
@@ -1094,8 +1132,8 @@ class CarlaEnv:
         # self.world.apply_settings(self.settings)
         # self.client.reload_world(False)
 
-        tries = 3
-        self.world = self.client.get_world()
+        # tries = 3
+        # self.world = self.client.get_world()
 
         # spawn_points = self.world.get_map().get_spawn_points()
         # for i, spawn_point in enumerate(spawn_points):
@@ -1103,10 +1141,10 @@ class CarlaEnv:
         #     self.world.debug.draw_string(location, str(i), draw_shadow=False, color=carla.Color(r=0, g=255, b=0), life_time=120.0)
             # self.world.tick()
 
-        while prev_world_id == self.world.id and tries > 0:
-            tries -= 1
-            self.world.tick()
-            self.world = self.client.get_world()
+        # while prev_world_id == self.world.id and tries > 0:
+            # tries -= 1
+            # self.world.tick()
+            # self.world = self.client.get_world()
         # self.world = self.client.reload_world()
 
         self.collision_history_list = []
@@ -1120,9 +1158,9 @@ class CarlaEnv:
         self.stat_reward_mp = []
 
         # Cameras
-        self.front_camera = None
-        self.preview_camera = None
-        self.preview_camera_enabled = False
+        # self.front_camera = None
+        # self.preview_camera = None
+        # self.preview_camera_enabled = False
         self.is_junction = False
         self.done = False
         self.speed = 0
@@ -1142,20 +1180,21 @@ class CarlaEnv:
         # self.spawn_single_pedestrian()
         # self.spawn_npc_vehicle(spawn_index=48)
 
-        self.plan_the_route()
-        self.spawn_car(spawning_type, episode)
+        self.goal_location_trans, self.goal_location_loc, self.route = self.plan_the_route()
+        # self.spawn_car(spawning_type, episode)
+        self.move_car_to_starting_point()
         self.set_spectator()
 
-        if self.camera_type == 'rgb':
-            self.add_rgb_camera()
-        elif self.camera_type == 'semantic':
-            self.add_semantic_camera()
-        else:
-            self.log.err(f"Wrong camera type. Pick rgb or semantic, not: {self.camera_type}")
+        # if self.camera_type == 'rgb':
+            # self.add_rgb_camera()
+        # elif self.camera_type == 'semantic':
+            # self.add_semantic_camera()
+        # else:
+            # self.log.err(f"Wrong camera type. Pick rgb or semantic, not: {self.camera_type}")
 
         # self.add_depth_camera()
-        self.add_collision_sensor()
-        self.add_line_invasion_sensor()
+        # self.add_collision_sensor()
+        # self.add_line_invasion_sensor()
 
         # self.vehicle.apply_control(carla.VehicleControl(throttle=1.0, brake=1.0))
         # time.sleep(2) # added PC

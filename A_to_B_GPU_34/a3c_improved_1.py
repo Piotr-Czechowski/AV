@@ -72,8 +72,8 @@ SCENARIO = settings.SCENARIO
 TESTING = settings.TESTING
 
 # A3C specific settings
-NUM_WORKERS = 12
-NUMBER_OF_SERVERS_PER_GPU = 2
+NUM_WORKERS = 1
+NUMBER_OF_SERVERS_PER_GPU = 1
 n_gpus = torch.cuda.device_count()
 WORKER_GPUS = ([f'cuda:{g}' for g in range(n_gpus) for _ in range(NUMBER_OF_SERVERS_PER_GPU)])[:NUM_WORKERS]
 print(f'!!!!!!!!!!    WORKER_GPUS {WORKER_GPUS}')
@@ -620,7 +620,7 @@ class A3CWorker(mp.Process):
                     self.sync_with_global()
 
                     # reset environment
-                    save_images = (current_episode % 200 == 0)
+                    save_images = (current_episode % 1 == 0)
                     env.state_observer.reset()
                     state, speed = env.reset(save_image=save_images, episode=current_episode)
 
@@ -671,14 +671,14 @@ class A3CWorker(mp.Process):
                         )
 
                         # save observation if needed
-                        # if save_images:
-                        #     env.state_observer.manouver = maneuver
-                        #     env.state_observer.action = action
-                        #     env.state_observer.step = episode_step
-                        #     env.state_observer.episode = current_episode
-                        #     env.state_observer.save_to_disk()
-                        #     env.state_observer.draw_related_values()
-                        #     env.state_observer.save_together()
+                        if save_images:
+                            env.state_observer.manouver = maneuver
+                            env.state_observer.action = action
+                            env.state_observer.step = episode_step
+                            env.state_observer.episode = current_episode
+                            env.state_observer.save_to_disk()
+                            env.state_observer.draw_related_values()
+                            env.state_observer.save_together()
 
                         # execute action in environment
                         env.step_apply_action(action)
