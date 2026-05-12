@@ -1,486 +1,814 @@
-# A3C Multi-GPU CARLA — `new_*` pipeline
+# Porównanie `new_hogwild_*` z `a3c_improved_1.py`
 
-This document covers three things: how the merge between the user's
-PyTorch baseline (`a3c_improved.py`) and the Chainer reference
-(`async-rl-backup-12-4-2026-before-spliting-model-and-changing-loss/`)
-was performed; how the resulting pipeline executes end-to-end; and the
-full parameter reference + a single command to run it.
+Stan dokumentu: 2026-05-08.
 
----
+Ten plik opisuje aktualną implementację A3C w plikach `new_hogwild_*` w katalogu
+`AV/A_to_B_GPU_34` oraz porównuje ją z bazową implementacją
+`a3c_improved_1.py`. Opis obejmuje także zmiany w `carla_env.py` i skrypcie
+`new_hogwild_train.slurm`.
 
-## 1. How the merge was done
+## Krótkie podsumowanie
 
-Two implementations contributed:
+`a3c_improved_1.py` było jednoplikową implementacją A3C: globalny actor i critic
+na CPU w pamięci współdzielonej, lokalne modele workerów na GPU, gradienty
+kopiowane GPU -> CPU i optymalizacja w stylu Hogwild. Ta część koncepcyjnie
+została zachowana.
 
-- **`AV/A_to_B_GPU_34/a3c_improved.py`** — single-file PyTorch baseline.
-  Already reliable as the *core training loop*: GPU→GPU parameter-server
-  architecture, A3C math on PyTorch, CARLA-specific control flow with
-  the existing `nets/a2c.py` networks. Weak on observability,
-  recovery, parametrisation, and resume.
-- **`async-rl-backup-12-4-2026-before-spliting-model-and-changing-loss/`**
-  — Chainer reference. Strong scaffolding: modular file layout,
-  structured JSONL logging, system + GPU monitoring, supervisor with
-  rapid-crash rollback, full resume pipeline, fully CLI-driven config.
-  Framework-incompatible (Chainer); we cannot import it directly.
+`new_hogwild_*` rozdziela ten kod na moduły, dodaje supervisor restartów,
+checkpointy, resume, JSONL logging, monitoring systemu/GPU, mniej kosztowny reset
+CARLA, reward shaping, aktywne ograniczanie epizodów i czytelniejszy launcher
+SLURM. Najważniejsze zmiany nie są kosmetyczne: nowa wersja ma wyraźnie lepszą
+obserwowalność, krótszy hot path epizodu i mniejsze ryzyko utraty pracy po
+awarii.
 
-**Strategy:** keep the PyTorch substrate from `a3c_improved.py`; port
-the *non-framework* layers around it from async-rl, translating the
-shared-memory bits to CUDA-aware equivalents.
+Bardzo duża liczba epizodów w nowej implementacji wynika z dwóch grup zmian.
+Pierwsza grupa to faktyczne przyspieszenie pętli: brak pełnego `reload_world()`
+co epizod, mniej logowania stdout, czystsza obsługa kolejki obrazów i brak
+ciągłego `cProfile` w workerze. Druga grupa to zmiana definicji epizodu:
+wrapper domyślnie kończy epizod po `DEFAULT_EPISODE_MAX_DECISIONS = 100`, a przy
+`DEFAULT_ACTION_REPEAT = 2` jedna decyzja agenta wykonuje dwa niskopoziomowe
+kroki CARLA. W starej ścieżce limit środowiska wynosił `STEP_COUNTER = 200`
+decyzji workera. Dlatego epizody/h są lepszą metryką przepustowości, ale nie są
+w pełni porównywalne 1:1 ze starym `a3c_improved_1.py` bez uwzględnienia limitu
+długości epizodu.
 
-### 1.1 Inherited from `a3c_improved.py`
+## Mapa plików
 
-| Feature | Where it landed in `new_*` |
+| Plik | Rola w aktualnej implementacji |
 |---|---|
-| `torch` + `torch.multiprocessing` substrate, `mp.set_start_method('spawn')` | [new_train_a3c_carla.py](AV/A_to_B_GPU_34/new_train_a3c_carla.py) `main()` |
-| GPU→GPU parameter-server: global net on `cuda:0`, workers on `cuda:1+` | [new_a3c.py](AV/A_to_B_GPU_34/new_a3c.py) `GlobalNetwork`, `A3CWorker` |
-| `SharedAdam` (Adam state pre-allocated on the param device, no `share_memory_()` for CUDA) | [new_a3c.py](AV/A_to_B_GPU_34/new_a3c.py) `SharedAdam` |
-| `transfer_grads_gpu_to_gpu` direct grad copy via `.to(dev, non_blocking=False)` | [new_a3c.py](AV/A_to_B_GPU_34/new_a3c.py) `transfer_grads` |
-| Three-lock multiproc design: `update_lock` / `stats_lock` / `save_lock` (see §1.4 — `update_lock` is a CUDA-imposed deviation from canonical Hogwild! A3C) | [new_a3c.py](AV/A_to_B_GPU_34/new_a3c.py) `GlobalNetwork` |
-| A3C math: `Transition` namedtuple, n-step bootstrap, advantage `.detach()`, Huber `F.smooth_l1_loss` value loss, trajectory-mean entropy, `total_loss = pi + v − β·H` | [new_a3c.py](AV/A_to_B_GPU_34/new_a3c.py) `compute_and_apply_gradients` |
-| `Categorical(logits=logits)` sampling | [new_a3c.py](AV/A_to_B_GPU_34/new_a3c.py) `get_action` |
-| `clip_grad_norm_(max_grad_norm)` before pushing grads | [new_a3c.py](AV/A_to_B_GPU_34/new_a3c.py) |
-| CARLA call sequence: `step_apply_action → world.tick → image_queue drain → env.step` (extended to *double tick* — see §1.3) | [new_carla_wrapper.py](AV/A_to_B_GPU_34/new_carla_wrapper.py) `step` |
-| `nets.a2c.DiscreteActor`/`Critic`, `carla_env.CarlaEnv`, `ACTIONS.ACTIONS` | imported, never modified |
-| `gc.collect() + torch.cuda.empty_cache()` every N episodes | [new_a3c.py](AV/A_to_B_GPU_34/new_a3c.py) `run` |
-| W&B in a subprocess via `mp.Queue` so worker I/O never blocks | [new_train_a3c_carla.py](AV/A_to_B_GPU_34/new_train_a3c_carla.py) `wandb_logger_process` |
-| `try / except RuntimeError if "time-out" in str(e): reconnect` worker pattern | [new_a3c.py](AV/A_to_B_GPU_34/new_a3c.py) (extended in §1.3) |
-| `mp.Value` / `mp.Array` for shared stats and rolling reward EMAs | [new_a3c.py](AV/A_to_B_GPU_34/new_a3c.py) |
-| `worker_mean_rewards[worker_id]` restored on worker (re)start | [new_a3c.py](AV/A_to_B_GPU_34/new_a3c.py) `run` |
+| `new_hogwild_train_a3c_carla.py` | Główne wejście Pythona: konfiguracja, argparse, seed, GPU assignment, W&B, monitoring, resume, start supervisora. |
+| `new_hogwild_a3c.py` | Rdzeń A3C: modele, `SharedAdam`, `SharedRMSprop`, `GlobalNetwork`, `A3CWorker`, loss, update, checkpointy. |
+| `new_hogwild_run_a3c.py` | Supervisor workerów: start, restart, backoff, limit restartów, rollback do ostatniego poprawnego checkpointu. |
+| `new_hogwild_carla_wrapper.py` | Warstwa między A3C i `CarlaEnv`: reset, retry, health-check, action repeat, reward shaping, zapis klatek. |
+| `new_hogwild_training_logger.py` | Strukturalne logi JSONL: epizody, update'y, timing, eventy, metadane. |
+| `new_hogwild_system_monitor.py` | Monitoring CPU, RAM, procesów CARLA, workerów i GPU przez `psutil`/`pynvml`. |
+| `new_hogwild_timing_utils.py` | Lekki profiler faz pętli treningowej. |
+| `new_hogwild_prepare_output_dir.py` | Tworzy katalog runa i zapisuje argumenty uruchomienia. |
+| `new_hogwild_train.slurm` | Pełny launcher: start serwerów CARLA, czekanie na porty, start treningu, log tail, cleanup. |
+| `carla_env.py` | Bazowe środowisko CARLA, poprawione tak, żeby wrapper mógł je używać bez kosztownego reloadu co epizod. |
 
-### 1.2 Ported from async-rl (framework-translated to PyTorch)
+## Co było w `a3c_improved_1.py`
 
-| Feature | Source in async-rl | Where it lives in `new_*` |
-|---|---|---|
-| Modular split — algorithm vs supervisor vs entry vs logger vs monitor vs profiler vs CARLA wrapper | one file per concern | 9 separate `new_*.py` |
-| Step-based global counter + `--steps` budget; loop terminates on `global_t > steps` | `run_a3c.py:96-103` | [new_a3c.py](AV/A_to_B_GPU_34/new_a3c.py) `inc_step`, [new_run_a3c.py](AV/A_to_B_GPU_34/new_run_a3c.py) supervisor |
-| Linear LR decay `(steps − t − 1) / steps × lr` per step | `run_a3c.py:106-107` | [new_a3c.py](AV/A_to_B_GPU_34/new_a3c.py) `GlobalNetwork.set_lr_for_step` |
-| **NaN gradient guard**: detect → skip step → resync from global → log `nan_gradient` | `a3c.py:154-175` | [new_a3c.py](AV/A_to_B_GPU_34/new_a3c.py) `has_nan_grads` + worker |
-| **NaN-safe checkpoint write** | `run_a3c.py:188-192` | [new_a3c.py](AV/A_to_B_GPU_34/new_a3c.py) `GlobalNetwork.save(nan_safe=True)` |
-| **Rollback to last good checkpoint on rapid crash** (`< rapid_crash_window_steps` apart, `≥ rapid_crash_threshold` times) | `run_a3c.py:255-316` | [new_run_a3c.py](AV/A_to_B_GPU_34/new_run_a3c.py) `rollback_global_network` |
-| `max_restarts_per_worker` cap | `train_a3c_carla.py:625-628` | [new_run_a3c.py](AV/A_to_B_GPU_34/new_run_a3c.py) `run_with_restart` |
-| Supervisor with rapid-crash detection + per-worker restart counters | `run_a3c.py:319-396` | [new_run_a3c.py](AV/A_to_B_GPU_34/new_run_a3c.py) `run_with_restart` |
-| Resume pipeline: `resume_state.json` (atomic `tmp + os.replace`), arg-drift warnings, W&B id reuse, episode counter persistence | `run_a3c.py:216-239`, `train_a3c_carla.py:716-781` | [new_a3c.py](AV/A_to_B_GPU_34/new_a3c.py) `_save_checkpoint`, [new_train_a3c_carla.py](AV/A_to_B_GPU_34/new_train_a3c_carla.py) `main()` resume branch |
-| `find_latest_checkpoint` (top-level + `checkpoints/worker_<i>/`) | `train_a3c_carla.py:665-688` | [new_run_a3c.py](AV/A_to_B_GPU_34/new_run_a3c.py) `find_latest_checkpoint` |
-| Per-worker checkpoints | `run_a3c.py:193-203` | [new_a3c.py](AV/A_to_B_GPU_34/new_a3c.py) `_save_checkpoint` |
-| **Step-based** save frequency (was episode-based in `a3c_improved.py`) | `run_a3c.py:184-213` | [new_a3c.py](AV/A_to_B_GPU_34/new_a3c.py) inner loop |
-| `TrainingLogger`: per-worker `episodes.jsonl` + `updates.jsonl` + `timing.jsonl` + (opt) `steps.jsonl`, shared `events.jsonl` + `metadata.json`, line-buffered | `training_logger.py` | [new_training_logger.py](AV/A_to_B_GPU_34/new_training_logger.py) |
-| `RunMonitor` + `WorkerMonitor` (psutil) — system + CARLA-process + per-worker stats | `system_monitor.py` | [new_system_monitor.py](AV/A_to_B_GPU_34/new_system_monitor.py) |
-| `TimingAccumulator` per-phase profiler | `timing_utils.py` | [new_timing_utils.py](AV/A_to_B_GPU_34/new_timing_utils.py) |
-| `prepare_output_dir` — args + git status/log/diff snapshot | `prepare_output_dir.py` | [new_prepare_output_dir.py](AV/A_to_B_GPU_34/new_prepare_output_dir.py) |
-| `CarlaA3CWrapper` abstraction: `_connect_with_retries`, `is_server_alive` (via `world.get_snapshot()`), `reconnect`, per-episode CARLA stats | `train_a3c_carla.py:61-313` | [new_carla_wrapper.py](AV/A_to_B_GPU_34/new_carla_wrapper.py) |
-| Per-episode action histogram + max speed + route dist + goal dist + collisions + reached_goal | `train_a3c_carla.py:182-224` | [new_carla_wrapper.py](AV/A_to_B_GPU_34/new_carla_wrapper.py) `_action_counts`, `_ep_*` |
-| `--reward-scale` hook | `a3c.py:80-81` | [new_a3c.py](AV/A_to_B_GPU_34/new_a3c.py) `compute_and_apply_gradients` |
-| End-to-end frame saving: `--save-episodes` / `--save-episode-interval` predicate + `state_observer.image.save_to_disk(...)` per step + `<project_dir>/episodes/<run_id>/<ep>-<port>/<step>.jpeg` layout (identical to `async-rl/episodes/`) | `train_a3c_carla.py:163-169`, `283-294` | [new_carla_wrapper.py](AV/A_to_B_GPU_34/new_carla_wrapper.py) `_should_save_this_episode`, `_save_frame`, `_ensure_save_dir`, `_frames_dir` — see §2.6 |
-| Argparse-driven CLI for every knob; drop `from settings import …` | `train_a3c_carla.py:906-947` | [new_train_a3c_carla.py](AV/A_to_B_GPU_34/new_train_a3c_carla.py) `build_parser` |
-| `--testing` mode (argmax, no updates, no checkpoints) | async-rl convention | [new_a3c.py](AV/A_to_B_GPU_34/new_a3c.py) |
-| Default `weight_decay=1e-2` (matches `a3c_improved.py`; CLI-overridable) | n/a — kept from a3c_improved.py | CLI flag |
-| Worker-restart with `core.*` cleanup + `--carla-server-start-period` wait | `train_a3c_carla.py:837-846` | [new_run_a3c.py](AV/A_to_B_GPU_34/new_run_a3c.py) |
-| `events.jsonl` lifecycle log (worker_start, worker_restart, rollback, checkpoint_save, training_start/end, …) | `train_a3c_carla.py:567-574` | [new_training_logger.py](AV/A_to_B_GPU_34/new_training_logger.py) `log_event`, [new_run_a3c.py](AV/A_to_B_GPU_34/new_run_a3c.py) `_append_event` |
+`a3c_improved_1.py` łączyło w jednym pliku konfigurację, modele, workerów,
+supervisor, logging, W&B i pętlę treningową. Wiele wartości było ustawionych jako
+globalne stałe albo pobierane z `settings.py`, na przykład `NUM_WORKERS`,
+`WORKER_GPUS`, `MODEL_LOAD_PATH`, `MODEL_SAVE_PATH`, `T_MAX`, `LR`,
+`ENTROPY_COEF`, `SAVE_INTERVAL`, `CARLA_TIMEOUT_WAIT`.
 
-### 1.3 New / synthesised in `new_*`
+Globalna sieć była na CPU i używała oddzielnych modeli:
 
-| Feature | Why it was needed |
-|---|---|
-| **Disambiguated `RuntimeError` handling** in the worker — separates `"waiting for the simulator"` (server dead → reconnect) from `"camera image"` / other `"time-out"` (queue underflow → retry without reconnect). | First test run looped on a camera-queue underflow that was being mis-classified as a server timeout — burning 60 s per step on a useless reconnect. |
-| **Confirmed double-tick CARLA step pattern**: `apply → drain → tick → apply → tick → step`. | `CarlaEnv.step()` consumes two `image_queue.get(timeout=2.0)` per call (verified via [carla_env.py:1267-1274](AV/A_to_B_GPU_34/carla_env.py#L1267-L1274) and the `# 2 frames are put on the queue between two consecutive steps` comment in [carla_env_c.py:1274](AV/A_to_B_GPU_34/carla_env_c.py#L1274)). The async-rl wrapper already did this; we ported it. |
-| **`pynvml` GPU stats** in `RunMonitor` | async-rl's monitor was psutil-only; per-device util % + memory is useful on multi-GPU runs. |
-| **Named-args slurm wrapper** ([new_train.slurm](AV/A_to_B_GPU_34/new_train.slurm)) | Combines `test_a3c_carla.slurm`'s arg-parsing convention with `new_train_a3c_carla.py`'s flags. Auto-launches `carla_athena_multiserver_v3.py`, `lsof`-polls until ports LISTEN, traps signals to clean up. One sbatch call = full pipeline. |
-| **`mp.Value('l')` (long)** for global step counter | The Chainer counter was a CPU-only `mp.Value('l', 0)`; we keep that — the LR schedule, budget check, and supervisor exit all read it. |
-| **Worker **`signal.SIGINT, signal.SIG_IGN`** | Ensure Ctrl+C in the slurm tail hits the main process only; supervisor handles graceful shutdown. |
-| **End-to-end image-save fix**: `--save-episodes` originally only set `_save_images=True` but never wrote files (the wrapper passed `save_image=` to `CarlaEnv` whose dump branches are commented out). | Audit against async-rl revealed the missing `state_observer.image.save_to_disk(...)` call; ported it into `_save_frame()` and wired `outdir` through `main → supervisor → worker → wrapper`. |
+- `DeepDiscreteActor`
+- `DeepCritic`
+- dwa osobne optymalizatory `SharedAdam`
+- liczniki `global_episode`, `total_updates`, `global_steps`, `best_reward`
 
----
+Worker uruchamiał lokalne kopie actor/critic na GPU. Co update wykonywał:
 
-## 2. How the pipeline works (call-by-call)
+- synchronizację lokalnych wag z globalnymi,
+- zbieranie trajektorii przez `T_MAX` kroków lub do końca epizodu,
+- obliczenie n-step returns,
+- osobny `actor_loss` i `critic_loss`,
+- dwa wywołania `backward()`,
+- kopiowanie gradientów do modeli globalnych na CPU,
+- `optimizer.step()` na globalnych optymalizatorach.
 
-When you `sbatch new_train.slurm -w 1 …`:
+To była dobra baza dla A3C, ale miała ograniczenia:
 
-### 2.1 Slurm wrapper — [new_train.slurm](AV/A_to_B_GPU_34/new_train.slurm)
+- reset CARLA robił pełny `reload_world()` przy każdym epizodzie,
+- logging był głównie tekstowy/CSV, trudny do automatycznej analizy,
+- checkpointy miały stałe ścieżki i były zależne od `MODEL_SAVE_PATH`,
+- resume było ograniczone do modelu i kilku liczników,
+- brakowało kontroli jakości checkpointów przy NaN,
+- awarie workerów były restartowane, ale bez rollbacku,
+- global step był aktualizowany po epizodzie, nie krok po kroku,
+- lista argumentów i ustawień była rozproszona między kodem, `settings.py` i SLURM.
 
-1. SBATCH headers parsed (partition, gpus, time, `--signal=SIGUSR1@90`, …).
-2. `while [[ $# -gt 0 ]]; case "$1" in …` parses every `-w / --workers / --lr / --t-max / -r / --resume / --save-episodes / …` into shell variables.
-3. `module load …`, `source ${VENV}/bin/activate`, then export `OMP_NUM_THREADS=1`, `MKL_NUM_THREADS=1`, `PYTHONUNBUFFERED=1`, `PYTHONFAULTHANDLER=1`, `NCCL_DEBUG=INFO`, `PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True"`.
-4. Output dir picked: `--resume DIR` ⇒ keep DIR; `--outdir DIR` ⇒ override; otherwise `PROJECT_DIR/runs/a3c_<N>w_<ts>_<jobid>`.
-5. `cleanup()` trap registered for `SIGINT`/`SIGTERM`/`SIGUSR1`/`EXIT` — kills the training process, the CARLA supervisor, `nvidia-smi dmon`, and `pkill CarlaUE4` as a safety net.
-6. `nvidia-smi dmon -s pucvmet -o DT` started in background → `<outdir>/gpu_dmon.log`.
-7. `nohup python carla_athena_multiserver_v3.py --num-servers=N --servers-per-gpu=M --start-port=2000 --port-step=100 …` started → `<outdir>/carla_servers.log`. PID stored as `CARLA_PID`.
-8. `lsof -nP -iTCP:<port> -sTCP:LISTEN` polled, up to 60 × 10 s, for every expected port. On failure: tail of `carla_servers.log` printed, exit 1.
-9. Python entry invoked: `python -u new_train_a3c_carla.py --num-workers $N … --outdir $OUTPUT_DIR`. stdout → `<outdir>/a3c_training.log`; `tail --pid` mirrors it to slurm stdout.
+## Główne decyzje w `new_hogwild_*`
 
-### 2.2 Python entry — [new_train_a3c_carla.py](AV/A_to_B_GPU_34/new_train_a3c_carla.py) `main()`
+### 1. Zachowany rdzeń Hogwild, ale uporządkowany
 
-1. `build_parser().parse_args()` → `args` (every knob from §3.1).
-2. `torch.manual_seed`, `np.random.seed`, `torch.cuda.manual_seed_all` from `args.seed`.
-3. `args.n_actions` defaulted to `len(ac.ACTIONS_NAMES)` if not set.
-4. `_assign_worker_gpus(num_workers, workers_per_gpu, worker_gpu_start)` → list of `cuda:N` strings stored in `args.worker_gpus`. Falls back to all-`cuda:0` on 1-GPU nodes.
-5. `prepare_output_dir(args, args.outdir, resume=bool(args.resume))` writes `args.txt` + `git-status.txt` + `git-log.txt` + `git-diff.txt` (or `_resume`-suffixed copies on resume).
-6. `cfg = SimpleNamespace(**vars(args))` — passed verbatim to workers; nothing is read from a global module.
-7. `mp.set_start_method('spawn', force=True)`, `shutdown_event = mp.Event()`, optional `log_queue = mp.Queue(maxsize=1000)` for W&B.
-8. `GlobalNetwork(cfg, [res, res, 3], n_actions, 1)` constructed on `cuda:0`:
-   - Actor + Critic on `cuda:0`.
-   - Two `SharedAdam` optimisers with state pre-allocated on `cuda:0`.
-   - `update_lock`, `stats_lock`, `save_lock`.
-   - `mp.Value` counters (`global_step`, `global_episode`, `total_updates`, `best_reward`, `global_mean_reward`) and `mp.Array('d', [0.0] * num_workers)` for per-worker rolling means.
-9. **If `--resume`:** `find_latest_checkpoint(outdir)` scans top-level + every `checkpoints/worker_<i>/` for the newest `.pth`; `global_network.load(path)` restores weights, optimiser state, *and every counter*. `resume_state.json` read; `--steps`, `--lr`, `--entropy_coef`, `--t-max`, `--gamma`, `--weight-decay` compared against saved values, drift logged to stderr.
-10. `TrainingLogger.write_metadata(...)` writes `<outdir>/logs/metadata.json` (run config + actor/critic param counts).
-11. A throwaway `TrainingLogger(worker_id=-1)` writes a `training_start` event to `events.jsonl` and closes.
-12. `RunMonitor(outdir, monitor_interval, track_carla=True, track_gpu=…).start()` — daemon thread sampling system + CARLA processes + (if `pynvml` installed and `--no-gpu-monitor` not set) per-GPU util/memory every `monitor_interval` seconds → `<outdir>/logs/system.jsonl`.
-13. W&B subprocess started: stable run id (new UUID on first run, restored from `<outdir>/wandb_run_id.txt` on resume); the subprocess drains `log_queue` and namespaces records under `worker/<id>/…`.
-14. `run_with_restart(global_network, cfg, outdir, shutdown_event, log_queue, run_id)` — supervisor loop.
+Nowa implementacja nadal używa CPU shared-memory jako globalnego modelu. Workery
+nadal działają na GPU, liczą forward/backward lokalnie i kopiują gradienty do
+globalnego modelu na CPU.
 
-### 2.3 Supervisor — [new_run_a3c.py](AV/A_to_B_GPU_34/new_run_a3c.py) `run_with_restart()`
+Zmiany:
 
-1. `_start_worker(...)` instantiates and starts `A3CWorker(mp.Process)` for each worker_id. Per worker, a `worker_start` event is appended to `events.jsonl`.
-2. Loop: every `--worker-check-interval` seconds:
-   - If `cfg.steps > 0 and global_step.value >= cfg.steps`: `shutdown_event.set()`, exit loop.
-   - For each worker: if not `is_alive()`:
-     - `worker.join(timeout=2)`. Increment `restart_counts[i]`.
-     - Compute `current_step − last_crash_step[i]`; if `< rapid_crash_window_steps`, increment `rapid_crash_count[i]`, else reset it. Update `last_crash_step[i]`.
-     - `worker_restart` event written.
-     - Remove any `core.*` files.
-     - If `restart_counts[i] >= max_restarts_per_worker`: log `worker_give_up`, do not relaunch.
-     - If `rapid_crash_count[i] >= rapid_crash_threshold`: `rollback_global_network(global_network, outdir, worker_idx=i)`:
-       - Walk every checkpoint newest-first (per-worker first, then top-level, then other per-worker).
-       - `torch.load` → `state_dict_load` into `global_network.actor` + `critic`.
-       - If `has_nan_params(actor) or has_nan_params(critic)`: skip this checkpoint.
-       - Optionally restore optimiser state.
-       - On success: `rollback` event written, `rapid_crash_count[i]` reset.
-     - Sleep `--carla-server-start-period`, `_start_worker(i)` again.
-3. On `KeyboardInterrupt` / `shutdown_event.set()`: terminate stragglers, return `restart_counts`.
+- `GlobalNetwork` znajduje się w `new_hogwild_a3c.py`.
+- Liczniki są jednoznaczne: `global_step`, `global_episode`, `total_updates`.
+- `global_step` rośnie w każdym kroku środowiska, a nie dopiero na końcu epizodu.
+- Budżet treningu `--steps` jest dzięki temu rzeczywistym budżetem kroków.
+- `last_checkpoint_boundary` zabezpiecza przed zapisem wielu checkpointów na tej
+  samej granicy kroku, gdy wiele workerów trafi równocześnie w `save_frequency`.
 
-### 2.4 Worker — [new_a3c.py](AV/A_to_B_GPU_34/new_a3c.py) `A3CWorker.run()`
+Powód:
 
-After `mp.Process.start()`:
+Skalowanie A3C zależy od tego, czy każdy worker może iść do przodu bez blokowania
+innych. Jednocześnie potrzebny jest dokładny globalny licznik, bo na nim opiera
+się learning-rate decay, checkpointing, resume i porównywanie runów.
 
-1. `signal.signal(SIGINT, SIG_IGN)` so Ctrl+C only hits the main process.
-2. `_init_networks()` builds local `actor` + `critic` on `cuda:N`, calls `sync_with_global()` which copies global params GPU→GPU into local and `torch.cuda.synchronize(self.device)`.
-3. `TrainingLogger(outdir, worker_id, log_steps, log_update_arrays)` opens per-worker JSONL files.
-4. `WorkerMonitor(outdir, worker_id, monitor_interval).start()` — daemon thread → `<outdir>/logs/worker_<i>/system.jsonl`.
-5. `TimingAccumulator()` initialised.
-6. Per-worker rolling-mean reward restored from `global_network.worker_mean_rewards[worker_id]`.
-7. `CarlaA3CWrapper(port, scenario, camera, res, …)` constructed:
-   - `_connect_with_retries` calls `CarlaEnv(...)` up to `--max-connect-retries` times with `--connect-retry-wait` s sleeps between failures.
-8. **Outer loop** — `while not shutdown_event.is_set():`
-   a. `inc_episode()` → `current_episode` (atomic, under `stats_lock`). `env.global_episode = current_episode`. `sync_with_global()`.
-   b. `state, speed, maneuver = env.reset()` (under `timer.record('env_reset')`):
-      - `CarlaEnv.reset()` does `step_apply_action(3)`, 15 ticks, drain, 1 tick, get one image → returns `(front_camera, speed_tensor)`.
-      - Wrapper normalises `state /= 255`, `speed /= 100`, drops the leading `[1, …]` batch dim if present.
-   c. **Inner loop** — `while not done`:
-      - `inc_step(1)` → `global_t` (atomic). If `> args.steps`: `shutdown_event.set()`, break.
-      - Build tensors on `self.device`.
-      - `action, value, entropy = get_action(state_t, speed_t, maneuver_t, testing)` (under `timer.record('forward')`). The `actor`/`critic` forwards run on the worker's GPU; a `Categorical(logits).sample()` (or `argmax` if `--testing`) yields the action; `Transition(value, log_prob, entropy, action)` appended.
-      - `next_state, next_speed, next_maneuver, reward, done, info = env.step(action)` (under `timer.record('env_step')`). Wrapper does **`apply → drain → tick → apply → tick → env.step`**: `CarlaEnv.step()` consumes the two camera frames produced by the two ticks.
-      - Optional `tlogger.log_step(...)` if `--log-steps`.
-      - **Update trigger** — every `--t-max` env steps or on `done`:
-        - `compute_and_apply_gradients(next_state_t, done, next_speed_t, next_maneuver_t, tlogger, timer, global_t)`:
-          1. `R = 0` if `done` else `critic(next_state_t)`. Reverse-accumulate n-step returns with `--reward-scale` applied: `R = r/scale + γ·R`.
-          2. `policy_loss = − Σ log_prob × advantage`, `value_loss = Σ value_loss_coef × Huber(V, R)`, `total_loss = pi + v − entropy_coef × mean(entropy)`.
-          3. `actor.zero_grad(); critic.zero_grad(); total_loss.backward()` (under `timer.record('backward')`).
-          4. `clip_grad_norm_(actor); clip_grad_norm_(critic)` if `max_grad_norm > 0`.
-          5. **NaN guard**: `has_nan_grads(actor) + has_nan_grads(critic)`. On hit ⇒ `tlogger.log_nan(...)`, `sync_with_global()`, clear buffers, **return** without touching the global model.
-          6. Acquire `update_lock`. `set_lr_for_step(global_t)` pushes the linearly-decayed LR into both optimisers under the lock. `transfer_grads(actor → global.actor, cuda:0)`; same for critic. `actor_optimizer.step(); critic_optimizer.step(); zero_grad(); zero_grad()`. Release the lock. (Under `timer.record('optim_update')`.)
-          7. `inc_updates()`. `tlogger.log_update(update_count, global_t, traj_len, pi/v/total loss, grad_norm, lr, advantages, values, entropies, rewards)`.
-        - `sync_with_global()` if `local_updates % --sync-every-n-updates == 0`.
-      - Step-based **checkpoint**: when `global_t // save_frequency` crosses a new boundary, `_save_checkpoint(global_t, tlogger)`:
-        - `GlobalNetwork.save(path, global_t, nan_safe=True)` writes `<outdir>/checkpoints/worker_<i>/checkpoint.pth` + top-level `<outdir>/checkpoint.pth`. Save is refused if any param is NaN.
-        - `checkpoint_step.txt` files written next to each.
-        - `<outdir>/resume_state.json` written atomically (`tmp + os.replace`) — global step, training args, timestamp.
-        - `tlogger.log_checkpoint(path, global_t)` event.
-   d. End of episode: `gc.collect() + torch.cuda.empty_cache()` every `--gc-interval`. `_log_episode(tlogger, env, …)` writes one JSON line to `episodes.jsonl` (reward, steps, action histogram, max speed, route dist, goal dist, collisions, reached_goal, local/global mean rewards, is_new_best) and pushes the same record to the W&B queue.
-   e. Every `--diag-log-interval` episodes: `tlogger.log_timing(...)` + `timer.log_and_reset(...)` — one JSON line of profiler stats per phase.
-9. **`RuntimeError` handler:**
-   - `"waiting for the simulator"` in message → CARLA server dead. `tlogger.log_crash_recovery(...)`, `env.reconnect()` (sleep `carla-timeout-wait` s, drop `world`/`client` refs, build a fresh `CarlaEnv`), clear buffers, continue outer loop.
-   - `"camera image"` or any other `"time-out"` → camera-queue underflow, server is fine. `camera_timeout` event written, buffers cleared, no reconnect.
-   - Anything else → reraise (the supervisor sees `is_alive() == False` and restarts the worker).
-10. `finally`: stop `WorkerMonitor`, close `TrainingLogger`, null out `env.world` / `env.client`. Print termination line.
+### 2. Model domyślny: wspólny actor-critic
 
-### 2.5 Shutdown
+`a3c_improved_1.py` używało oddzielnego actora i critica z `nets.a2c`.
 
-- Step budget reached or `KeyboardInterrupt` ⇒ `shutdown_event.set()` ⇒ supervisor exits the loop ⇒ `main()` drains the W&B queue, stops `RunMonitor`, writes `training_end` event, prints benchmark line, exits.
-- The slurm `cleanup()` trap fires on `EXIT`: kills the (already-exited) training process, kills the CARLA supervisor, kills `nvidia-smi dmon`, `pkill CarlaUE4`.
+`new_hogwild_a3c.py` domyślnie używa `SharedActorCritic`, czyli jednego modelu ze
+wspólnym trunkem wizualnym i dwiema głowami:
 
-### 2.6 Episode frame saving (`--save-episodes`, `--save-episode-interval`)
+- `policy`
+- `value`
 
-Identical pipeline to async-rl's per-step JPEG dump
-(`async-rl/train_a3c_carla.py:284-294`), and *identical on-disk layout*
-to `async-rl/episodes/` (the pointer dir, e.g.
-`/net/tscratch/people/plgbartoszkawa/async-rl/episodes/a3c_ff_10w_20260323_135722/1000-2000/{1,2,3,…}.jpeg`).
+Stary układ jest nadal dostępny przez `--model-arch legacy`.
 
-**Plumbing**
+Powód:
 
-| Hop | File / class | Effect |
-|---|---|---|
-| `--save-episodes "1 10 700"` | argparse | `args.save_episodes = [1, 10, 700]` |
-| `run_id = basename(outdir)` | [new_train_a3c_carla.py:314](AV/A_to_B_GPU_34/new_train_a3c_carla.py#L314) | run_id derived once (e.g. `a3c_1w_20260424_114623_2545139`) |
-| → supervisor | [new_run_a3c.py:171-174](AV/A_to_B_GPU_34/new_run_a3c.py#L171-L174) | `outdir` + `run_id` forwarded to every worker |
-| → worker constructor | [new_a3c.py:238-241](AV/A_to_B_GPU_34/new_a3c.py#L238-L241) | stored as `self.outdir`, `self.run_id` |
-| → wrapper | [new_a3c.py:573-574](AV/A_to_B_GPU_34/new_a3c.py#L573-L574) | `CarlaA3CWrapper(..., outdir=self.outdir, run_id=self.run_id)` |
-| `env.global_episode = current_episode` *before* `env.reset()` | [new_a3c.py:583-589](AV/A_to_B_GPU_34/new_a3c.py#L583-L589) | wrapper sees correct episode number from frame 1 (cleaner than async-rl which sets it after reset) |
+Wspólny trunk zmniejsza ilość pracy na forward/backward i ogranicza rozjazd
+reprezentacji między policy i value. Model nie używa BatchNorm/Dropout, więc jest
+bezpieczniejszy dla batch size 1 typowego dla workerów A3C.
 
-**Predicate** — `CarlaA3CWrapper._should_save_this_episode()` ([new_carla_wrapper.py:111-118](AV/A_to_B_GPU_34/new_carla_wrapper.py#L111-L118)):
+### 3. Optymalizator: domyślnie `SharedRMSprop`
 
-```
-self.global_episode in self._save_episodes  →  save
-or
---save-episode-interval > 0 and global_episode % interval == 0  →  save
-else                                                            →  skip
-```
+`a3c_improved_1.py` używało `SharedAdam`.
 
-The result is cached in `self._save_images` for the duration of the
-episode (re-evaluated at next `reset()`); the per-episode save dir
-cache (`_save_dir_cached`) is nulled so the new dir gets a single
-`os.makedirs(exist_ok=True)`.
+`new_hogwild_a3c.py` ma:
 
-**Save call** — `_save_frame()` ([new_carla_wrapper.py](AV/A_to_B_GPU_34/new_carla_wrapper.py)):
+- `SharedRMSprop` jako domyślny optymalizator,
+- `SharedAdam` jako opcję przez `--optimizer shared-adam`.
 
-1. Early-exit if `_save_images is False` or no `state_observer`.
-2. Read `carla_img = self.env.state_observer.image`. CarlaEnv writes
-   the *latest* `carla.Image` here at the end of every `reset()` and
-   `step()` ([carla_env.py:1190](AV/A_to_B_GPU_34/carla_env.py#L1190),
-   [carla_env.py:1275](AV/A_to_B_GPU_34/carla_env.py#L1275)). After
-   the wrapper's two-tick `step()`, this is the *second* image —
-   i.e. the one the model just received as `next_state`.
-3. `_ensure_save_dir()` calls `os.makedirs(exist_ok=True)` once per
-   episode and returns the cached
-   `<project_dir>/episodes/<run_id>/<global_episode>-<port>/`.
-4. `carla_img.save_to_disk(os.path.join(ep_dir, f'{step_count}.jpeg'))`
-   — CARLA's native JPEG writer; honours the in-place
-   `image.convert(CityScapesPalette)` already done by
-   `process_semantic_img`, so saved frames look like the policy's
-   input, not the raw camera buffer.
-5. IO errors are caught; `self._save_failures` is incremented (visible
-   to anyone introspecting the wrapper) but the worker keeps going.
+Powód:
 
-**When `_save_frame` runs** — only inside `step()`, after `env.step()`
-returns and `_update_maneuver()` ran. First saved frame is `1.jpeg`
-(after the first action), matching async-rl exactly. No spawn frame.
+RMSprop jest klasycznym wyborem dla A3C i ma prostszy stan współdzielony. Adam
+pozostał dostępny, bo może być przydatny do porównań albo resume starszych
+eksperymentów.
 
-**Output layout (byte-for-byte match with `async-rl/episodes/`)**
+### 4. Stabilniejszy loss i update
 
-Base is `<project_dir>` — i.e. the directory holding `new_carla_wrapper.py`,
-which under default slurm settings is
-`/net/tscratch/people/plgbartoszkawa/AV/A_to_B_GPU_34`. Frames sit
-*above* the per-run `outdir` so different runs share a single
-`episodes/` root and the run-name level alone disambiguates them:
+W `a3c_improved_1.py` entropy było odejmowane od actor loss, gradient clipping był
+zakomentowany, a actor i critic robiły osobne backward.
 
-```
-<project_dir>/episodes/<run_id>/<global_episode>-<port>/
-    1.jpeg     ← after first env.step
-    2.jpeg
-    3.jpeg
-    ...
-```
+W `new_hogwild_a3c.py`:
 
-For `sbatch ... new_train.slurm -w 1 -s 14 --save-episodes "700"`
-(run_id `a3c_1w_20260424_114623_2545139`, port 2000), frames land at:
+- loss jest liczony jako `policy_loss + value_loss - entropy_coef * entropy`,
+- value loss używa `smooth_l1_loss`,
+- `value_loss_coef` jest jawne,
+- advantages mogą być normalizowane,
+- entropy coefficient może być annealowany od `DEFAULT_BETA_START` do
+  `DEFAULT_BETA_END`,
+- gradient clipping jest aktywny przez `DEFAULT_MAX_GRAD_NORM`,
+- NaN w gradientach powoduje pominięcie update'u i resync workera z globalnego
+  modelu,
+- NaN w globalnych parametrach blokuje zapis checkpointu.
 
-```
-/net/tscratch/people/plgbartoszkawa/AV/A_to_B_GPU_34/episodes/
-    a3c_1w_20260424_114623_2545139/
-        700-2000/
-            1.jpeg
-            2.jpeg
-            ...
-```
+Powód:
 
-Compare with the reference run in
-`/net/tscratch/people/plgbartoszkawa/async-rl/episodes/a3c_ff_10w_20260323_135722/1000-2000/{1,2,3,…}.jpeg`
-— identical hierarchy.
+Te zmiany zmniejszają ryzyko eksplozji gradientów i psucia checkpointów. Dają też
+więcej danych diagnostycznych: w logach update'u są straty, gradient norm,
+learning rate, entropy, statystyki advantages i reward components.
 
-**Multi-worker note** — episode counter is global (atomic
-`inc_episode()` on `mp.Value`), so a save_episode is hit by exactly
-one worker. If you want multiple workers' versions of the same
-"episode 700", use `--save-episode-interval 100` instead — every
-worker independently saves the episodes whose global number is a
-multiple of 100.
+### 5. Prawdziwy step-based trening
 
-### 2.7 Output layout produced by one run
+Stara wersja zwiększała `global_steps` w `update_stats()` na końcu epizodu.
 
-```
-<outdir>/
-    args.txt, git-status.txt, git-log.txt, git-diff.txt
-    a3c_training.log              ← python stdout (tailed live to slurm stdout)
-    carla_servers.log             ← multi-server supervisor stdout
-    gpu_dmon.log                  ← nvidia-smi dmon
-    checkpoint.pth                ← top-level (most recent NaN-safe)
-    checkpoint_step.txt
-    resume_state.json
-    wandb_run_id.txt
-    logs/
-        metadata.json             ← run config snapshot (one-time)
-        events.jsonl              ← shared lifecycle (training_start, worker_*,
-                                    rollback, checkpoint_save, training_end)
-        system.jsonl              ← RunMonitor: host CPU/mem/swap, CARLA procs, GPUs
-        worker_0/
-            episodes.jsonl
-            updates.jsonl
-            timing.jsonl
-            steps.jsonl           ← only if --log-steps
-            system.jsonl          ← WorkerMonitor: per-worker RSS/threads/ctxsw
-        worker_1/ ...
-    checkpoints/
-        worker_0/
-            checkpoint.pth
-            checkpoint_step.txt
-        worker_1/ ...
+Nowa wersja zwiększa `global_step` w `A3CWorker.run()` przed każdym krokiem
+środowiska. Dzięki temu:
 
-# saved frames live ABOVE outdir, alongside it (matching async-rl):
-<project_dir>/                    ← e.g. AV/A_to_B_GPU_34/
-    episodes/                     ← only populated if --save-episodes / --save-episode-interval
-        <run_id>/                 ← same name as outdir's basename
-            <global_episode>-<port>/
-                1.jpeg            ← after first env.step
-                2.jpeg
-                ...
-```
+- `--steps` zatrzymuje trening po realnej liczbie kroków,
+- learning-rate decay reaguje na faktyczny postęp,
+- checkpointy są zapisywane po granicach kroków,
+- runy 1-worker i multi-worker można porównywać po aktywnych krokach, a nie tylko
+  po epizodach.
 
----
+Powód:
 
-## 3. Parameter reference + final command
+Epizody mają zmienną długość, szczególnie po dodaniu limitu decyzji i reward
+shapingu. Step-based licznik jest bardziej stabilnym punktem odniesienia.
 
-Every flag below is accepted by both the slurm wrapper and the Python
-entry. "Slurm default" is the value the wrapper sets when you don't
-pass it; "Python default" is what `new_train_a3c_carla.py --help`
-reports. Slurm forwards the value verbatim. Where they differ, the
-slurm value wins.
+## Przepływ workera: wcześniej i teraz
 
-### 3.1 Topology / GPU
+### Worker w `a3c_improved_1.py`
 
-| Flag | Slurm default | Python default | What it does |
-|---|---|---|---|
-| `-w` / `--workers` (slurm) / `--num-workers` (py) | `1` | `2` | Number of A3C workers. Determines the number of CARLA servers spawned by the multi-server. |
-| `--workers-per-gpu` | `1` | `2` | Workers (and CARLA servers) per GPU. |
-| `--worker-gpu-start` | `0` | `1` | First `cuda:N` index used for workers. Use `1` to keep `cuda:0` reserved for the global net on multi-GPU. |
-| `--global-device` | (forward python default) | `cuda:0` | Device hosting the parameter-server `GlobalNetwork`. |
-| `--servers-per-gpu` *(slurm only)* | `= --workers-per-gpu` | — | Override CARLA-side placement; rarely needed. |
+Stary worker wykonywał prawie całą logikę samodzielnie:
 
-### 3.2 CARLA
+1. Ustawiał limity wątków CPU i uruchamiał `cProfile`.
+2. Tworzył lokalnego actora i critica na przypisanym GPU.
+3. Łączył się bezpośrednio z `CarlaEnv`.
+4. Na początku epizodu zwiększał `global_episode`, synchronizował lokalne modele
+   z globalnymi i wywoływał `env.reset(...)`.
+5. Normalizował obraz przez `/ 255.0` i prędkość przez `/ 100.0` bez osobnej
+   walidacji formatu obserwacji.
+6. W każdym kroku sam sprawdzał manewr na skrzyżowaniu przez `env.planner`.
+7. Wybierał akcję z lokalnego actora.
+8. Wykonywał `env.step_apply_action(action)`, czyścił `image_queue`, robił dwa
+   `world.tick()` i dopiero potem wywoływał `env.step(...)`.
+9. Gromadził rewardy i trajektorię.
+10. Po `T_MAX` krokach albo końcu epizodu liczył oddzielny actor loss i critic
+    loss, robił dwa `backward()` i kopiował gradienty do globalnych modeli.
+11. Na końcu epizodu aktualizował `global_steps` o długość epizodu, logował CSV i
+    co `SAVE_INTERVAL` lokalnych epizodów zapisywał model do stałej ścieżki.
+12. Profilowanie `cProfile` było włączone wewnątrz workera i okresowo zrzucało
+    pliki `profile_worker_<id>.out`.
 
-| Flag | Slurm default | Python default | What it does |
-|---|---|---|---|
-| `--start-port` | `2000` | `2000` | First CARLA RPC port. |
-| `--port-step` | `100` | `100` | Port increment between servers. |
-| `-s` / `--scenario` | `14` | `[14]` | Scenario id(s); space-separated for multi-value (`-s "14 15 16"`). |
-| `--camera` | `semantic` | `semantic` | `rgb` or `semantic`. |
-| `--res` | `250` | `250` | Square image resolution. |
-| `--action-type` *(py only)* | — | `discrete` | Passed to `CarlaEnv.action_space`. |
-| `--mp-density` *(py only)* | — | `25` | `CarlaEnv` map-density. |
-| `--n-actions` *(py only)* | — | `len(ACTIONS_NAMES)` | Override action count. |
-| `--no-carla` *(slurm only)* | off | — | Skip launching CARLA (assume already up). |
+Ten worker działał, ale mieszał algorytm A3C, szczegóły CARLA, zapis danych,
+profilowanie i recovery w jednym procesie.
 
-### 3.3 Algorithm
+### Worker w `new_hogwild_*`
 
-| Flag | Slurm default | Python default | What it does |
-|---|---|---|---|
-| `--t-max` | `20` | `20` | Rollout length per gradient update. |
-| `--gamma` | `0.99` | `0.99` | Discount factor. |
-| `--lr` | `1e-4` | `1e-4` | Starting LR; linearly decays to 0 across `--steps`. |
-| `--beta` | `0.01` | `0.01` | Entropy coefficient (`entropy_coef` internally). |
-| `--value-loss-coef` | `1.0` | `1.0` | Multiplier on Huber value loss inside `total_loss`. |
-| `--weight-decay` | `1e-2` | `1e-2` | Adam weight decay. Matches `a3c_improved.py`. |
-| `--max-grad-norm` | `40.0` | `40.0` | `clip_grad_norm_` threshold; `≤ 0` disables. |
-| `--reward-scale` | unset (flag not forwarded) | `0.0` | Divide raw reward by this; `0` / unset = disabled. The slurm wrapper only forwards the flag when `REWARD_SCALE` is set explicitly, so by default the Python entry runs with its `0.0` (off). |
-| `--steps` | `10000000` | `10000000` | Total env-step budget across all workers (drives LR decay + supervisor exit). |
-| `--sync-every-n-updates` | `1` | `1` | Re-pull global weights into the worker every N local updates. |
-| `--gc-interval` | `10` | `10` | Episodes between `gc.collect() + empty_cache()`. |
-| `--testing` | off | off | Evaluation mode: argmax actions, no updates, no checkpoints. |
+Nowy worker ma węższą odpowiedzialność:
 
-### 3.4 Checkpointing / resume
+1. Ustawia limity wątków CPU, seed per worker i przypisuje urządzenie CUDA.
+2. Tworzy lokalny model `SharedActorCritic` albo legacy actor/critic.
+3. Otwiera strukturalne logi JSONL i `WorkerMonitor`.
+4. Tworzy `CarlaA3CWrapper`, który przejmuje reset, ticki, kolejkę obrazów,
+   manewry, reward shaping i zapis klatek.
+5. Na początku epizodu zwiększa `global_episode`, synchronizuje wagi i wywołuje
+   `env.reset()` wrappera.
+6. W każdym kroku zwiększa `global_step`, więc budżet `--steps`, LR schedule i
+   checkpointy są krokowe, a nie epizodowe.
+7. Forward lokalnego modelu zwraca akcję, value i entropy.
+8. Wrapper wykonuje akcję `action_repeat` razy, robi ticki CARLA, pobiera świeżą
+   obserwację, przelicza reward i zwraca `info` z metrykami środowiska.
+9. Po `t_max` krokach albo końcu epizodu worker liczy jeden łączny loss,
+   wykonuje jeden `backward()`, klipuje gradienty, sprawdza NaN i dopiero wtedy
+   przenosi gradienty do globalnego modelu.
+10. Po update worker synchronizuje się z globalnym modelem co
+    `sync_every_n_updates`.
+11. Na końcu epizodu loguje JSONL, aktualizuje rolling mean reward, zapisuje
+    `best_checkpoint.pth` przy nowym najlepszym wyniku i wykonuje GC zgodnie z
+    `gc_interval`.
 
-| Flag | Slurm default | Python default | What it does |
-|---|---|---|---|
-| `--save-frequency` | `20000` | `20000` | Steps between checkpoints; `0` disables. |
-| `--outdir` | auto (`runs/a3c_<N>w_<ts>_<jobid>`) | `None` (tempdir) | Output directory. |
-| `-r` / `--resume` | empty | `None` | Resume from this previous outdir (loads checkpoint, restores counters, reuses W&B id, warns on arg drift). |
+Najważniejsza różnica praktyczna: stary worker sam obsługiwał CARLA i przez to
+każda zmiana środowiska dotykała pętli A3C. Nowy worker traktuje CARLA jako
+wrapper o prostym API: `reset()` i `step(action)`.
 
-### 3.5 Supervisor / recovery
+Druga ważna różnica praktyczna dotyczy długości epizodu. W starej pętli jedna
+decyzja workera oznaczała jedno `step_apply_action()` i limit środowiska
+`STEP_COUNTER = 200`. W nowej pętli jedna decyzja A3C oznacza domyślnie dwa
+`step_apply_action()` przez `action_repeat = 2`, a wrapper dodatkowo kończy
+epizod po 100 decyzjach. To powoduje, że agent szybciej zamyka epizody i częściej
+dostaje terminalne update'y. Jest to celowe, ale przy porównywaniu runów trzeba
+patrzeć również na kroki, czas `env_step` i długość epizodu, nie tylko na liczbę
+epizodów.
 
-| Flag | Slurm default | Python default | What it does |
-|---|---|---|---|
-| `--max-restarts-per-worker` | `160` | `160` | Hard cap on per-worker restarts. (Bumped 8× from the old `20` because long CARLA runs hit the limit during a 10 h job.) |
-| `--rapid-crash-threshold` | `3` | `3` | Rapid crashes before triggering a global rollback. |
-| `--rapid-crash-window-steps` | `100` | `100` | Steps within which crashes count as "rapid". |
-| `--carla-timeout-wait` | `60` | `60.0` | Sleep before reconnecting after a CARLA server timeout. |
-| `--carla-server-start-period` | `30` | `30.0` | Wait between worker death and relaunch (lets CARLA boot). |
-| `--max-connect-retries` | `5` | `5` | `CarlaA3CWrapper` connection attempts on cold start. |
-| `--connect-retry-wait` | `30` | `30.0` | Sleep between those attempts. |
-| `--worker-check-interval` *(py only)* | — | `5.0` | Supervisor poll interval. |
+## Gradienty i Hogwild
 
-### 3.6 Logging / monitoring
+W obu implementacjach ogólna idea jest taka sama: globalny model jest na CPU w
+pamięci współdzielonej, workery mają lokalne kopie modelu na GPU, liczą gradienty
+lokalnie i przenoszą je do globalnego modelu.
 
-| Flag | Slurm default | Python default | What it does |
-|---|---|---|---|
-| `--log-steps` | off | off | Write one JSON line per env step to `steps.jsonl`. |
-| `--log-update-arrays` | off | off | Include full per-step advantage/value/entropy/reward arrays in `updates.jsonl`. |
-| `--diag-log-interval` | `100` | `100` | Episodes between `timing.jsonl` flush + profiler reset. |
-| `--monitor-interval` | `10` | `10.0` | RunMonitor / WorkerMonitor sampling period (s). |
-| `--no-system-monitor` | off | off | Disable both monitors. |
-| `--no-gpu-monitor` | off | off | Disable the pynvml GPU sampling block in RunMonitor. |
-| `--wandb-project` | `a3c-carla` | `A_to_B` | W&B project name. |
-| `--wandb-run-name` | empty → auto | `None` → auto | W&B run name. |
-| `--no-wandb` | off | off | Skip the W&B subprocess entirely. |
+W `a3c_improved_1.py` współdzielone były:
 
-### 3.7 Image saving
+- parametry globalnego actora i critica,
+- stan optymalizatorów `SharedAdam`,
+- bufory `.grad` globalnych parametrów.
 
-| Flag | Slurm default | Python default | What it does |
-|---|---|---|---|
-| `--save-episodes` | empty | `None` | Space-separated episode numbers whose frames get saved (`--save-episodes "1 10 100 700"`). |
-| `--save-episode-interval` | `0` | `0` | Also save frames every N episodes; `0` disables. |
+`transfer_grads_to_shared()` kopiowało lokalne gradienty bezpośrednio do tych
+współdzielonych buforów `.grad`, a potem worker wywoływał `optimizer.step()`. To
+było proste i szybkie, ale przy równoległych workerach mogło dojść do wyścigu:
+worker A zaczynał wpisywać gradient, worker B nadpisywał ten sam bufor, a worker A
+mógł wykonać krok optymalizatora na gradiencie częściowo należącym do innego
+workera.
 
-### 3.8 Misc
+W `new_hogwild_a3c.py` współdzielone są parametry i stan optymalizatora, ale
+gradient danego workera jest klonowany i przypisywany procesowo lokalnie podczas
+`transfer_grads()`. Worker nie udostępnia jednego stałego bufora `.grad`, do
+którego równocześnie piszą inne workery. Same `optimizer.step()` nadal są domyślnie
+Hogwild, czyli bez globalnego locka wokół aktualizacji wag.
 
-| Flag | Slurm default | Python default | What it does |
-|---|---|---|---|
-| `--seed` | `52` | `52` | RNG seed (torch + numpy + cuda). |
-| `--venv` *(slurm only)* | `/net/tscratch/people/plgbartoszkawa/venv` | — | Venv to activate. |
-| `--project-dir` *(slurm only)* | `/net/tscratch/people/plgbartoszkawa/AV/A_to_B_GPU_34` | — | Where the `new_*` files live. |
-| `--multiserver-script` *(slurm only)* | `/net/tscratch/people/plgbartoszkawa/carla_athena_multiserver_v3.py` | — | CARLA multi-server launcher path. |
+Dla diagnostyki istnieje `--hogwild-lock-updates`. Ta opcja serializuje update'y
+workerów przez lock, ale normalny tryb pozostaje asynchroniczny.
 
-### 3.9 SBATCH headers (built-in defaults of `new_train.slurm`)
+Powód:
 
-Override on the command line *before* the script path
-(`sbatch --gpus=2 --mem=50G new_train.slurm …`).
+Nowa wersja ogranicza najbardziej ryzykowny wyścig na buforach gradientów, ale
+zachowuje główną cechę Hogwild: wielu workerów może aktualizować wspólny model bez
+stałego blokowania całej pętli treningowej.
 
-| Header | Default |
-|---|---|
-| `--partition` | `plgrid-gpu-a100` |
-| `--account` | `plgdyplomanci7-gpu-a100` |
-| `--nodes` | `1` |
-| `--ntasks-per-node` | `1` (the Python app uses `mp.Process` internally) |
-| `--cpus-per-task` | `7` |
-| `--mem` | `25G` |
-| `--time` | `20:50:00` |
-| `--gpus` | `1` (set to `ceil(num_workers / workers_per_gpu)` when scaling) |
-| `--job-name` | `new-a3c-carla` |
-| `--output` / `--error` | `new-a3c-carla-log-%J.txt` |
-| `--signal` | `SIGUSR1@90` |
+## Zmiany w konfiguracji i argumentach
 
-### 3.10 Final command
+### Aktualny stan
 
-A complete, ready-to-paste invocation for one worker on one GPU,
-default everything else, with frame-saving on episode 700:
+`new_hogwild_train_a3c_carla.py` trzyma domyślne wartości jako jawne stałe
+modułowe. Są pogrupowane według odpowiedzialności:
+
+- `# Run shape`
+- `# Algorithm`
+- `# Optimizer internals`
+- `# Recovery`
+- `# Logging and monitoring`
+- `# Checkpointing`
+- `# CARLA step/reset behavior`
+- `# Reward shaping`
+- `# Fixed implementation choices`
+
+### Co zostało w CLI
+
+W CLI zostały argumenty, które realnie mają sens jako parametry runa:
+
+- liczba workerów i mapowanie na GPU,
+- porty CARLA,
+- scenariusz,
+- seed,
+- model/optimizer jako opcje eksperymentalne,
+- `t-max`, `gamma`, `lr`, entropy schedule,
+- checkpoint/resume,
+- monitoring/logging,
+- `action-repeat`, `episode-max-decisions`, `world-reload-interval`,
+- `reward-mode`.
+
+### Co jest stałą konfiguracją implementacji
+
+Parametry, które opisują bieżący wariant algorytmu i zwykle nie są zmieniane w
+każdym uruchomieniu, są stałymi w Pythonie:
+
+- `mp_density`,
+- parametry wewnętrzne RMSprop/Adam,
+- współczynniki reward shapingu,
+- `action_type`,
+- domyślne wartości recovery i monitoringu.
+
+Powód:
+
+Typowa komenda SLURM ma opisywać głównie kształt runa: liczbę workerów, GPU,
+scenariusz, porty, resume i monitoring. Stałe algorytmu są w jednym miejscu na
+górze pliku Pythona, więc łatwo sprawdzić, jaki wariant A3C jest aktualnie
+uruchamiany.
+
+## Zmiany w SLURM
+
+`new_hogwild_train.slurm` jest teraz launcherem całej ścieżki:
+
+1. parsuje mały zestaw argumentów,
+2. tworzy katalog runa,
+3. uruchamia `carla_athena_multiserver_v3.py`,
+4. czeka aż porty CARLA będą w stanie `LISTEN`,
+5. uruchamia `new_hogwild_train_a3c_carla.py`,
+6. zapisuje `a3c_training.log`, `carla_servers.log`, `gpu_dmon.log`,
+7. przy wyjściu zamyka trening, tail loga, serwery CARLA i `nvidia-smi dmon`.
+
+Najczęściej wystarczają argumenty:
 
 ```bash
-sbatch --ntasks-per-node=2 --cpus-per-task=7 --mem=20G --time=3:00:00 \
-       --gpus=1 --job-name=a3c-carla-1w_gpu \
-       /net/tscratch/people/plgbartoszkawa/AV/A_to_B_GPU_34/new_train.slurm \
-       -w 1 -s 14 --save-episodes "700" --workers-per-gpu 2
+sbatch --ntasks-per-node=7 --cpus-per-task=7 --mem=200G --time=5:00:00 --gpus=6 \
+  --job-name=a3c-carla-6w_hogwild_gpu \
+  /net/tscratch/people/plgbartoszkawa/AV/A_to_B_GPU_34/new_hogwild_train.slurm \
+  -w 6 -s 14 --workers-per-gpu 1 --servers-per-gpu 1
 ```
 
-Override anything inline; for example a longer run with a custom LR
-and explicit run name:
+Rzadkie argumenty Pythona można przekazać po `--`, na przykład:
 
 ```bash
-sbatch --gpus=1 --mem=25G --time=20:00:00 \
-       /net/tscratch/people/plgbartoszkawa/AV/A_to_B_GPU_34/new_train.slurm \
-       -w 1 --workers-per-gpu 1 --lr 3e-4 --t-max 10 --steps 5000000 \
-       --wandb-run-name exp_lr3e4_t10
+sbatch --gpus=6 new_hogwild_train.slurm -w 6 --workers-per-gpu 1 --servers-per-gpu 1 -- --lr 5e-5
 ```
 
-Resume that same run later:
+Powód:
+
+Stary styl wymagał wielu argumentów w komendzie i mieszał parametry infrastruktury
+z parametrami algorytmu. Teraz SLURM odpowiada głównie za run shape i CARLA, a
+Python trzyma stałe algorytmu.
+
+## Zmiany w katalogu runa
+
+`new_hogwild_prepare_output_dir.py` zapisuje:
+
+- `args.txt` dla nowego runa,
+- `args_resume.txt` przy resume.
+
+Pozostałe artefakty runa zapisują konkretne komponenty pipeline'u:
+
+- `a3c_training.log` zapisuje stdout/stderr treningu,
+- `carla_servers.log` zapisuje log supervisora serwerów CARLA,
+- `gpu_dmon.log` zapisuje monitoring `nvidia-smi dmon`,
+- `logs/` zawiera JSONL z epizodami, update'ami, timingiem, eventami i systemem,
+- checkpointy i `resume_state.json` zapisują stan potrzebny do wznowienia.
+
+Powód:
+
+Katalog runa ma zawierać rzeczy potrzebne do analizy i wznowienia treningu, a nie
+być kopią całego stanu repozytorium. Dzięki temu łatwiej porównywać runy i
+automatycznie parsować wyniki.
+
+## CARLA wrapper i reset środowiska
+
+Największa praktyczna różnica względem `a3c_improved_1.py` jest w obsłudze
+CARLA, a nie w samym równaniu A3C. Stara wersja używała `CarlaEnv` bezpośrednio
+w workerze. Worker sam resetował `state_observer`, normalizował obraz i speed,
+czyścił `image_queue`, wykonywał akcję, robił ticki świata, obsługiwał manewry
+na skrzyżowaniach i decydował o zapisie obrazów.
+
+Nowa wersja przenosi tę logikę do `new_hogwild_carla_wrapper.py`. `carla_env.py`
+pozostaje niskopoziomowym środowiskiem CARLA: świat, sensory, aktorzy, trasa,
+kamera, kolejki i legacy reward. Wrapper decyduje, jak A3C ma z tego środowiska
+korzystać:
+
+- łączy się z `CarlaEnv` przez retry i potrafi zrobić `reconnect`,
+- resetuje epizod bez pełnego reloadu świata, chyba że `world_reload_interval`
+  wymusi reload,
+- waliduje obserwację i zamienia format na `[3, H, W]`,
+- skaluje obraz do `[0, 1]` i speed do `speed / 100`,
+- wykonuje `action_repeat`,
+- kończy epizod po `episode_max_decisions`,
+- liczy shaped reward i zapisuje jego komponenty,
+- zapisuje klatki tylko dla wskazanych epizodów,
+- zbiera statystyki epizodu potrzebne do JSONL i W&B.
+
+Powód podziału jest praktyczny. Gdyby całą logikę A3C dopisać do `carla_env.py`,
+środowisko musiałoby znać `global_episode`, `run_id`, `action_repeat`,
+`save_episodes`, shaped reward, format wejścia PyTorch, retry policy i statystyki
+workerów. To związałoby ogólne środowisko CARLA z jednym konkretnym pipeline'em.
+Obecny układ zostawia `CarlaEnv` jako warstwę CARLA, a wrapper jako warstwę
+treningu.
+
+## Dlaczego nowa wersja robi tak dużo epizodów
+
+Wysoka liczba epizodów/h w nowym pipeline nie wynika tylko z szybszego
+forward/backward. Najważniejsze przyczyny są po stronie resetu, długości epizodu
+i hot path środowiska.
+
+1. Brak pełnego `reload_world()` co epizod.
+   W starej ścieżce `env.reset(...)` wołał domyślne `reload_world=True`, więc
+   każdy epizod niszczył świat, ładował go ponownie, odświeżał mapę, blueprinty i
+   ustawienia synchroniczne. W nowej ścieżce wrapper liczy `full_reload` z
+   `world_reload_interval`; przy domyślnym `0` wywołuje
+   `reset_episode_state()`, które czyści aktorów, sensory, kolejkę obrazów i
+   liczniki, ale nie robi `client.reload_world()`. To usuwa największy stały
+   koszt początku epizodu.
+
+2. Epizod jest krótszy jako jednostka treningowa.
+   Stare środowisko miało `STEP_COUNTER = 200`, a stary worker wykonywał jedno
+   `step_apply_action()` na jedną decyzję agenta. Nowy wrapper ma domyślnie
+   `episode_max_decisions = 100` i `action_repeat = 2`. Jedna decyzja A3C
+   wykonuje więc dwa `step_apply_action() + world.tick()`, a epizod kończy się po
+   100 decyzjach lub wcześniej. Dlatego liczba epizodów może mocno wzrosnąć nawet
+   dla jednego workera. To jest poprawne dla tej implementacji, ale epizod/h nie
+   oznacza dokładnie tego samego co w `a3c_improved_1.py`.
+
+   Dokładna różnica wygląda tak:
+
+   | Element epizodu | `a3c_improved_1.py` | `new_hogwild_*` |
+   |---|---|---|
+   | Jednostka, dla której policy wybiera akcję | 1 decyzja workera | 1 decyzja A3C / 1 `global_step` |
+   | Wywołania `step_apply_action()` na jedną decyzję | 1 | 2 przy `action_repeat=2` |
+   | `world.tick()` na jedną decyzję | 2 | 2, po jednym ticku na każde powtórzenie akcji |
+   | Obserwacja i reward | po każdej decyzji workera | po całym `action_repeat`, czyli po dwóch powtórzeniach tej samej akcji |
+   | Główny licznik końca epizodu | `CarlaEnv.step_counter >= STEP_COUNTER`, domyślnie 200 | `CarlaA3CWrapper.step_count >= episode_max_decisions`, domyślnie 100, oraz nadal wewnętrzny limit `CarlaEnv.step_counter >= 200` |
+   | Maksymalna liczba decyzji policy w epizodzie | około 200 | około 100 |
+
+   To znaczy, że nowy epizod zwykle zawiera mniej decyzji policy, mniej zapisanych
+   rewardów i mniej kroków A3C niż stary epizod. Jednocześnie pojedyncza decyzja
+   w nowej wersji reprezentuje powtórzoną akcję w CARLA. Dlatego dwa runy z tą
+   samą liczbą epizodów nie muszą oznaczać tej samej liczby decyzji agenta,
+   update'ów ani tej samej długości symulowanego przejazdu. Do uczciwego
+   porównania trzeba zestawiać także `global_step`, `total_updates`, średnią
+   długość epizodu, `action_repeat` i czasy `env_reset`/`env_step`.
+
+3. Mniej pracy w samym workerze.
+   Stary worker miał w pętli szczegóły CARLA, ręczne czyszczenie kolejki, ręczną
+   obsługę manewrów i stale włączony `cProfile`. Nowy worker wywołuje prosty
+   `env.step(action)`, a szczegóły robi wrapper. Profilowanie jest zastąpione
+   lekkim `TimingAccumulator`, który zapisuje czasy faz bez kosztu pełnego
+   profilera Pythonowego w każdym kroku.
+
+4. Mniej blokowania przez logi i dysk.
+   `CarlaEnv(verbose=False)` jest domyślne, więc wiele komunikatów środowiska nie
+   trafia do stdout. Klatki są zapisywane tylko dla `--save-episodes` albo
+   `--save-episode-interval`, a katalog zapisu jest cache'owany per epizod.
+   Dzięki temu normalny hot path nie płaci za diagnostyczny zapis obrazów.
+
+5. Stabilniejsza obsługa kamery.
+   `_get_latest_camera_image()` pobiera najnowszą klatkę i wyrzuca starsze, a
+   wrapper dodatkowo czyści kolejkę przed wykonaniem powtarzanej akcji. To
+   zmniejsza ryzyko pracy na zaległych obrazach i ogranicza narastanie backlogu
+   w kolejce kamery.
+
+Wniosek: nowa implementacja rzeczywiście jest szybsza, ale część wzrostu liczby
+epizodów pochodzi z tego, że epizod jest krótszy i tańszy. Przy porównaniach
+należy patrzeć razem na `episodes/h`, `steps/s`, średnią długość epizodu,
+`env_reset`, `env_step` i `action_repeat`.
+
+## Zmiany w `carla_env.py`
+
+`carla_env.py` zostało dostosowane tak, żeby wrapper mógł pracować szybciej i
+czyściej.
+
+Najważniejsze zmiany:
+
+- `CarlaEnv.__init__` ma parametr `verbose=False`, więc standardowe treningi nie
+  zalewają stdout logami środowiska.
+- `self.verbose` jest ustawiane na początku konstruktora, przed pierwszym
+  wywołaniem `plan_the_route()`. To naprawia regresję z runa
+  `a3c_hogwild_6w_20260505_114615_2566209`, gdzie wszystkie workery kończyły się
+  przed pierwszym epizodem błędem `AttributeError: 'CarlaEnv' object has no
+  attribute 'verbose'`.
+- `reset()` przyjmuje `reload_world=True` dla kompatybilności, ale wrapper
+  domyślnie podaje `False`. Pełny reload można przywrócić okresowo przez
+  `world_reload_interval`.
+- `reset_episode_state()` niszczy aktorów i sensory, czyści kolejkę obrazów,
+  historię kolizji/lane invasion, middle-point rewards, liczniki i stan prędkości
+  bez przeładowywania świata.
+- `_get_latest_camera_image()` pobiera najnowszą klatkę z kolejki i wyrzuca
+  starsze, zamiast pozwalać workerowi pracować na zaległych obrazach.
+- `reset()` i `step()` zwracają prędkość jako zwykły `float`, nie tensor zależny
+  od CUDA. Wrapper dopiero potem skaluje speed i tworzy tensor na urządzeniu
+  workera.
+- `step()` zapisuje `last_invasion_counter`, żeby wrapper mógł policzyć penalty
+  za lane invasion bez czytania wewnętrznej listy środowiska.
+- Obraz z CARLA jest zapisywany w `state_observer.image`, żeby wrapper mógł
+  wykonać `save_to_disk()` tylko dla wskazanych epizodów.
+- Semantyczne i RGB obserwacje są przygotowywane tak, żeby wrapper mógł wymusić
+  poprawny format `[3, H, W]`.
+
+Powód:
+
+Pełny reload świata był jednym z największych kosztów czasu i nie jest potrzebny
+po każdym krótkim epizodzie. Oddzielenie `reload_world()` od zwykłego resetu
+epizodu zwiększa liczbę epizodów na godzinę, ale zostawia możliwość okresowego
+reloadu, gdyby CARLA zaczęła kumulować zły stan. Zwracanie prostych typów,
+trzymanie najnowszej klatki i wyciszenie logów zmniejszają ilość pracy w pętli
+A3C.
+
+## Reward
+
+W `a3c_improved_1.py` worker brał nagrodę prawie bezpośrednio z
+`CarlaEnv.step(...)` i dopisywał ją do `self.rewards`. Ta nagroda pochodziła z
+legacy `reward_function(...)` używanej wewnątrz `carla_env.py`.
+
+W aktualnym Hogwild finalna funkcja nagrody dla treningu jest w
+`new_hogwild_carla_wrapper.py`, w metodzie `_shape_reward(...)`. Przepływ jest
+taki:
+
+1. Worker wybiera akcję i wywołuje `CarlaA3CWrapper.step(action)`.
+2. Wrapper wykonuje akcję w CARLA, robi ticki i woła bazowe `CarlaEnv.step(...)`.
+3. `CarlaEnv.step(...)` zwraca legacy reward oraz informacje środowiskowe:
+   `route_distance`, `speed_value`, `distance_from_goal`, `done`.
+4. Wrapper pobiera też liczbę kolizji i `last_invasion_counter`.
+5. `_shape_reward(...)` zamienia te dane na finalny `reward_f`.
+6. To `reward_f` trafia do `self.rewards` workera A3C i jest używane w n-step
+   returns: `R = reward + gamma * R`.
+
+Ważny szczegół: `CarlaEnv.step(...)` nadal liczy legacy reward nawet w trybie
+`shaped`, bo wrapper potrzebuje z niego stanu `done` oraz wartości diagnostycznej
+`legacy_reward`. Do uczenia trafia jednak `reward_f` z wrappera. Limit
+`episode_max_decisions` jest nakładany już po obliczeniu shaped rewardu w
+wrapperze, więc epizod może zakończyć się przez limit decyzji bez `goal_bonus`,
+jeżeli bazowe środowisko nie uznało jeszcze celu za osiągnięty.
+
+Domyślny tryb to `reward-mode shaped`. Tryb legacy można wymusić przez:
 
 ```bash
-sbatch /net/tscratch/people/plgbartoszkawa/AV/A_to_B_GPU_34/new_train.slurm \
-       -w 1 --workers-per-gpu 1 \
-       -r /net/tscratch/people/plgbartoszkawa/AV/A_to_B_GPU_34/runs/a3c_1w_<ts>_<jobid>
+--reward-mode legacy
 ```
+
+Wtedy `_shape_reward(...)` zwraca po prostu starą nagrodę z `CarlaEnv`.
+
+W trybie `shaped` reward jest sumą komponentów:
+
+- `progress`: dodatni, gdy auto zmniejsza dystans do celu; ujemny, gdy oddala się
+  od celu. Pojedynczy krok jest obcięty do zakresu `[-5, 5]`.
+- `target_speed`: nagradza jazdę blisko prędkości docelowej `20 km/h`; zbyt wolna
+  albo zbyt szybka jazda daje słabszy wynik.
+- `route_penalty`: mała ciągła kara za odległość od trasy.
+- `time_penalty`: stała kara `-0.01` za każdy krok decyzyjny, żeby agent nie
+  opłacał się przez stanie w miejscu.
+- `goal_bonus`: duży bonus `+50` za zakończenie epizodu blisko celu.
+- `collision_penalty`: kara `-50` za nową kolizję.
+- `offroute_penalty`: kara `-25`, gdy odległość od trasy przekracza próg
+  `10.0`.
+- `lane_invasion_penalty`: kara `-5` za lane invasion w danym kroku.
+
+Suma komponentów jest obcinana przez `reward_clip` do zakresu `[-50, 50]`.
+Wrapper zapisuje też słownik `reward_components`, dzięki czemu w logach można
+zobaczyć, czy agent dostaje nagrodę za postęp, czy głównie kary za off-route,
+kolizje albo lane invasion.
+
+W Hogwild każdy worker liczy reward lokalnie dla własnego procesu CARLA. Reward
+nie jest współdzielony między workerami. Współdzielony jest dopiero efekt uczenia:
+lokalny reward wpływa na lokalne returns, advantage i gradient, a gradient
+aktualizuje globalny model.
+
+Powód:
+
+Stara nagroda dawała mniej gęsty sygnał uczenia. Shaped reward daje agentowi
+informację w każdym kroku: czy zbliża się do celu, czy jedzie rozsądną prędkością,
+czy trzyma się trasy, czy uderzył w coś i czy naruszył pas. Dzięki temu każdy
+worker częściej produkuje użyteczny gradient. Tryb `legacy` pozostał jako punkt
+porównawczy.
+
+## Logging i monitoring
+
+`a3c_improved_1.py` używało:
+
+- loggera tekstowego,
+- `log.csv`,
+- W&B subprocess,
+- profili `profile_worker_<id>.out`.
+
+`new_hogwild_*` zapisuje strukturalne logi:
+
+- `logs/metadata.json`,
+- `logs/events.jsonl`,
+- `logs/system.jsonl`,
+- `logs/worker_<id>/episodes.jsonl`,
+- `logs/worker_<id>/updates.jsonl`,
+- `logs/worker_<id>/timing.jsonl`,
+- opcjonalnie `logs/worker_<id>/steps.jsonl`,
+- `logs/worker_<id>/system.jsonl`.
+
+Dodatkowo:
+
+- W&B ma stabilne `wandb_run_id.txt`, żeby resume trafiało do tego samego runa,
+- `RunMonitor` loguje system, CARLA i GPU,
+- `WorkerMonitor` loguje zasoby procesu workera,
+- `TimingAccumulator` pokazuje czas w `env_reset`, `env_step`, `forward`,
+  `backward`, `optim_update`, `checkpoint_save`.
+
+Powód:
+
+Przy analizie skalowania tekstowy log i CSV nie wystarczają. JSONL pozwala liczyć
+epizody/h, kroki/s, czas resetu, czas środowiska, czas update'u i zużycie GPU bez
+parsowania niestabilnych komunikatów stdout.
+
+## Checkpointing i resume
+
+Stara wersja zapisywała model do stałej ścieżki `MODEL_SAVE_PATH` co
+`SAVE_INTERVAL` lokalnych epizodów workera.
+
+Nowa wersja zapisuje checkpointy do katalogu runa:
+
+- `checkpoint.pth`,
+- `checkpoint_step.txt`,
+- `best_checkpoint.pth`,
+- opcjonalnie `checkpoints/worker_<id>/checkpoint.pth`,
+- `resume_state.json`.
+
+Checkpoint zawiera:
+
+- model lub actor/critic,
+- optymalizator,
+- `global_step`,
+- `global_episode`,
+- `total_updates`,
+- `last_checkpoint_boundary`,
+- `best_reward`,
+- `global_mean_reward`,
+- średnie workerów,
+- ostatnie rewardy.
+
+Resume:
+
+- wyszukuje najnowszy checkpoint,
+- ładuje model i optymalizator,
+- odtwarza liczniki,
+- czyta `resume_state.json`,
+- ostrzega, jeżeli ważne argumenty zmieniły się względem zapisanego runa,
+- liczy aktywny czas treningu kumulatywnie między sesjami.
+
+Powód:
+
+Run na klastrze może zostać przerwany przez limit czasu albo awarię CARLA.
+Checkpoint i resume muszą odtwarzać nie tylko wagi, ale też kontekst treningu.
+
+## Supervisor i odporność na awarie
+
+`a3c_improved_1.py` restartowało martwe workery, ale bez limitu restartów i bez
+rollbacku modelu.
+
+`new_hogwild_run_a3c.py` dodaje:
+
+- licznik restartów per worker,
+- `max_restarts_per_worker`,
+- wykrywanie szybkich powtarzających się crashy,
+- rollback do ostatniego checkpointu bez NaN,
+- backoff restartu CARLA/workera,
+- eventy `worker_start`, `worker_restart`, `rollback`, `worker_give_up`,
+- graceful shutdown przez `shutdown_event`.
+
+Powód:
+
+Jeżeli worker zaczyna crashować natychmiast po restarcie, przyczyną może być
+zepsuty globalny model albo checkpoint. Rollback daje szansę wrócić do ostatniego
+dobrego stanu zamiast tracić cały run.
+
+## Zapis obrazów
+
+W starej wersji zapis obrazów był częściowo zakomentowany i zależny od
+`StateObserver`.
+
+Nowy wrapper zapisuje klatki przez `carla.Image.save_to_disk()` dla:
+
+- konkretnych epizodów z `--save-episodes`,
+- albo epizodów okresowych z `--save-episode-interval`.
+
+Ścieżka:
+
+```text
+AV/A_to_B_GPU_34/episodes/<run_id>/<global_episode>-<port>/<step>.jpeg
+```
+
+Powód:
+
+Zapis obrazów jest potrzebny diagnostycznie, ale nie może spowalniać każdego
+epizodu. Dlatego jest domyślnie wyłączony i działa tylko dla wskazanych epizodów.
+
+## Porównanie zachowania 1:1
+
+| Obszar | `a3c_improved_1.py` | `new_hogwild_*` | Dlaczego zmieniono |
+|---|---|---|---|
+| Struktura | Jeden duży plik. | Moduły per odpowiedzialność. | Łatwiejszy debug i rozwój. |
+| Konfiguracja | `settings.py` + globalne stałe + stałe ścieżki. | CLI dla run shape, uppercase defaults w entrypoincie. | Krótsze komendy i mniej rozproszone wartości. |
+| Model | Oddzielny actor i critic. | Domyślnie wspólny actor-critic, legacy opcjonalne. | Mniej pracy na krok i spójna reprezentacja. |
+| Optymalizator | `SharedAdam`. | Domyślnie `SharedRMSprop`, Adam opcjonalnie. | Klasyczny A3C i prostszy shared state. |
+| Global step | Aktualizowany po epizodzie. | Aktualizowany co krok środowiska. | Dokładne budżety, LR decay i checkpointy. |
+| Reset CARLA | Pełny `client.reload_world()` co epizod. | Domyślnie `reset_episode_state()` bez reloadu świata. | Największa redukcja stałego kosztu epizodu. |
+| Długość epizodu | Limit środowiska `STEP_COUNTER = 200` decyzji workera. | `episode_max_decisions = 100` decyzji A3C oraz `action_repeat = 2`. | Więcej epizodów/h, ale epizod nie jest 1:1 tą samą jednostką co wcześniej. |
+| Reward | Legacy reward z `CarlaEnv`. | Domyślnie shaped reward, legacy dostępne. | Gęstszy sygnał uczenia. |
+| Gradient clipping | Zakomentowany. | Aktywny. | Stabilność. |
+| Bufory gradientów | Współdzielone `.grad` w modelu globalnym. | Sklonowane, procesowo lokalne `.grad`; współdzielone są parametry i stan optymalizatora. | Mniej ryzyka wyścigów między workerami. |
+| Tick/action flow | Jedna akcja w workerze, ręczne czyszczenie kolejki, dwa ticki, `env.step`. | Wrapper robi `action_repeat` razy `apply_action + tick`, potem pobiera najnowszą obserwację przez `env.step`. | Mniej logiki CARLA w workerze i jawny związek między decyzją A3C a tickami CARLA. |
+| NaN guard | Brak. | Skip update i NaN-safe checkpoint. | Ochrona runa przed zatruciem modelu. |
+| Checkpointy | Stała ścieżka poza katalogiem runa. | Checkpointy w katalogu runa. | Łatwiejsze resume i porównanie eksperymentów. |
+| Resume | Ograniczone. | Model, optymalizator, liczniki, W&B id, aktywny czas. | Mniejsze ryzyko utraty pracy. |
+| Logging/profiling | CSV/tekst/W&B oraz stale aktywny `cProfile` w workerze. | JSONL + W&B + monitoring + lekki timing per faza. | Mniejszy koszt hot path i lepsza analiza skalowania. |
+| Supervisor | Restart workera. | Restart, limit, backoff, rollback. | Odporność na awarie CARLA/modelu. |
+| Run dir | Brak spójnego zestawu artefaktów. | Logi, checkpointy, args, resume state, monitoring. | Reprodukowalność i audyt. |
+
+## Co zostało świadomie kompatybilne
+
+Zachowano:
+
+- PyTorch i `torch.multiprocessing`,
+- globalny model na CPU,
+- lokalne workery na GPU,
+- kopiowanie gradientów GPU -> CPU,
+- `Categorical(logits=...)`,
+- n-step A3C,
+- Huber loss dla value,
+- możliwość pracy w trybie testing,
+- możliwość użycia starego actor/critic przez `--model-arch legacy`,
+- możliwość starego rewardu przez `--reward-mode legacy`.
+
+Powód:
+
+Zmiany miały poprawić przepustowość, skalowanie, stabilność i obsługę runów, ale
+nie zastępować całego algorytmu inną metodą RL.
+
+## Aktualny typowy sposób uruchamiania
+
+Dla 6 workerów na 6 GPU:
+
+```bash
+sbatch \
+  --ntasks-per-node=7 \
+  --cpus-per-task=7 \
+  --mem=200G \
+  --time=5:00:00 \
+  --gpus=6 \
+  --job-name=a3c-carla-6w_hogwild_gpu \
+  /net/tscratch/people/plgbartoszkawa/AV/A_to_B_GPU_34/new_hogwild_train.slurm \
+  -w 6 \
+  -s 14 \
+  --workers-per-gpu 1 \
+  --servers-per-gpu 1
+```
+
+Dla resume:
+
+```bash
+sbatch --gpus=6 \
+  /net/tscratch/people/plgbartoszkawa/AV/A_to_B_GPU_34/new_hogwild_train.slurm \
+  -w 6 -s 14 --workers-per-gpu 1 --servers-per-gpu 1 \
+  -r /net/tscratch/people/plgbartoszkawa/AV/A_to_B_GPU_34/runs/<run_dir>
+```
+
+## Ograniczenia i rzeczy do dalszej obserwacji
+
+Run `a3c_hogwild_6w_20260505_114615_2566209` nie wykonał treningu: każdy worker
+crashował w konstruktorze `CarlaEnv`, zanim powstał pierwszy epizod albo update.
+Przyczyną była zła kolejność inicjalizacji `self.verbose`. Ten błąd został
+naprawiony w `carla_env.py`, ale po tej poprawce nadal trzeba wykonać świeży
+benchmark CARLA, żeby ocenić realne skalowanie.
+
+Warto nadal obserwować:
+
+- epizody/h dla 1, 6 i 12 workerów,
+- średnią długość epizodu, bo nowy limit 100 decyzji i `action_repeat=2` zmieniają
+  znaczenie samej liczby epizodów,
+- `env_reset` i `env_step` w `timing.jsonl`,
+- obciążenie GPU w `gpu_dmon.log` i `logs/system.jsonl`,
+- liczbę restartów workerów w `events.jsonl`,
+- udział czasu CARLA względem forward/backward,
+- czy `--workers-per-gpu` i `--servers-per-gpu` są dobrane do konkretnego węzła.
+
+Kilka zachowań, które warto mieć jasno opisane przy analizie wyników:
+
+- `global_step` w nowej wersji liczy decyzje A3C, nie pojedyncze ticki CARLA.
+  Przy `action_repeat=2` jeden global step oznacza dwa `step_apply_action()`.
+- `episode_max_decisions` kończy epizod na poziomie wrappera. To przyspiesza
+  zamykanie epizodów i update terminalny, ale może zakończyć epizod bez bonusu za
+  cel, jeśli bazowe `CarlaEnv.step()` nie zwróciło jeszcze `done=True`.
+- `world_reload_interval=0` oznacza brak okresowego pełnego reloadu świata po
+  inicjalizacji środowiska. To jest szybkie, ale jeśli w długich runach CARLA
+  zacznie kumulować zły stan, należy testować dodatnią wartość tego parametru.
+- W trybie `shaped` legacy reward nadal jest liczony i logowany jako
+  `legacy_reward`, ale gradienty uczą się z nagrody z `_shape_reward(...)`.
+
+Najważniejszy praktyczny wniosek: aktualna wersja jest zaprojektowana tak, żeby
+zachować rdzeń A3C z `a3c_improved_1.py`, ale mieć krótszą pętlę CARLA, gęstszy
+sygnał rewardu, czytelne logi i dane potrzebne do dalszej analizy skalowania.

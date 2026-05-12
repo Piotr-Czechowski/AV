@@ -74,8 +74,8 @@ MAP_POINTS_SC13 = [
     (76, 226), (11, 137), (205, 112),  (44, 52), (241, 102), #(32, 83), (229, 103), (229, 88), (199, 110), (199, 117), (228, 102), (228, 88), (201, 11), (201, 198), (1, 105), (1, 100), (188, 107), (188, 73)]
 ]
 MAP_POINTS_SC14 = [ 
-                    (28, 154), (49, 132), (83, 225), (77, 200), (54, 235),
-                    (28, 155), (49, 129), (83, 89), (77,98),  (54,234) 
+                    # (28, 154), (49, 132), (83, 225), (77, 200), (54, 235),
+                    (28, 155), (49, 129), (83, 89), (77,98), (54,234) 
                 ] #right/straight
 MAP_POINTS_SC15 = [(78, 76), (78, 92), (71, 131), (71, 130), (238, 130),(37, 161), (43, 89),(43,222), (204, 67), (204, 162) ] #left/straight
 TESTING_SC = [(28, 154)]
@@ -103,7 +103,8 @@ class CarlaEnv:
     Create Carla environment
     """
     def __init__(self, scenario, action_space='discrete', resX=250, resY=250, camera='semantic', port=port,
-                 manual_control=False, spawn_point=False, terminal_point=False, mp_density=25):
+                 manual_control=False, spawn_point=False, terminal_point=False, mp_density=25,
+                 verbose=False):
         # Run the server on 127.0.0.1/port
         #start_carla_server(f'-windowed -carla-server -fps=60 -ResX={serv_resx} -ResY={serv_resy} -quality-level=Low '
         #                   f'-carla-world-port={port}')
@@ -113,6 +114,7 @@ class CarlaEnv:
         #for debugging
         # Enable to use colors
         self.log = ColoredPrint()
+        self.verbose = bool(verbose)
 
         # Make sure that server and client versions are the same
         client_ver = self.client.get_client_version()
@@ -124,6 +126,7 @@ class CarlaEnv:
             self.log.warn(f"Client version: {client_ver}, Server version: {server_ver}")
 
         self.world = self.client.load_world('Town03')
+        self._apply_sync_settings()
 
 
 
@@ -206,6 +209,14 @@ class CarlaEnv:
         self.walker = None
         self.walker_controller = None
      
+    def _apply_sync_settings(self):
+        self.settings = self.world.get_settings()
+        self.settings.synchronous_mode = True
+        self.settings.fixed_delta_seconds = 0.1
+        self.settings.max_substep_delta_time = 0.01
+        self.settings.max_substeps = 10
+        self.world.apply_settings(self.settings)
+
 
     def create_scenario(self, sp, tp, mp_d):
 
@@ -453,7 +464,8 @@ class CarlaEnv:
         self._draw_optimal_route_lines(self.route, draw=draw)
         self.car_decisions = decisions
         self.car_decisions.append(1)
-        print(f"Manouvers to make in this episode: {self.car_decisions}")
+        if self.verbose:
+            print(f"Manouvers to make in this episode: {self.car_decisions}")
 
 
         return self.goal_location_trans, self.goal_location_loc, self.route
@@ -481,7 +493,8 @@ class CarlaEnv:
         for attempt in range(MAX_ATTEMPTS):
             self.vehicle = self.world.try_spawn_actor(tesla, self.spawn_point)
             if self.vehicle is not None:
-                print(f"Pojazd zespawnowany w próbie {attempt + 1}")
+                if self.verbose:
+                    print(f"Pojazd zespawnowany w próbie {attempt + 1}")
                 break
             time.sleep(WAIT_TIME)
         else:
@@ -539,7 +552,8 @@ class CarlaEnv:
             # noinspection PyUnresolvedReferences
             cv2.waitKey(1)
 
-        self.front_camera = torch.Tensor(i3).view(3, self.resX, self.resY).unsqueeze(0)
+        self.front_camera = torch.from_numpy(i3.copy()).permute(
+            2, 0, 1).contiguous().unsqueeze(0).float()
 
     def add_semantic_camera(self):
         """
@@ -582,7 +596,7 @@ class CarlaEnv:
         # image.convert(carla.ColorConverter.CityScapesPalette)
         # image = image.to_array() 
         image = np.array(image.raw_data)
-        image = image.reshape((self.resX, self.resY, 4))
+        image = image.reshape((self.resY, self.resX, 4))
         image = image[:, :, :3]
         if self.show_cam:
             # noinspection PyUnresolvedReferences
@@ -590,8 +604,8 @@ class CarlaEnv:
             # noinspection PyUnresolvedReferences
             cv2.waitKey(1)
 
-        # self.front_camera = torch.from_numpy(image).permute(2, 0, 1).unsqueeze(0).float()
-        self.front_camera = torch.Tensor(image).view(3, self.resX, self.resY).unsqueeze(0).float()
+        self.front_camera = torch.from_numpy(image.copy()).permute(
+            2, 0, 1).contiguous().unsqueeze(0).float()
 
     def add_depth_camera(self):
         """
@@ -1068,18 +1082,15 @@ class CarlaEnv:
         
 
         self.world = self.client.reload_world()
+        self.blueprint_library = self.world.get_blueprint_library()
+        self.map = self.world.get_map()
         
         spawn_points = self.world.get_map().get_spawn_points()
         for i, spawn_point in enumerate(spawn_points):
             location = spawn_point.location
             self.world.debug.draw_string(location, str(i), draw_shadow=False, color=carla.Color(r=0, g=255, b=0), life_time=120.0)
         
-        self.settings = self.world.get_settings()
-        self.settings.synchronous_mode = True
-        self.settings.fixed_delta_seconds = 0.1
-        self.settings.max_substep_delta_time = 0.01
-        self.settings.max_substeps = 10
-        self.world.apply_settings(self.settings)
+        self._apply_sync_settings()
 
         # self.world = self.client.reload_world()
 
@@ -1127,12 +1138,43 @@ class CarlaEnv:
         self.done = False
         self.speed = 0
 
-    def reset(self, episode, save_image=False):
+    def reset_episode_state(self):
+        self.destroy_agents()
+        self.actor_list = []
+        if hasattr(self, 'image_queue'):
+            while not self.image_queue.empty():
+                _ = self.image_queue.get()
+        self.collision_history_list = []
+        self.invasion_history_list = []
+        self.middle_goals = []
+        self.step_counter = 0
+        self.stat_reward_mp = []
+        self.front_camera = None
+        self.preview_camera = None
+        self.preview_camera_enabled = False
+        self.is_junction = False
+        self.done = False
+        self.speed = 0
+        self.prev_speed = 0
+
+    def _get_latest_camera_image(self, timeout=2.0):
+        try:
+            image = self.image_queue.get(timeout=timeout)
+        except queue.Empty:
+            raise RuntimeError("time-out waiting for camera image")
+        while not self.image_queue.empty():
+            image = self.image_queue.get()
+        return image
+
+    def reset(self, episode, save_image=False, reload_world=True):
         """
         Rest environment at the end of each episode
         :return:
         """
-        self.reload_world()
+        if reload_world:
+            self.reload_world()
+        else:
+            self.reset_episode_state()
     
         
         if self.scenario:
@@ -1181,24 +1223,18 @@ class CarlaEnv:
             _ = self.image_queue.get()
 
         self.world.tick()
-        try:
-            image = self.image_queue.get()
-        except queue.Empty:
-            print("kolejka jest pusta")
-            image = None
+        image = self._get_latest_camera_image(timeout=2.0)
 
         self.state_observer.image = image
 
-        scalar_tensor = torch.tensor(self.speed, dtype=torch.float32).view(1, 1)  # Dodanie wymiaru [batch_size=1, 1]
-        batch_size = 1
-        scalar_tensor = scalar_tensor.expand(batch_size, -1)  # Powielenie scalaru na cały batch
-        speed_tensor = scalar_tensor.to("cuda")
         # if save_image:
         #     self.state_observer.save_to_disk(image, episode, 0)
         
-        # self.process_rgb_img(image)
-        self.process_semantic_img(image)
-        return self.front_camera, speed_tensor
+        if self.camera_type == 'rgb':
+            self.process_rgb_img(image)
+        else:
+            self.process_semantic_img(image)
+        return self.front_camera, float(self.speed)
     
     def step_apply_action(self, action):
         self.step_counter += 1
@@ -1231,10 +1267,7 @@ class CarlaEnv:
 
         route_distance = self.calculate_route_distance(vehicle_location)
         self.speed = self.calculate_speed()
-        scalar_tensor = torch.tensor(self.speed, dtype=torch.float32).view(1, 1)  # Dodanie wymiaru [batch_size=1, 1]
-        batch_size = 1
-        scalar_tensor = scalar_tensor.expand(batch_size, -1)  # Powielenie scalaru na cały batch
-        speed_tensor = scalar_tensor.to("cuda")  # Przenieś tensor na GPU
+        speed_value = float(self.speed)
 
         static_reward_from_mp = mp_reward
         mp_static_reward, self.done = self.static_reward_mp(vehicle_location, static_reward_from_mp)
@@ -1250,6 +1283,7 @@ class CarlaEnv:
             invasion_counter = 1  # Sometimes there were a lot of invasions in history only from one invasion
         else:
             invasion_counter = 0
+        self.last_invasion_counter = invasion_counter
 
         # Reset the history
         self.invasion_history_list = []
@@ -1263,23 +1297,17 @@ class CarlaEnv:
 
         if self.step_counter >= how_many_steps:
             self.done = True
-        try:
-            image1 = self.image_queue.get(timeout=2.0)
-        except queue.Empty:
-            raise RuntimeError("time-out waiting for camera image")
-
-        try:
-            image = self.image_queue.get(timeout=2.0)
-        except queue.Empty:
-            raise RuntimeError("time-out waiting for camera image")
+        image = self._get_latest_camera_image(timeout=2.0)
         self.state_observer.image = image
 
         # if save_image:
         #     self.state_observer.save_to_disk(image, episode, step)
 
-        # self.process_rgb_img(image)
-        self.process_semantic_img(image)
-        return self.front_camera, reward, self.done, route_distance, speed_tensor, distance_from_goal
+        if self.camera_type == 'rgb':
+            self.process_rgb_img(image)
+        else:
+            self.process_semantic_img(image)
+        return self.front_camera, reward, self.done, route_distance, speed_value, distance_from_goal
 
     def destroy_agents(self):
         """
@@ -1292,5 +1320,3 @@ class CarlaEnv:
                 actor.destroy()
         self.actor_list.clear()
         
-
-
