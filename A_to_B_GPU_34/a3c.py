@@ -86,7 +86,7 @@ def wandb_logger_process(log_queue):
         project="A_to_B",
         name="synchr_test3_11",
         resume="allow",
-        id=EXP_ID,
+        # id=EXP_ID,
         config={"learning_rate": LR}
     )
 
