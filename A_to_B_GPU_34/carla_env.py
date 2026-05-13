@@ -215,6 +215,8 @@ class CarlaEnv:
                 break
             time.sleep(WAIT_TIME)
 
+        if self.vehicle is not None:
+            self.actor_list.append(self.vehicle)  # tego brakuje!
 
         if self.camera_type == 'rgb':
             self.add_rgb_camera()
@@ -484,54 +486,56 @@ class CarlaEnv:
 
         return goal_location_trans, goal_location_loc, route
 
-    # def spawn_car(self, spawning_type=1, episode=None):
-    #     """
-    #     Spawn a car
-    #     :return: vehicle
-    #     """
+    def spawn_car(self, spawning_type=1, episode=None):
+        """
+        Spawn a car
+        :return: vehicle
+        """
 
-    #     tesla = self.blueprint_library.filter('model3')[0]
-    #     tesla.set_attribute('role_name', 'ego')
-    #     for attempt in range(MAX_ATTEMPTS):
-    #         self.vehicle = self.world.try_spawn_actor(tesla, self.spawn_point)
-    #         if self.vehicle is not None:
-    #             print(f"Pojazd zespawnowany w próbie {attempt + 1}")
-    #             break
-    #         time.sleep(WAIT_TIME)
+        # tesla = self.blueprint_library.filter('model3')[0]
+        # tesla.set_attribute('role_name', 'ego')
+        # for attempt in range(MAX_ATTEMPTS):
+        #     self.vehicle = self.world.try_spawn_actor(tesla, self.spawn_point)
+        #     if self.vehicle is not None:
+        #         print(f"Pojazd zespawnowany w próbie {attempt + 1}")
+        #         break
+        #     time.sleep(WAIT_TIME)
 
-
-    #     tesla = self.blueprint_library.filter('model3')[0]
-    #     tesla.set_attribute('role_name', 'ego')
-    #     if spawning_type==0:
-    #         self.spawn_point = random.choice(self.route)[0].transform
-    #     elif spawning_type == 1:
-    #         # self.spawn_point.location.x -= 9
-    #         pass
-    #     elif spawning_type==2:
-    #         if bool(episode%2):
-    #             self.spawn_point = self.route[0][0].transform
-    #         else:
-    #             self.spawn_point = self.route[-120][0].transform
-    #     # self.spawn_point.location.z = 20.0 # żeby nie był za nisko
+        self.vehicle = None
+        tesla = self.blueprint_library.filter('model3')[0]
+        tesla.set_attribute('role_name', 'ego')
+        if spawning_type==0:
+            self.spawn_point = random.choice(self.route)[0].transform
+        elif spawning_type == 1:
+            # self.spawn_point.location.x -= 9
+            pass
+        elif spawning_type==2:
+            if bool(episode%2):
+                self.spawn_point = self.route[0][0].transform
+            else:
+                self.spawn_point = self.route[-120][0].transform
+        # self.spawn_point.location.z = 20.0 # żeby nie był za nisko
         
-    #     for attempt in range(MAX_ATTEMPTS):
-    #         self.vehicle = self.world.try_spawn_actor(tesla, self.spawn_point)
-    #         if self.vehicle is not None:
-    #             print(f"Pojazd zespawnowany w próbie {attempt + 1}")
-    #             break
-    #         time.sleep(WAIT_TIME)
-    #     else:
-    #         raise RuntimeError("Nie udało się zespawnować pojazdu po kilku próbach.")
+        for attempt in range(MAX_ATTEMPTS):
+            self.vehicle = self.world.try_spawn_actor(tesla, self.spawn_point)
+            if self.vehicle is not None:
+                self.world.tick()  # dodaj to
+                print(f"Pojazd zespawnowany w próbie {attempt + 1}")
+                break
+            time.sleep(WAIT_TIME)
+        else:
+            raise RuntimeError("Nie udało się zespawnować pojazdu po kilku próbach.")
 
-    #     self.actor_list.append(self.vehicle)
+        self.actor_list.append(self.vehicle)
 
-    #     return self.vehicle
+        return self.vehicle
     
     def move_car_to_starting_point(self):
         """
         Move the car to the starting point
         """
         self.vehicle.set_transform(self.spawn_point)
+        # self.vehicle.
         time.sleep(1)
 
 
@@ -1099,8 +1103,8 @@ class CarlaEnv:
         """
         Rest variables at the end of each episode
         """
-        # self.destroy_agents()
-        # self.actor_list = []
+        self.destroy_agents()
+        self.actor_list = []
 
 
         # old_world = self.client.get_world()
@@ -1181,16 +1185,16 @@ class CarlaEnv:
         # self.spawn_npc_vehicle(spawn_index=48)
 
         self.goal_location_trans, self.goal_location_loc, self.route = self.plan_the_route()
-        # self.spawn_car(spawning_type, episode)
-        self.move_car_to_starting_point()
+        self.spawn_car(spawning_type, episode)
+        # self.move_car_to_starting_point()
         self.set_spectator()
 
-        # if self.camera_type == 'rgb':
-            # self.add_rgb_camera()
-        # elif self.camera_type == 'semantic':
-            # self.add_semantic_camera()
-        # else:
-            # self.log.err(f"Wrong camera type. Pick rgb or semantic, not: {self.camera_type}")
+        if self.camera_type == 'rgb':
+            self.add_rgb_camera()
+        elif self.camera_type == 'semantic':
+            self.add_semantic_camera()
+        else:
+            self.log.err(f"Wrong camera type. Pick rgb or semantic, not: {self.camera_type}")
 
         # self.add_depth_camera()
         # self.add_collision_sensor()
@@ -1330,6 +1334,8 @@ class CarlaEnv:
             if actor.is_alive:
                 actor.destroy()
         self.actor_list.clear()
+        self.world.tick()  # dodaj to!
+
         
 
 

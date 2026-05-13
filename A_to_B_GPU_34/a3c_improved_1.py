@@ -61,9 +61,9 @@ if torch.cuda.is_available():
 # global settings
 ACTION_TYPE = settings.ACTION_TYPE
 CAMERA_TYPE = settings.CAMERA_TYPE
-MODEL_LOAD_PATH = 'A_to_B_GPU_34/PC_models/currently_trained/carla_to_chainer_013_13_12w_10u_10s_profiled.pth'
-MODEL_SAVE_PATH = 'A_to_B_GPU_34/PC_models/currently_trained/carla_to_chainer_013_13_12w_10u_10s_profiled'
-EXP_ID = "carla_to_chainer_013_13_12w_10u_10s_profiled_continued_3.pth"
+MODEL_LOAD_PATH = 'A_to_B_GPU_34/PC_models/currently_trained/carla_to_chainer_019_12w_new_reset.pth'
+MODEL_SAVE_PATH = 'A_to_B_GPU_34/PC_models/currently_trained/carla_to_chainer_019_12w_new_reset'
+EXP_ID = "carla_to_chainer_019_12w_new_reset.pth"
 
 GAMMA = settings.GAMMA
 LR = settings.LR
@@ -72,8 +72,8 @@ SCENARIO = settings.SCENARIO
 TESTING = settings.TESTING
 
 # A3C specific settings
-NUM_WORKERS = 1
-NUMBER_OF_SERVERS_PER_GPU = 1
+NUM_WORKERS = 12
+NUMBER_OF_SERVERS_PER_GPU = 2
 n_gpus = torch.cuda.device_count()
 WORKER_GPUS = ([f'cuda:{g}' for g in range(n_gpus) for _ in range(NUMBER_OF_SERVERS_PER_GPU)])[:NUM_WORKERS]
 print(f'!!!!!!!!!!    WORKER_GPUS {WORKER_GPUS}')
@@ -620,7 +620,7 @@ class A3CWorker(mp.Process):
                     self.sync_with_global()
 
                     # reset environment
-                    save_images = (current_episode % 1 == 0)
+                    save_images = (current_episode % 500 == 0)
                     env.state_observer.reset()
                     state, speed = env.reset(save_image=save_images, episode=current_episode)
 
