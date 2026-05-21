@@ -1217,8 +1217,8 @@ class CarlaEnv:
 
         # to render properly path on the road. Otherwise it doesn't shine
         self.step_apply_action(3)
-        for i in range(15):
-            self.world.tick()
+        # for i in range(15):
+        #     self.world.tick()
             
         while not self.image_queue.empty():
             _ = self.image_queue.get()
