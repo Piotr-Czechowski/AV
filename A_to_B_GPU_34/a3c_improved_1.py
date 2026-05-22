@@ -61,9 +61,9 @@ if torch.cuda.is_available():
 # global settings
 ACTION_TYPE = settings.ACTION_TYPE
 CAMERA_TYPE = settings.CAMERA_TYPE
-MODEL_LOAD_PATH = 'A_to_B_GPU_34/PC_models/currently_trained/carla_to_chainer_023_1w_new_reset.pth'
-MODEL_SAVE_PATH = 'A_to_B_GPU_34/PC_models/currently_trained/carla_to_chainer_023_1w_new_reset'
-EXP_ID = "carla_to_chainer_023_1w_new_reset.pth"
+MODEL_LOAD_PATH = 'A_to_B_GPU_34/PC_models/currently_trained/carla_to_chainer_028_1w_new_reset.pth'
+MODEL_SAVE_PATH = 'A_to_B_GPU_34/PC_models/currently_trained/carla_to_chainer_028_1w_new_reset'
+EXP_ID = "carla_to_chainer_028_1w_new_reset.pth"
 
 GAMMA = settings.GAMMA
 LR = settings.LR
@@ -81,7 +81,7 @@ BASE_PORT = settings.PORT
 
 # Training parameters
 T_MAX = 20
-MAX_GRAD_NORM = 40.0
+MAX_GRAD_NORM = 25.0
 ENTROPY_COEF = 0.01
 VALUE_LOSS_COEF = 1.0
 SAVE_INTERVAL = 50
@@ -472,6 +472,7 @@ class A3CWorker(mp.Process):
         total_loss = actor_loss + VALUE_LOSS_COEF * critic_loss
         self.model.zero_grad()
         total_loss.backward()          # brak retain_graph
+        torch.nn.utils.clip_grad_norm_(self.model.parameters(), MAX_GRAD_NORM)  # ← dodaj
         transfer_grads_to_shared(self.model, self.global_network.model)
         self.global_network.optimizer.step()
 
