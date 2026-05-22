@@ -2,328 +2,11 @@
 Author: Praveen Palanisamy
 """
 import torch
-
-
-# class Actor(torch.nn.Module):
-#     def __init__(self, input_shape, actor_shape, device=torch.device("cuda")):
-#         """
-#         Deep convolutional Neural Network to represent Actor in an Actor-Critic algorithm
-#         The Policy is parametrized using a Gaussian distribution with mean mu and variance sigma
-#         The Actor's policy parameters (mu, sigma) are output by the deep CNN implemented
-#         in this class.
-#         :param input_shape: Shape of each of the observations
-#         :param actor_shape: Shape of the actor's output. Typically the shape of the actions
-#         :param device: The torch.device (cpu or cuda) where the inputs and the parameters are to be stored and operated
-#         """
-#         super(Actor, self).__init__()
-#         self.device = device
-#         self.layer1 = torch.nn.Sequential(torch.nn.Conv2d(input_shape[2], 32, 8, stride=4, padding=0),
-#                                           torch.nn.ReLU())
-#         self.layer2 = torch.nn.Sequential(torch.nn.Conv2d(32, 64, 3, stride=2, padding=0),
-#                                           torch.nn.ReLU())
-#         self.layer3 = torch.nn.Sequential(torch.nn.Conv2d(64, 64, 3, stride=1, padding=0),
-#                                           torch.nn.ReLU())
-#         self.layer4 = torch.nn.Sequential(torch.nn.Linear(64 * 7 * 7, 18496),
-#                                           torch.nn.ReLU())
-#         self.actor_mu = torch.nn.Linear(18496, actor_shape)
-#         self.actor_sigma = torch.nn.Linear(18496, actor_shape)
-
-#     def forward(self, x):
-#         """
-#         Forward pass through the Actor network. Takes batch_size x observations as input and produces mu and sigma
-#         as the outputs
-#         :param x: The observations
-#         :return: Mean (mu) and Sigma (sigma) for a Gaussian policy
-#         """
-#         x.requires_grad_()
-#         x = x.to(self.device)
-#         x = self.layer1(x)
-#         x = self.layer2(x)
-#         x = self.layer3(x)
-#         x = x.view(x.shape[0], -1)
-#         x = self.layer4(x)
-#         actor_mu = self.actor_mu(x)
-#         actor_sigma = self.actor_sigma(x)
-#         return actor_mu, actor_sigma
-
-##########################################################################################TO USUWAM
-# class DiscreteActor(torch.nn.Module):
-#     def __init__(self, input_shape, actor_shape, device=torch.device("cuda")):
-#         """
-#         Deep convolutional Neural Network to represent Actor in an Actor-Critic algorithm
-#         The Policy is parametrized using a categorical/discrete distribution with logits
-#         The Actor's policy parameters (logits) are output by the deep CNN implemented
-#         in this class.
-#         :param input_shape: Shape of each of the observations
-#         :param actor_shape: Shape of the actor's output. Typically the shape of the actions
-#         :param device: The torch.device (cpu or cuda) where the inputs and the parameters are to be stored and operated
-#         """
-#         super(DiscreteActor, self).__init__()
-#         self.device = device
-#         # self.layer1 = torch.nn.Sequential(torch.nn.Conv2d(input_shape[2], 32, 8, stride=4, padding=0),
-#                                                      #  How many channels
-#         self.layer1 = torch.nn.Sequential(torch.nn.Conv2d(input_shape[2], 32, 8, stride=4, padding=0),
-#                                           torch.nn.ReLU())
-#         self.layer2 = torch.nn.Sequential(torch.nn.Conv2d(32, 64, 3, stride=2, padding=0),
-#                                           torch.nn.ReLU())
-#         # self.layer3 = torch.nn.Sequential(torch.nn.Conv2d(64, 128, 3, stride=1, padding=0),
-#         #                                  torch.nn.ReLU())
-#         self.layer3 = torch.nn.Sequential(torch.nn.Conv2d(64, 64, 3, stride=1, padding=0),
-#                                           torch.nn.ReLU())
-#         # self.layer4 = torch.nn.Sequential(torch.nn.Linear(128 * 7 * 7, 512),
-#         #                                   torch.nn.ReLU())
-#         self.layer4 = torch.nn.Sequential(torch.nn.Linear(64 * 22 * 22, 512),
-#                                           torch.nn.ReLU())
-        
-#         # self.speed_layer1 = torch.nn.Sequential(
-#         #     torch.nn.Linear(1, 64),
-#         #     torch.nn.ReLU())
-
-#         # self.speed_layer2 = torch.nn.Sequential(
-#         #     torch.nn.Linear(64, 64),
-#         #     torch.nn.ReLU()
-#         # )
-#         self.actor = torch.nn.Linear(512, actor_shape)
-#         # self.actor = torch.nn.Linear(512+64, actor_shape) # camera+speed
-
-#         # self.scalar_layer = torch.nn.Sequential(
-#         #             torch.nn.Linear(1, 64),
-#         #             torch.nn.ReLU())
-#         #powrzucać dropouty, batchnorm
-#         # self.logits = torch.nn.Linear(2, actor_shape)
-
-#     def forward(self, x, speed=None, manouver=None):
-#         """
-#         Forward pass through the Actor network. Takes batch_size x observations as input and produces mu and sigma
-#         as the outputs
-#         :param x: The observations
-#         :return: Mean (mu) and Sigma (sigma) for a Gaussian policy
-#         """
-#         x.requires_grad_()
-#         x = x.to(self.device)
-#         x = self.layer1(x)
-#         x = self.layer2(x)
-#         x = self.layer3(x)
-#         x = x.view(x.shape[0], -1)
-#         x = self.layer4(x)
-#         speed= None
-#         if speed is None and manouver is None:
-#             actor = self.actor(x)
-#         elif speed is not None and manouver is None:
-#             speed = speed.to(self.device).view(-1, 1)
-#             speed = self.speed_layer1(speed)
-#             # speed = self.speed_layer2(speed)
-#             combined = torch.cat([x, speed], dim=1)
-#             actor = self.actor(combined)
-#         elif speed is not None and manouver is not None:
-#             pass
-
-#         # scalar = scalar.to(self.device).view(-1, 1)
-#         # scalar_features = self.scalar_layer(scalar)
-#         # combined = torch.cat([x, scalar_features], dim=1)
-#         # logits = self.logits(combined)
-
-#         # attention = self.attention_layer(combined)
-#         # logits = self.logits(attention)
-#         return actor
-
-############################################################################################################# DOTAD USUWAM
-
-
-######################################################################################## TO USUWAM
-# class Critic(torch.nn.Module):
-#     def __init__(self, input_shape, critic_shape=1, device=torch.device("cuda")):
-#         """
-#         Deep convolutional Neural Network to represent the Critic in an Actor-Critic algorithm
-#         :param input_shape: Shape of each of the observations
-#         :param critic_shape: Shape of the Critic's output. Typically 1
-#         :param device: The torch.device (cpu or cuda) where the inputs and the parameters are to be stored and operated
-#         """
-#         super(Critic, self).__init__()
-#         self.device = device
-#         # input_shape[2] instead of 6
-#         self.layer1 = torch.nn.Sequential(torch.nn.Conv2d(input_shape[2], 32, 8, stride=4, padding=0),
-#                                           torch.nn.ReLU())
-#         self.layer2 = torch.nn.Sequential(torch.nn.Conv2d(32, 64, 3, stride=2, padding=0),
-#                                           torch.nn.ReLU())
-#         self.layer3 = torch.nn.Sequential(torch.nn.Conv2d(64, 64, 3, stride=1, padding=0),
-#                                           torch.nn.ReLU())
-#         self.layer4 = torch.nn.Sequential(torch.nn.Linear(64 * 22 * 22, 512),
-#                                           torch.nn.ReLU())
-#         # self.speed_layer1 = torch.nn.Sequential(
-#         #     torch.nn.Linear(1, 64),
-#         #     torch.nn.ReLU()
-#         #     )
-# =======
-#     def forward(self, x, speed=None, manouver=None):
-#         """
-#         Forward pass through the Actor network. Takes batch_size x observations as input and produces mu and sigma
-#         as the outputs
-#         :param x: The observations
-#         :return: Mean (mu) and Sigma (sigma) for a Gaussian policy
-#         """
-#         x.requires_grad_()
-#         x = x.to(self.device)
-#         x = self.layer1(x)
-#         x = self.layer2(x)
-#         x = self.layer3(x)
-#         x = x.view(x.shape[0], -1)
-#         x = self.layer4(x)
-#         # speed = None
-#         if speed is None and manouver is None:
-#             actor = self.actor(x)
-#         elif speed is not None and manouver is None:
-#             speed = speed.to(self.device).view(-1, 1)
-#             speed = self.speed_layer1(speed)
-#             # speed = self.speed_layer2(speed)
-#             combined = torch.cat([x, speed], dim=1)
-#             actor = self.actor(combined)
-#         elif speed is not None and manouver is not None:
-#             pass
-
-#         # scalar = scalar.to(self.device).view(-1, 1)
-#         # scalar_features = self.scalar_layer(scalar)
-#         # combined = torch.cat([x, scalar_features], dim=1)
-#         # logits = self.logits(combined)
-
-#         # attention = self.attention_layer(combined)
-#         # logits = self.logits(attention)
-#         return actor
-
-
-# class Critic(torch.nn.Module):
-#     def __init__(self, input_shape, critic_shape=1, device=torch.device("cuda")):
-#         """
-#         Deep convolutional Neural Network to represent the Critic in an Actor-Critic algorithm
-#         :param input_shape: Shape of each of the observations
-#         :param critic_shape: Shape of the Critic's output. Typically 1
-#         :param device: The torch.device (cpu or cuda) where the inputs and the parameters are to be stored and operated
-#         """
-#         super(Critic, self).__init__()
-#         self.device = device
-#         # input_shape[2] instead of 6
-#         self.layer1 = torch.nn.Sequential(torch.nn.Conv2d(input_shape[2], 32, 8, stride=4, padding=0),
-#                                           torch.nn.ReLU())
-#         self.layer2 = torch.nn.Sequential(torch.nn.Conv2d(32, 64, 3, stride=2, padding=0),
-#                                           torch.nn.ReLU())
-#         self.layer3 = torch.nn.Sequential(torch.nn.Conv2d(64, 64, 3, stride=1, padding=0),
-#                                           torch.nn.ReLU())
-#         self.layer4 = torch.nn.Sequential(torch.nn.Linear(64 * 22 * 22, 512),
-#                                           torch.nn.ReLU())
-#         self.speed_layer1 = torch.nn.Sequential(
-#             torch.nn.Linear(1, 64),
-#             torch.nn.ReLU()
-#             )
-# >>>>>>> main
-        
-#         # self.speed_layer2 = torch.nn.Sequential(
-#         #     torch.nn.Linear(64, 64),
-#         #     torch.nn.ReLU()
-#         # )
-#         # ----Last layers----
-#         self.critic = torch.nn.Linear(512, critic_shape)
-#         # self.critic = torch.nn.Linear(512+64, critic_shape)
-
-
-#         # self.attention_layer = torch.nn.MultiheadAttention(512+64, 2)
-#         # self.critic = torch.nn.Linear(2, critic_shape)
-
-
-#     def forward(self, x, speed=None, manouver=None):
-#         """
-#         Forward pass through the Critic network. Takes batch_size x observations as input and produces the value
-#         estimate as the output
-#         :param x: The observations
-#         :return: Mean (mu) and Sigma (sigma) for a Gaussian policy
-#         """
-#         x.requires_grad_()
-#         x = x.to(self.device)
-#         x = self.layer1(x)
-#         x = self.layer2(x)
-#         x = self.layer3(x)
-#         x = x.view(x.shape[0], -1)
-#         # print(x.shape)
-#         x = self.layer4(x)
-#         speed = None
-#         if speed is None and manouver is None:
-#             critic = self.critic(x)
-#         elif speed is not None and manouver is None:
-#             speed = speed.to(self.device).view(-1, 1)
-#             speed = self.speed_layer1(speed)
-#             # speed = self.speed_layer2(speed)
-#             combined = torch.cat([x, speed], dim=1)
-#             critic = self.critic(combined)
-#         elif speed is not None and manouver is not None:
-#             pass
-
-#         # print(x.shape)
-#         # scalar = scalar.to(self.device).view(-1, 1)
-#         # scalar_features = self.scalar_layer(scalar)
-#         # combined = torch.cat([x, scalar_features], dim=1)
-        
-#         # critic = self.critic(combined)
-#         # attention = self.attention_layer(combined)
-#         # critic = self.critic(attention)
-
-#         return critic
-
-#################################################################DOTAD USUWAM
-
-
-# class ActorCritic(torch.nn.Module):
-#     def __init__(self, input_shape, actor_shape, critic_shape, device=torch.device("cuda")):
-#         """
-#         A single neural network architecture that represents both the actor and the critic.
-#         In this way, the feature extraction layers are shared between the actor and the critic,
-#         and different heads (final layers) in the same neural network are used to represent the actor and the critic.
-#         Deep convolutional Neural Network to represent both policy  (Actor) and a value function (Critic).
-#         The Policy is parametrized using a Gaussian distribution with mean mu and variance sigma
-#         The Actor's policy parameters (mu, sigma) and the Critic's Value (value) are output by the deep CNN implemented
-#         in this class.
-#         :param input_shape: Shape of each of the observations
-#         :param actor_shape: Shape of the actor's output. Typically the shape of the actions
-#         :param critic_shape: Shape of the Critic's output. Typically 1
-#         :param device: The torch.device (cpu or cuda) where the inputs and the parameters are to be stored and operated
-#         """
-#         super(ActorCritic, self).__init__()
-#         self.device = device
-#         self.layer1 = torch.nn.Sequential(torch.nn.Conv2d(input_shape[2], 32, 8, stride=4, padding=0),
-#                                           torch.nn.ReLU())
-#         self.layer2 = torch.nn.Sequential(torch.nn.Conv2d(32, 64, 3, stride=2, padding=0),
-#                                           torch.nn.ReLU())
-#         self.layer3 = torch.nn.Sequential(torch.nn.Conv2d(64, 64, 3, stride=1, padding=0),
-#                                           torch.nn.ReLU())
-#         self.layer4 = torch.nn.Sequential(torch.nn.Linear(64 * 47 * 47, 512),
-#                                           torch.nn.ReLU())
-#         self.actor_mu = torch.nn.Linear(512, actor_shape)
-#         self.actor_sigma = torch.nn.Linear(512, actor_shape)
-#         self.critic = torch.nn.Linear(512, critic_shape)
-
-#     def forward(self, x):
-#         """
-#         Forward pass through the Actor-Critic network. Takes batch_size x observations as input and produces
-#         mu, sigma and the value estimate
-#         as the outputs
-#         :param x: The observations
-#         :return: Mean (actor_mu), Sigma (actor_sigma) for a Gaussian policy and the Critic's value estimate (critic)
-#         """
-#         x.requires_grad_()
-#         x = x.to(self.device)
-#         x = self.layer1(x)
-#         x = self.layer2(x)
-#         x = self.layer3(x)
-#         x = x.view(x.shape[0], -1)
-#         x = self.layer4(x)
-#         actor_mu = self.actor_mu(x)
-#         actor_sigma = self.actor_sigma(x)
-#         critic = self.critic(x)
-#         return actor_mu, actor_sigma, critic
-
-########################## NOWY MODEL, NIEZLY
-# import torch.nn as nn
+import torch.nn as nn
+import torch.nn.functional as F
 
 # class DiscreteActor(nn.Module):
-#     def __init__(self, input_shape, actor_shape, device=torch.device("cuda")):
+#     def __init__(self, input_shape, actor_shape, device=torch.device("cpu")):
 #         super(DiscreteActor, self).__init__()
 #         self.device = device
 
@@ -344,143 +27,77 @@ import torch
 #             nn.BatchNorm2d(256),
 #             nn.ReLU(),
 
-#             nn.AdaptiveAvgPool2d((4, 4))  # Spłaszcza do 4x4 niezależnie od wejścia
-#         )
-
-#         self.fc = nn.Sequential(
-#             nn.Flatten(),
-#             nn.Linear(256 * 4 * 4, 512),
+#             # --- ADDED CONV LAYER ---
+#             nn.Conv2d(256, 512, kernel_size=3, stride=1, padding=1),
+#             nn.BatchNorm2d(512),
 #             nn.ReLU(),
-#             nn.Dropout(0.3),
-#             nn.Linear(512, actor_shape)
-#         )
+#             # ------------------------
 
-#     def forward(self, x, speed=None, manouver=None):
-#         x = x.to(self.device, dtype=torch.float32) / 255.0  # jeśli wejście to obraz (0–255)
-#         x = self.cnn(x)
-#         logits = self.fc(x)
-#         return logits
-
-# class Critic(nn.Module):
-#     def __init__(self, input_shape, actor_shape, device=torch.device("cuda")):
-#         super(Critic, self).__init__()
-#         self.device = device
-
-#         self.cnn = nn.Sequential(
-#             nn.Conv2d(input_shape[2], 32, kernel_size=3, stride=1, padding=1),
-#             nn.BatchNorm2d(32),
-#             nn.ReLU(),
-
-#             nn.Conv2d(32, 64, kernel_size=3, stride=2, padding=1),
-#             nn.BatchNorm2d(64),
-#             nn.ReLU(),
-
-#             nn.Conv2d(64, 128, kernel_size=3, stride=2, padding=1),
-#             nn.BatchNorm2d(128),
-#             nn.ReLU(),
-
-#             nn.Conv2d(128, 256, kernel_size=3, stride=2, padding=1),
-#             nn.BatchNorm2d(256),
-#             nn.ReLU(),
-
-#             nn.AdaptiveAvgPool2d((4, 4))  # Spłaszcza do 4x4 niezależnie od wejścia
-#         )
-
-#         self.fc = nn.Sequential(
-#             nn.Flatten(),
-#             nn.Linear(256 * 4 * 4, 512),
-#             nn.ReLU(),
-#             nn.Dropout(0.3),
-#             nn.Linear(512, actor_shape)
-#         )
-
-#     def forward(self, x, speed=None, manouver=None):
-#         x = x.to(self.device, dtype=torch.float32) / 255.0  # jeśli wejście to obraz (0–255)
-#         x = self.cnn(x)
-#         logits = self.fc(x)
-#         return logits
-
-########################################### TEN CO WYZEJ ALE Z PREDKOSCIA
-# import torch
-# import torch.nn as nn
-# import torch.nn.functional as F
-
-# class DiscreteActor(nn.Module):
-#     def __init__(self, input_shape, actor_shape, device=torch.device("cuda")):
-#         super(DiscreteActor, self).__init__()
-#         self.device = device
-
-#         self.cnn = nn.Sequential(
-#             nn.Conv2d(input_shape[2], 32, kernel_size=3, stride=1, padding=1),
-#             nn.BatchNorm2d(32),
-#             nn.ReLU(),
-
-#             nn.Conv2d(32, 64, kernel_size=3, stride=2, padding=1),
-#             nn.BatchNorm2d(64),
-#             nn.ReLU(),
-
-#             nn.Conv2d(64, 128, kernel_size=3, stride=2, padding=1),
-#             nn.BatchNorm2d(128),
-#             nn.ReLU(),
-
-#             nn.Conv2d(128, 256, kernel_size=3, stride=2, padding=1),
-#             nn.BatchNorm2d(256),
-#             nn.ReLU(),
-
-#             nn.AdaptiveAvgPool2d((4, 4))  # Spłaszcza do 4x4 niezależnie od wejścia
+#             nn.AdaptiveAvgPool2d((4, 4))  # Flattens to 4x4 regardless of input
 #         )
         
-#         # Gałąź przetwarzająca prędkość – oczekujemy tensor o wymiarze [B, 1]
+#         # Branch for processing speed - expects a tensor of shape [B, 1]
 #         self.speed_fc = nn.Sequential(
 #             nn.Linear(1, 32),
 #             nn.ReLU()
 #         )
 
+#         # Branch for processing maneuver
 #         self.manouver_fc = nn.Sequential(
-#             nn.Linear(3, 32),  # zakładamy 4 możliwe manewry
+#             nn.Linear(3, 32),  # Assuming 3 possible maneuvers
 #             nn.ReLU()
 #         )
         
-#         # Łączymy wyjście z CNN (flattenowane do 256*4*4) z przetworzoną prędkością (32)
+#         # We combine the output from CNN (flattened to 512*4*4) with processed speed (32) and maneuver (32)
+#         # The input size is updated to reflect the new conv layer's output channels (512)
 #         self.fc = nn.Sequential(
-#             nn.Linear(256 * 4 * 4 + 32 + 32, 512),  # dodajemy +32 z manewru
+#             nn.Linear(512 * 4 * 4 + 32 + 32, 512),
 #             nn.ReLU(),
 #             nn.Dropout(0.3),
-#             nn.Linear(512, actor_shape)
+            
+#             # --- ADDED LINEAR LAYER ---
+#             nn.Linear(512, 256),
+#             nn.ReLU(),
+#             # --------------------------
+
+#             nn.Linear(256, actor_shape)
 #         )
 
 #     def forward(self, x, speed=None, manouver=None):
-#         # Normalizacja obrazu oraz przetwarzanie przez CNN
-#         x = x.to(self.device, dtype=torch.float32) / 255.0
+#         # Normalize the image and process through CNN
+#         # x = x.to(self.device, dtype=torch.float32) / 255.0
+#         x = x.to(self.device, dtype=torch.float32)
+
 #         cnn_features = self.cnn(x)
-#         cnn_features = cnn_features.view(x.size(0), -1)  # Flatten
+#         cnn_features = cnn_features.view(cnn_features.size(0), -1)  # Flatten
         
-#         # Obsługa speed: jeśli brak, ustawiamy tensor zerowy
+#         # Handle speed: if none, set to a zero tensor
 #         if speed is None:
 #             speed = torch.zeros((x.size(0), 1), device=self.device)
 #         else:
 #             speed = speed.to(self.device, dtype=torch.float32)
 #             if speed.dim() == 1:
-#                 speed = speed.unsqueeze(1)  # Upewnij się, że kształt to [B, 1]
+#                 speed = speed.unsqueeze(1)  # Ensure shape is [B, 1]
         
 #         speed_features = self.speed_fc(speed)
 
+#         # One-hot encode the maneuver
 #         manouver = F.one_hot(manouver, num_classes=3).float().to(self.device)
 #         manouver_features = self.manouver_fc(manouver)
         
-#         # Łączenie cech obrazu z cechami prędkości
-#         # combined = torch.cat([cnn_features, speed_features], dim=1)
+#         # Combine image, speed, and maneuver features
 #         combined = torch.cat([cnn_features, speed_features, manouver_features], dim=1)
 
 #         logits = self.fc(combined)
 #         return logits
-
+    
+    
 # import torch
 # import torch.nn as nn
 # import torch.nn.functional as F
 
 # class Critic(nn.Module):
-#     def __init__(self, input_shape, actor_shape, device=torch.device("cuda")):
+#     def __init__(self, input_shape, actor_shape, device=torch.device("cpu")):
 #         super(Critic, self).__init__()
 #         self.device = device
 
@@ -501,65 +118,120 @@ import torch
 #             nn.BatchNorm2d(256),
 #             nn.ReLU(),
 
-#             nn.AdaptiveAvgPool2d((4, 4))  # Spłaszcza do 4x4 niezależnie od wejścia
+#             # --- ADDED CONV LAYER ---
+#             nn.Conv2d(256, 512, kernel_size=3, stride=1, padding=1),
+#             nn.BatchNorm2d(512),
+#             nn.ReLU(),
+#             # ------------------------
+
+#             nn.AdaptiveAvgPool2d((4, 4))  # Flattens to 4x4 regardless of input
 #         )
         
-#         # Gałąź do przetwarzania prędkości
+#         # Branch for processing speed - expects a tensor of shape [B, 1]
 #         self.speed_fc = nn.Sequential(
 #             nn.Linear(1, 32),
 #             nn.ReLU()
 #         )
 
+#         # Branch for processing maneuver
 #         self.manouver_fc = nn.Sequential(
-#             nn.Linear(3, 32),  # zakładamy 4 możliwe manewry
+#             nn.Linear(3, 32),  # Assuming 3 possible maneuvers
 #             nn.ReLU()
 #         )
-#         # Łączymy wyjście z CNN z informacją o prędkości.
+        
+#         # We combine the output from CNN (flattened to 512*4*4) with processed speed (32) and maneuver (32)
+#         # The input size is updated to reflect the new conv layer's output channels (512)
 #         self.fc = nn.Sequential(
-#             nn.Linear(256 * 4 * 4 + 32 + 32, 512),  # dodajemy +32 z manewru
+#             nn.Linear(512 * 4 * 4 + 32 + 32, 512),
 #             nn.ReLU(),
 #             nn.Dropout(0.3),
-#             nn.Linear(512, actor_shape)
+            
+#             # --- ADDED LINEAR LAYER ---
+#             nn.Linear(512, 256),
+#             nn.ReLU(),
+#             # --------------------------
+
+#             nn.Linear(256, actor_shape)
 #         )
 
 #     def forward(self, x, speed=None, manouver=None):
-#         # Przetwarzanie obrazu oraz normalizacja
-#         x = x.to(self.device, dtype=torch.float32) / 255.0
-#         cnn_features = self.cnn(x)
-#         cnn_features = cnn_features.view(x.size(0), -1)
+#         # Normalize the image and process through CNN
+#         # x = x.to(self.device, dtype=torch.float32) / 255.0
+#         x = x.to(self.device, dtype=torch.float32)
+
         
-#         # Obsługa wejścia dla prędkości
+#         cnn_features = self.cnn(x)
+#         cnn_features = cnn_features.view(x.size(0), -1)  # Flatten
+        
+#         # Handle speed: if none, set to a zero tensor
 #         if speed is None:
 #             speed = torch.zeros((x.size(0), 1), device=self.device)
 #         else:
 #             speed = speed.to(self.device, dtype=torch.float32)
 #             if speed.dim() == 1:
-#                 speed = speed.unsqueeze(1)
+#                 speed = speed.unsqueeze(1)  # Ensure shape is [B, 1]
         
 #         speed_features = self.speed_fc(speed)
+
+#         # One-hot encode the maneuver
 #         manouver = F.one_hot(manouver, num_classes=3).float().to(self.device)
-#         manouver_features = self.manouver_fc(manouver)  
+#         manouver_features = self.manouver_fc(manouver)
         
-#         # Połączenie cech obrazu z cechami prędkości
-#         # combined = torch.cat([cnn_features, speed_features], dim=1)
+#         # Combine image, speed, and maneuver features
 #         combined = torch.cat([cnn_features, speed_features, manouver_features], dim=1)
 
 #         logits = self.fc(combined)
 #         return logits
     
-########################################### MODEL BASE i plus jeden conv i jeden linear
+
+"""
+ActorCritic – wspólny trunk CNN dla aktora i krytyka.
+
+Zastępuje oddzielne klasy DiscreteActor i Critic z nets/a2c.py.
+Architektura jest identyczna jak oryginalna (te same warstwy, te same rozmiary),
+ale CNN, speed_fc i manouver_fc są współdzielone – forward pass przez CNN
+wykonywany jest tylko RAZ na krok.
+
+Użycie (zamiennik dla a3c_improved_1.py):
+    # zamiast:
+    #   self.actor  = DeepDiscreteActor(state_shape, action_shape, device)
+    #   self.critic = DeepCritic(state_shape, critic_shape, device)
+    # piszemy:
+    self.model = ActorCritic(state_shape, action_shape, device=device)
+
+    # forward:
+    logits, value = self.model(obs, speed, manouver)
+"""
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-class DiscreteActor(nn.Module):
-    def __init__(self, input_shape, actor_shape, device=torch.device("cpu")):
-        super(DiscreteActor, self).__init__()
-        self.device = device
 
+class ActorCritic(nn.Module):
+    """
+    Shared-trunk actor-critic.
+
+    Parametry
+    ---------
+    input_shape  : [H, W, C]  – np. [250, 250, 3]
+    action_shape : int        – liczba dyskretnych akcji
+    critic_shape : int        – zwykle 1 (skalarna wartość stanu)
+    device       : torch.device lub str
+    num_maneuvers: int        – liczba możliwych manewrów (domyślnie 3)
+    """
+
+    def __init__(self, input_shape, action_shape, critic_shape=1,
+                 device=torch.device("cpu"), num_maneuvers=3):
+        super().__init__()
+        self.device = torch.device(device)
+        in_channels = int(input_shape[2])
+
+        # ------------------------------------------------------------------ #
+        #  Wspólny trunk  (identyczny z oryginalnym CNN w DiscreteActor/Critic)
+        # ------------------------------------------------------------------ #
         self.cnn = nn.Sequential(
-            nn.Conv2d(input_shape[2], 32, kernel_size=3, stride=1, padding=1),
+            nn.Conv2d(in_channels, 32, kernel_size=3, stride=1, padding=1),
             nn.BatchNorm2d(32),
             nn.ReLU(),
 
@@ -575,159 +247,89 @@ class DiscreteActor(nn.Module):
             nn.BatchNorm2d(256),
             nn.ReLU(),
 
-            # --- ADDED CONV LAYER ---
             nn.Conv2d(256, 512, kernel_size=3, stride=1, padding=1),
             nn.BatchNorm2d(512),
             nn.ReLU(),
-            # ------------------------
 
-            nn.AdaptiveAvgPool2d((4, 4))  # Flattens to 4x4 regardless of input
+            nn.AdaptiveAvgPool2d((4, 4)),   # → [B, 512, 4, 4]
         )
-        
-        # Branch for processing speed - expects a tensor of shape [B, 1]
+
         self.speed_fc = nn.Sequential(
             nn.Linear(1, 32),
-            nn.ReLU()
+            nn.ReLU(),
         )
 
-        # Branch for processing maneuver
         self.manouver_fc = nn.Sequential(
-            nn.Linear(3, 32),  # Assuming 3 possible maneuvers
-            nn.ReLU()
+            nn.Linear(num_maneuvers, 32),
+            nn.ReLU(),
         )
-        
-        # We combine the output from CNN (flattened to 512*4*4) with processed speed (32) and maneuver (32)
-        # The input size is updated to reflect the new conv layer's output channels (512)
-        self.fc = nn.Sequential(
-            nn.Linear(512 * 4 * 4 + 32 + 32, 512),
+
+        # Wspólna warstwa przetwarzająca połączone cechy
+        trunk_out = 512 * 4 * 4 + 32 + 32   # 8256
+        self.trunk = nn.Sequential(
+            nn.Linear(trunk_out, 512),
             nn.ReLU(),
             nn.Dropout(0.3),
-            
-            # --- ADDED LINEAR LAYER ---
+
             nn.Linear(512, 256),
             nn.ReLU(),
-            # --------------------------
-
-            nn.Linear(256, actor_shape)
         )
 
+        # ------------------------------------------------------------------ #
+        #  Oddzielne głowice
+        # ------------------------------------------------------------------ #
+        self.policy_head = nn.Linear(256, action_shape)   # logity akcji
+        self.value_head  = nn.Linear(256, critic_shape)   # V(s)
+
+        self.num_maneuvers = num_maneuvers
+
+    # ---------------------------------------------------------------------- #
+
     def forward(self, x, speed=None, manouver=None):
-        # Normalize the image and process through CNN
-        # x = x.to(self.device, dtype=torch.float32) / 255.0
+        """
+        Zwraca (logits, value) w jednym forward passie.
+
+        x        : [B, H, W, C] lub [B, C, H, W] – float32, znormalizowane
+        speed    : [B, 1] lub [B] lub None
+        manouver : [B] LongTensor (indeksy manewrów) lub None
+        """
         x = x.to(self.device, dtype=torch.float32)
 
-        cnn_features = self.cnn(x)
-        cnn_features = cnn_features.view(cnn_features.size(0), -1)  # Flatten
-        
-        # Handle speed: if none, set to a zero tensor
+        # Obsługa układu kanałów: [B, H, W, C] → [B, C, H, W]
+        if x.dim() == 4 and x.shape[1] != self.cnn[0].in_channels:
+            x = x.permute(0, 3, 1, 2).contiguous()
+
+        # CNN trunk – JEDEN forward pass
+        cnn_out = self.cnn(x).flatten(1)   # [B, 512*4*4]
+
+        # Speed
         if speed is None:
             speed = torch.zeros((x.size(0), 1), device=self.device)
         else:
             speed = speed.to(self.device, dtype=torch.float32)
             if speed.dim() == 1:
-                speed = speed.unsqueeze(1)  # Ensure shape is [B, 1]
-        
-        speed_features = self.speed_fc(speed)
+                speed = speed.unsqueeze(1)
+            elif speed.shape[1] != 1:
+                speed = speed[:, :1]
+        speed_feat = self.speed_fc(speed)   # [B, 32]
 
-        # One-hot encode the maneuver
-        manouver = F.one_hot(manouver, num_classes=3).float().to(self.device)
-        manouver_features = self.manouver_fc(manouver)
-        
-        # Combine image, speed, and maneuver features
-        combined = torch.cat([cnn_features, speed_features, manouver_features], dim=1)
-
-        logits = self.fc(combined)
-        return logits
-    
-    
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-
-class Critic(nn.Module):
-    def __init__(self, input_shape, actor_shape, device=torch.device("cpu")):
-        super(Critic, self).__init__()
-        self.device = device
-
-        self.cnn = nn.Sequential(
-            nn.Conv2d(input_shape[2], 32, kernel_size=3, stride=1, padding=1),
-            nn.BatchNorm2d(32),
-            nn.ReLU(),
-
-            nn.Conv2d(32, 64, kernel_size=3, stride=2, padding=1),
-            nn.BatchNorm2d(64),
-            nn.ReLU(),
-
-            nn.Conv2d(64, 128, kernel_size=3, stride=2, padding=1),
-            nn.BatchNorm2d(128),
-            nn.ReLU(),
-
-            nn.Conv2d(128, 256, kernel_size=3, stride=2, padding=1),
-            nn.BatchNorm2d(256),
-            nn.ReLU(),
-
-            # --- ADDED CONV LAYER ---
-            nn.Conv2d(256, 512, kernel_size=3, stride=1, padding=1),
-            nn.BatchNorm2d(512),
-            nn.ReLU(),
-            # ------------------------
-
-            nn.AdaptiveAvgPool2d((4, 4))  # Flattens to 4x4 regardless of input
-        )
-        
-        # Branch for processing speed - expects a tensor of shape [B, 1]
-        self.speed_fc = nn.Sequential(
-            nn.Linear(1, 32),
-            nn.ReLU()
-        )
-
-        # Branch for processing maneuver
-        self.manouver_fc = nn.Sequential(
-            nn.Linear(3, 32),  # Assuming 3 possible maneuvers
-            nn.ReLU()
-        )
-        
-        # We combine the output from CNN (flattened to 512*4*4) with processed speed (32) and maneuver (32)
-        # The input size is updated to reflect the new conv layer's output channels (512)
-        self.fc = nn.Sequential(
-            nn.Linear(512 * 4 * 4 + 32 + 32, 512),
-            nn.ReLU(),
-            nn.Dropout(0.3),
-            
-            # --- ADDED LINEAR LAYER ---
-            nn.Linear(512, 256),
-            nn.ReLU(),
-            # --------------------------
-
-            nn.Linear(256, actor_shape)
-        )
-
-    def forward(self, x, speed=None, manouver=None):
-        # Normalize the image and process through CNN
-        # x = x.to(self.device, dtype=torch.float32) / 255.0
-        x = x.to(self.device, dtype=torch.float32)
-
-        
-        cnn_features = self.cnn(x)
-        cnn_features = cnn_features.view(x.size(0), -1)  # Flatten
-        
-        # Handle speed: if none, set to a zero tensor
-        if speed is None:
-            speed = torch.zeros((x.size(0), 1), device=self.device)
+        # Manewry – one-hot
+        if manouver is None:
+            manouver = torch.ones(x.size(0), dtype=torch.long,
+                                  device=self.device)
         else:
-            speed = speed.to(self.device, dtype=torch.float32)
-            if speed.dim() == 1:
-                speed = speed.unsqueeze(1)  # Ensure shape is [B, 1]
-        
-        speed_features = self.speed_fc(speed)
+            manouver = manouver.to(self.device, dtype=torch.long).view(-1)
+        manouver = manouver.clamp(0, self.num_maneuvers - 1)
+        manouver_oh = F.one_hot(manouver,
+                                num_classes=self.num_maneuvers).float()
+        manouver_feat = self.manouver_fc(manouver_oh)   # [B, 32]
 
-        # One-hot encode the maneuver
-        manouver = F.one_hot(manouver, num_classes=3).float().to(self.device)
-        manouver_features = self.manouver_fc(manouver)
-        
-        # Combine image, speed, and maneuver features
-        combined = torch.cat([cnn_features, speed_features, manouver_features], dim=1)
+        # Wspólny trunk FC
+        hidden = self.trunk(
+            torch.cat([cnn_out, speed_feat, manouver_feat], dim=1)
+        )   # [B, 256]
 
-        logits = self.fc(combined)
-        return logits
-    
+        logits = self.policy_head(hidden)   # [B, action_shape]
+        value  = self.value_head(hidden)    # [B, critic_shape]
+
+        return logits, value

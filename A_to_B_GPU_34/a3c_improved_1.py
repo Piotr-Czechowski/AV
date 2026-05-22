@@ -33,8 +33,8 @@ import settings
 from torch.distributions.categorical import Categorical
 
 from carla_env import CarlaEnv
-from nets.a2c import DiscreteActor as DeepDiscreteActor
-from nets.a2c import Critic as DeepCritic
+from nets.a2c import ActorCritic
+
 
 from ACTIONS import ACTIONS as ac
 try:
@@ -61,9 +61,9 @@ if torch.cuda.is_available():
 # global settings
 ACTION_TYPE = settings.ACTION_TYPE
 CAMERA_TYPE = settings.CAMERA_TYPE
-MODEL_LOAD_PATH = 'A_to_B_GPU_34/PC_models/currently_trained/carla_to_chainer_022_1w_new_reset.pth'
-MODEL_SAVE_PATH = 'A_to_B_GPU_34/PC_models/currently_trained/carla_to_chainer_022_1w_new_reset'
-EXP_ID = "carla_to_chainer_022_1w_new_reset.pth"
+MODEL_LOAD_PATH = 'A_to_B_GPU_34/PC_models/currently_trained/carla_to_chainer_023_1w_new_reset.pth'
+MODEL_SAVE_PATH = 'A_to_B_GPU_34/PC_models/currently_trained/carla_to_chainer_023_1w_new_reset'
+EXP_ID = "carla_to_chainer_023_1w_new_reset.pth"
 
 GAMMA = settings.GAMMA
 LR = settings.LR
@@ -217,30 +217,26 @@ def transfer_grads_to_shared(local_model, shared_model):
 ###########################################################################
 # Global network
 ###########################################################################
-
 class GlobalNetwork:
     """
     Global network in shared memory (CPU).
 
     Architecture:
-    - actor and critic on CPU with share_memory()
-    - SharedAdam with shared state
-    - No locks on weight updates (Hogwild!)
+    - single ActorCritic model on CPU with share_memory()
+    - one SharedAdam optimizer
+    - Hogwild! style updates (no locks on weight updates)
     """
 
     def __init__(self, state_shape, action_shape, critic_shape):
         self.device = torch.device('cpu')
 
-        # networks on CPU
-        self.actor = DeepDiscreteActor(state_shape, action_shape, 'cpu').to(self.device)
-        self.critic = DeepCritic(state_shape, critic_shape, 'cpu').to(self.device)
+        # jedna sieć zamiast dwóch
+        self.model = ActorCritic(state_shape, action_shape, critic_shape,
+                                 device='cpu').to(self.device)
+        self.model.share_memory()
 
-        # shared memory
-        self.actor.share_memory()
-        self.critic.share_memory()
-
-        # --- Preallocate shared grad buffers (do this once) ---
-        for p in self.actor.parameters():
+        # jeden zestaw shared grad buffers
+        for p in self.model.parameters():
             if p.grad is None:
                 p.grad = torch.zeros_like(p.data)
             else:
@@ -248,53 +244,40 @@ class GlobalNetwork:
                 p.grad.zero_()
             p.grad.share_memory_()
 
-        for p in self.critic.parameters():
-            if p.grad is None:
-                p.grad = torch.zeros_like(p.data)
-            else:
-                p.grad.detach_()
-                p.grad.zero_()
-            p.grad.share_memory_()
-# -----------------------------------------------------
+        # jeden optimizer
+        self.optimizer = SharedAdam(self.model.parameters(), lr=LR,
+                                    weight_decay=1e-2)
 
-        # optimizers with shared state
-        self.actor_optimizer = SharedAdam(self.actor.parameters(), lr=LR, weight_decay=1e-2)
-        self.critic_optimizer = SharedAdam(self.critic.parameters(), lr=LR, weight_decay=1e-2)
-
-        # shared statistics
+        # shared statistics (bez zmian)
         self.global_episode = mp.Value('i', 0)
         self.total_updates = mp.Value('i', 0)
-        self.global_steps = mp.Value('i', 0)  # total env steps across all workers
+        self.global_steps = mp.Value('i', 0)
         self.best_reward = mp.Value('d', -float('inf'))
         self.global_mean_reward = mp.Value('d', 0.0)
         self.worker_mean_rewards = mp.Array('d', [0.0] * NUM_WORKERS)
 
-        # locks only for stats and save/load
         self.stats_lock = mp.Lock()
         self.save_lock = mp.Lock()
+
         if settings.FILE_LOGGING:
             logger.info("=" * 80)
             logger.info("Global Network initialized")
-            logger.info("Actor params: %d | Critic params: %d",
-                    sum(p.numel() for p in self.actor.parameters()),
-                    sum(p.numel() for p in self.critic.parameters()))
+            logger.info("ActorCritic params: %d",
+                    sum(p.numel() for p in self.model.parameters()))
             logger.info("Optimizer: SharedAdam | LR: %.6f | T_MAX: %d | Workers: %d",
                     LR, T_MAX, NUM_WORKERS)
             logger.info("=" * 80)
 
     def save(self, path):
-        """Save global network and optimizer state"""
         with self.save_lock:
             state = {
-                "actor": self.actor.state_dict(),
-                "actor_optimizer": self.actor_optimizer.state_dict(),
-                "critic": self.critic.state_dict(),
-                "critic_optimizer": self.critic_optimizer.state_dict(),
+                "model": self.model.state_dict(),
+                "optimizer": self.optimizer.state_dict(),
                 "global_mean_reward": self.global_mean_reward.value,
                 "best_reward": self.best_reward.value,
                 "global_episode": self.global_episode.value,
                 "total_updates": self.total_updates.value,
-                "global_steps": self.global_steps.value, 
+                "global_steps": self.global_steps.value,
             }
             torch.save(state, path + ".pth")
             if settings.FILE_LOGGING:
@@ -304,20 +287,16 @@ class GlobalNetwork:
                         self.best_reward.value, self.global_mean_reward.value)
 
     def load(self, path):
-        """Load global network and optimizer state"""
         state = torch.load(path, map_location=self.device)
-
         with self.save_lock:
-            self.actor.load_state_dict(state["actor"])
-            self.critic.load_state_dict(state["critic"])
-            self.actor_optimizer.load_state_dict(state["actor_optimizer"])
-            self.critic_optimizer.load_state_dict(state["critic_optimizer"])
+            self.model.load_state_dict(state["model"])
+            self.optimizer.load_state_dict(state["optimizer"])
 
             self.global_mean_reward.value = state.get("global_mean_reward", 0.0)
             self.best_reward.value = state.get("best_reward", -float('inf'))
             self.global_episode.value = state.get("global_episode", 0)
             self.total_updates.value = state.get("total_updates", 0)
-            self.global_steps.value = state.get("global_steps", 0)    # <-- ZMIANA 2
+            self.global_steps.value = state.get("global_steps", 0)
 
             if settings.FILE_LOGGING:
                 logger.info("Model loaded | Ep: %d | Updates: %d | GSteps: %d | Best: %.1f | Mean: %.1f",
@@ -325,7 +304,8 @@ class GlobalNetwork:
                         self.global_steps.value,
                         self.best_reward.value, self.global_mean_reward.value)
 
-                
+    # update_stats, increment_episode, increment_updates — bez zmian
+         
     def update_stats(self, worker_id, mean_reward, episode_reward, episode_length):
         is_new_best = False
         with self.stats_lock:
@@ -390,8 +370,7 @@ class A3CWorker(mp.Process):
         self.episode_rewards_history = []
 
         # networks (initialized in run() after fork)
-        self.actor = None
-        self.critic = None
+        self.model = None
 
         self._initialized = False
         if settings.FILE_LOGGING:
@@ -407,8 +386,8 @@ class A3CWorker(mp.Process):
         critic_shape = 1
         action_shape = len(ac.ACTIONS_NAMES)
 
-        self.actor = DeepDiscreteActor(state_shape, action_shape, self.device).to(self.device)
-        self.critic = DeepCritic(state_shape, critic_shape, self.device).to(self.device)
+        self.model = ActorCritic(state_shape, action_shape, critic_shape, device=self.device).to(self.device)
+
 
         self.sync_with_global()
         self._initialized = True
@@ -417,13 +396,17 @@ class A3CWorker(mp.Process):
 
     def sync_with_global(self):
         """Copy weights from global network (CPU) to local network (GPU)"""
-        self.actor.load_state_dict(self.global_network.actor.state_dict())
-        self.critic.load_state_dict(self.global_network.critic.state_dict())
+        # BUG 2 FIX: sync przez self.model zamiast self.actor/self.critic
+        for global_p, local_p in zip(self.global_network.model.parameters(),
+                                    self.model.parameters()):
+            local_p.data.copy_(global_p.data.to(self.device, non_blocking=True))
+        if self.device.type == 'cuda':
+            torch.cuda.synchronize(self.device)
 
     def get_action(self, obs, speed, manouver, testing=False):
         """Get action from policy"""
-        logits = self.actor(obs, speed, manouver)
-        value = self.critic(obs, speed, manouver)
+        logits, value = self.model(obs, speed, manouver)
+
 
         distribution = Categorical(logits=logits)
         self.action_distribution = distribution
@@ -462,7 +445,7 @@ class A3CWorker(mp.Process):
             if done:
                 R = torch.zeros(1, 1, device=self.device)
             else:
-                R = self.critic(final_state, final_speed, manouver)
+                _, R = self.model(final_state, final_speed, manouver)
 
         for reward in reversed(self.rewards):
             R = reward + self.gamma * R
@@ -486,24 +469,11 @@ class A3CWorker(mp.Process):
             actor_loss = actor_loss - self.action_distribution.entropy().mean()
         critic_loss = torch.stack(critic_losses).mean()
  
-        # dwa osobne backward()
-        self.actor.zero_grad()
-        actor_loss.backward(retain_graph=True)
- 
-        self.critic.zero_grad()
-        critic_loss.backward()
-
-        # gradient clipping (GPU)
-        # torch.nn.utils.clip_grad_norm_(self.actor.parameters(), MAX_GRAD_NORM)
-        # torch.nn.utils.clip_grad_norm_(self.critic.parameters(), MAX_GRAD_NORM)
-
-        # transfer gradients GPU->CPU
-        transfer_grads_to_shared(self.actor, self.global_network.actor)
-        transfer_grads_to_shared(self.critic, self.global_network.critic)
-
-        # optimizer step (CPU, shared memory)
-        self.global_network.actor_optimizer.step()
-        self.global_network.critic_optimizer.step()
+        total_loss = actor_loss + VALUE_LOSS_COEF * critic_loss
+        self.model.zero_grad()
+        total_loss.backward()          # brak retain_graph
+        transfer_grads_to_shared(self.model, self.global_network.model)
+        self.global_network.optimizer.step()
 
         self.global_network.increment_updates()
         self.local_updates += 1
