@@ -278,8 +278,9 @@ class GlobalNetwork:
         self.last_checkpoint_boundary = mp.Value('l', 0)
         self.best_reward = mp.Value('d', -float('inf'))
         self.global_mean_reward = mp.Value('d', 0.0)
+        self._reward_buf_size = config.num_workers * 100
         self.worker_mean_rewards = mp.Array('d', [0.0] * config.num_workers)
-        self.recent_rewards = mp.Array('d', [0.0] * 100)
+        self.recent_rewards = mp.Array('d', [0.0] * self._reward_buf_size)
         self.recent_reward_count = mp.Value('l', 0)
         self.recent_reward_index = mp.Value('l', 0)
 
@@ -307,11 +308,11 @@ class GlobalNetwork:
                 self.best_reward.value = episode_reward
                 is_new_best = True
             self.worker_mean_rewards[worker_id] = mean_reward
-            idx = self.recent_reward_index.value % 100
+            idx = self.recent_reward_index.value % self._reward_buf_size
             self.recent_rewards[idx] = float(episode_reward)
             self.recent_reward_index.value += 1
             self.recent_reward_count.value = min(
-                100, self.recent_reward_count.value + 1)
+                self._reward_buf_size, self.recent_reward_count.value + 1)
             recent = self.recent_rewards[:self.recent_reward_count.value]
             if recent:
                 self.global_mean_reward.value = sum(recent) / len(recent)
@@ -463,7 +464,7 @@ class GlobalNetwork:
                 if i < len(self.recent_rewards):
                     self.recent_rewards[i] = float(value)
             self.recent_reward_count.value = min(
-                100, int(state.get('recent_reward_count', 0)))
+                self._reward_buf_size, int(state.get('recent_reward_count', 0)))
             self.recent_reward_index.value = int(
                 state.get('recent_reward_index', 0))
 

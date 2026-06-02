@@ -76,7 +76,7 @@ MAP_POINTS_SC13 = [
 MAP_POINTS_SC14 = [ 
                     # (28, 154), (49, 132), (83, 225), (77, 200), (54, 235),
                     (28, 155), (49, 129), (83, 89), (77,98), (54,234) 
-                ] #right/straight
+                ] #straight/right
 MAP_POINTS_SC15 = [(78, 76), (78, 92), (71, 131), (71, 130), (238, 130),(37, 161), (43, 89),(43,222), (204, 67), (204, 162) ] #left/straight
 TESTING_SC = [(28, 154)]
 def start_carla_server(args):
@@ -165,7 +165,7 @@ class CarlaEnv:
         # self.transform = carla.Transform(carla.Location(x=2.5, z=0.7))
         self.transform = carla.Transform(
             carla.Location(x=0.3, z=2.5),  # Kamera lekko z przodu, na wysokości ~oczu
-            carla.Rotation(pitch=-10, yaw=25)      # Pochylona w dół o 10 stopni
+            carla.Rotation(pitch=-10, yaw=0)      # Pochylona w dół o 10 stopni
             # carla.Rotation(pitch=-10) 
         )
 
