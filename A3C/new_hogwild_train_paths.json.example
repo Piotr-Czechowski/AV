@@ -1,0 +1,8 @@
+{
+  "VENV": "/net/tscratch/people/plgpczechow/venvs/carla_env",
+  "PROJECT_DIR": "/net/tscratch/people/plgpczechow/AV/A3C",
+  "MULTISERVER_SCRIPT": "/net/tscratch/people/plgpczechow/carla_athena/carla_athena_multiserver_v3_hogwild.py",
+  "WANDB_PROJECT": "A_to_B",
+  "WANDB_RUN_NAME": null,
+  "WANDB_ENTITY": null
+}
