@@ -1,59 +1,42 @@
-The goal of this venture is to develop models capable of completing a variety of autonomous tasks within the Carla simulator using reinforcement learning methods. The repository is divided into two distinct projects which are still being developed.
+# AV - Autonomous Driving Research
 
-# A to B
-Autonomous ride from point A to B.
-Trained models (see A_to_B/final_models) are able to correctly perform fundamental road manoeuvres such as driving straight, turning left and right.
-Using this knowledge, the models can learn how to beat different scenarios in a reasonable amount of time, depending on the scenario's complexity.
+This repository contains experimental autonomous driving work in the CARLA simulator.
+The main focus areas are "A to B" and "Chase" using reinforcement learning and A3C-style training.
 
-Examples of some fundamental road manoeuvres:
-<p align="left">
-  <img src="Gif/a_b/sc1/scenario1.gif" width="400"/>
-  <img src="Gif/a_b/sc3/scenario3.gif" width="400"/>
-  <img src="Gif/a_b/sc4/scenario4.gif" width="400"/>
-  <img src="Gif/a_b/sc5/scenario5.gif" width="400"/>
-</p>
+## Folder `A3C`
 
-Example of a more challenging scenario:
-<p align="centre">
-  <img src="Gif/a_b/sc7/scenario7.gif" width="400"/>
-</p>
+The `A3C` folder contains an accelerated A3C training implementation for CARLA.
+It includes:
+- `new_hogwild_train_a3c_carla.py` — main PyTorch A3C training script,
+- `new_hogwild_a3c.py` — A3C algorithm with parallel workers,
+- `new_hogwild_carla_wrapper.py` — CARLA environment wrapper,
+- `new_hogwild_run_a3c.py` — worker orchestration, supervision, and restart logic,
+- `new_hogwild_training_logger.py` and `new_hogwild_system_monitor.py` — structured logging and monitoring,
+- `new_hogwild_prepare_output_dir.py` and `new_hogwild_train.slurm` — output preparation and HPC job support.
 
-# Chase
-Autonomous chase of a fleeing vehicle.
-This project followed a similar approach to learning. However, autonomous chasing proved to be more challenging than getting from point A to point B, and work on training a satisfactory model continues.
+Key acceleration features in `A3C`:
+- multi-process Hogwild-style training,
+- shared actor-critic model with shared RMSprop optimizer,
+- active gradient clipping, NaN protection, and improved logging,
+- separation of CARLA logic from training loops for better modularity,
+- SLURM/cluster support with automatic CARLA server startup and cleanup.
 
-Examples of some fundamental chase manoeuvres:
-<p align="left">
-  <img src="Gif/chase/sc1/scenario1.gif" width="400"/>
-  <img src="Gif/chase/sc3/scenario3.gif" width="400"/>
-  <img src="Gif/chase/sc5/scenario5.gif" width="400"/>
-</p>
+## Repository structure
 
-## How to run?
-1. Provide the paths to the Carla executable and egg files in the file *settings.py*,
-2. Run *a2c_rgb.py* file.
+- `A3C/` — main accelerated A3C implementation and supporting tools,
+- `A_to_B_GPU_34/` — earlier A3C versions for the A-to-B task,
+- `Gif/` — visual examples of driving and chase scenarios,
+- `comparison.md` — comparison of different A3C implementations in the repository.
+
+## How to use
+
+1. Configure the CARLA executable and `.egg` paths in `A3C/settings.py`.
+2. Run the appropriate training script from `A3C/`.
+3. For cluster use, launch `A3C/new_hogwild_train.slurm` or prepare the output directory with `A3C/new_hogwild_prepare_output_dir.py`.
 
 ## Requirements
-* Python 3.7.x
-* Pipenv
-* Git
-* Carla 0.9.10
 
-The pipfile contains a list of all essential project packages. For information on how to install these, see the [setup](#setup) section.
-If you wish to use a GPU with Pytorch, you'll need a device that supports CUDA.
-
-## Setup
-1. Install git, python and pipenv
-2. Clone this repository and navigate to its root directory
-```bash
-git clone https://github.com/Michal-Kolomanski/Autonomous-driving-in-Carla
-```
-3. Install all required project packages by executing
-```bash
-pipenv install --dev
-```
-
-4. To open project virtual environment shell, type:
-```bash
-pipenv shell
-```
+- Python 3.x
+- PyTorch with optional CUDA support for GPU
+- CARLA 0.9.x
+- required packages are listed in `requirements.txt` and `Pipfile`

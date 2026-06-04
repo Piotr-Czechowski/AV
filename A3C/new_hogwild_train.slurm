@@ -12,8 +12,9 @@
 #SBATCH --error=new-hogwild-a3c-carla-log-%J.txt
 #SBATCH --signal=SIGUSR1@90
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CONFIG_FILE="${SCRIPT_DIR}/new_hogwild_train_paths.json"
+PROJECT_DIR="/net/tscratch/people/plgpczechow/AV/A3C"
+CONFIG_FILE="${PROJECT_DIR}/new_hogwild_train_paths.json"
+export CONFIG_FILE
 if [[ -f "${CONFIG_FILE}" ]]; then
     if command -v python3 >/dev/null 2>&1; then
         PYTHON_CMD=python3
