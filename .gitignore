@@ -146,3 +146,12 @@ env/
 wandb/
 # Ignore specific Weights & Biases files
 *.wandb
+
+# Ignore local A3C path config
+A3C/new_hogwild_train_paths.json
+
+# PyTorch model files
+*.pth
+
+# All log files
+*.log
