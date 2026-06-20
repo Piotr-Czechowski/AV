@@ -149,6 +149,7 @@ wandb/
 
 # Ignore local A3C path config
 A3C/new_hogwild_train_paths.json
+A_to_B_GPU_34/a3c_improved_train_paths.json
 
 # PyTorch model files
 *.pth
