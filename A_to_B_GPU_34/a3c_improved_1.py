@@ -16,6 +16,7 @@ Performance optimizations:
 """
 
 import glob
+import uuid
 import time
 import numpy as np
 import os
@@ -30,6 +31,7 @@ import torch
 import torch.nn.functional as F
 import torch.multiprocessing as mp
 import settings
+import argparse
 from torch.distributions.categorical import Categorical
 
 from carla_env import CarlaEnv
@@ -51,8 +53,29 @@ FILE_LOGGING = settings.FILE_LOGGING # zapis do pliku logu
 # Configuration
 ###########################################################################
 
+
+def parse_args():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--num-workers", type=int, default = 1)
+    parser.add_argument("--workers-per-gpu", type=int, default = 2)
+    parser.add_argument("--worker-gpu-start", type=int, default = 0)
+    parser.add_argument("--start-port", type=int, default = 2000)
+    parser.add_argument("--port-step", type=int, default = 100)
+    parser.add_argument("--seed", type=int, default = 52)
+    parser.add_argument('--scenario', type=int, nargs='+', default=[14])
+    parser.add_argument("--outdir", type=str, default='.')
+    parser.add_argument("--resume", action="store_true")    #Only resumes the current model, not the wandb logging nor the parameters
+    parser.add_argument("--testing", action="store_true")   
+    parser.add_argument("--wandb-name", type=str, default="no-name")
+
+
+    return parser.parse_args()
+
+ARGS = parse_args()
+
+
 # use same seed
-SEED = 52
+SEED = ARGS.seed
 torch.manual_seed(SEED)
 np.random.seed(SEED)
 if torch.cuda.is_available():
@@ -61,23 +84,21 @@ if torch.cuda.is_available():
 # global settings
 ACTION_TYPE = settings.ACTION_TYPE
 CAMERA_TYPE = settings.CAMERA_TYPE
-MODEL_LOAD_PATH = 'A_to_B_GPU_34/PC_models/currently_trained/carla_to_chainer_013_13_12w_10u_10s_profiled.pth'
-MODEL_SAVE_PATH = 'A_to_B_GPU_34/PC_models/currently_trained/carla_to_chainer_013_13_12w_10u_10s_profiled'
-EXP_ID = "carla_to_chainer_013_13_12w_10u_10s_profiled_continued_3.pth"
+
 
 GAMMA = settings.GAMMA
 LR = settings.LR
 USE_ENTROPY = settings.USE_ENTROPY
-SCENARIO = settings.SCENARIO
+SCENARIO = ARGS.scenario
 TESTING = settings.TESTING
 
 # A3C specific settings
-NUM_WORKERS = 12
-NUMBER_OF_SERVERS_PER_GPU = 2
+NUM_WORKERS = ARGS.num_workers
+NUMBER_OF_SERVERS_PER_GPU = ARGS.workers_per_gpu
 n_gpus = torch.cuda.device_count()
 WORKER_GPUS = ([f'cuda:{g}' for g in range(n_gpus) for _ in range(NUMBER_OF_SERVERS_PER_GPU)])[:NUM_WORKERS]
 print(f'!!!!!!!!!!    WORKER_GPUS {WORKER_GPUS}')
-BASE_PORT = settings.PORT
+BASE_PORT = ARGS.start_port
 
 # Training parameters
 T_MAX = 10
@@ -98,15 +119,15 @@ LOG_FILE = 'log.csv'
 Transition = namedtuple("Transition", ["s", "value_s", "a", "log_prob_a"])
 
 
-def wandb_logger_process(log_queue, shutdown_event):
+def wandb_logger_process(log_queue, shutdown_event, wandb_id):
     if not LOGGING or not WANDB_AVAILABLE:
         return
     os.environ['WANDB_INSECURE_DISABLE_SSL'] = 'true'
     wandb.init(
         project="A_to_B",
-        name="synchr_test3_11",
+        name=ARGS.wandb_name,
         resume="allow",
-        id=EXP_ID,
+        id=wandb_id,
         config={
             "learning_rate": LR,
             "num_workers": NUM_WORKERS,
@@ -890,6 +911,20 @@ if __name__ == "__main__":
                 'global_mean', 'length', 'total_steps', 'total_updates',
                 'global_step', 'distance_from_target'                      # <-- ZMIANA 5
             ])
+    
+    wandb_id = None
+    wandb_id_file = os.path.join(ARGS.outdir , "wandb_run_id.txt")
+    if ARGS.resume and os.path.exists(wandb_id_file):
+        with open(wandb_id_file, "r") as f:
+            wandb_id = f.read().strip()
+
+    else:
+        wandb_id = uuid.uuid4().hex[:8]
+        try:
+            with open(wandb_id_file, "w") as f:
+                f.write(wandb_id)
+        except OSError:
+            pass
 
 
     mp.set_start_method('spawn')
@@ -914,18 +949,31 @@ if __name__ == "__main__":
     global_network = GlobalNetwork(state_shape, action_shape, critic_shape)
 
     # load existing model if available
-    if os.path.isfile(MODEL_LOAD_PATH):
-        global_network.load(MODEL_LOAD_PATH)
-    else:
-        if settings.FILE_LOGGING:
-            logger.info("Starting training from scratch")
+    if ARGS.resume:
+        # try to find latest checkpoint
+        pth_files = sorted(
+            glob.glob(os.path.join(ARGS.outdir, "*.pth")),
+            key=os.path.getmtime
+        )
+
+        if len(pth_files) > 0:
+            checkpoint_path = pth_files[-1]  # newest file
+            print(f"[RESUME] Loading checkpoint: {checkpoint_path}")
+
+            try:
+                global_network.load(checkpoint_path.replace(".pth", ""))
+            except Exception as e:
+                print(f"[RESUME] Failed to load checkpoint: {e}")
+        else:
+            print("[RESUME] No checkpoint found in outdir, starting fresh")
+
 
     # W&B logger
     logger_process = None
     if LOGGING and log_queue is not None and WANDB_AVAILABLE:
         logger_process = mp.Process(
             target=wandb_logger_process,
-            args=(log_queue, shutdown_event),
+            args=(log_queue, shutdown_event, wandb_id),
             name="WandBLogger"
         )
         logger_process.start()
