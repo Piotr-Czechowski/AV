@@ -29,8 +29,8 @@ DRAW = False
 
 """ 
 Specify scenario parameter or spawn_point and terminal_point parameters
-Scenario parameter: {1,2,3,4,5,6,7}
-1) Straight short lanewandb.log
+Scenario parameter: {1,2,3,4,5,6,7,8,10,11,12,13,14,15,16}
+1) Straight short lane
 2) Straight long lane
 3) Turn right
 4) Turn left
@@ -40,6 +40,12 @@ Scenario parameter: {1,2,3,4,5,6,7}
 8) Straight + Left + Straight + Right + Straight
 10) Random paths, based on set of carla points defined in carla_env.py
 11) Random choice between different sets of points, defined for specific manouvers (different turns on different junctions)
+12) Random selection from 43 predefined spawn/goal point pairs
+13) 5 left manouvers
+14) 10 routes (5 straight/5 right maneuvers)
+15) 10 routes (5 left/5 straight maneuvers)
+16) Testing scenario with single predefined route
+
 
 
 The whole list of scenarios can be specified with switch_scenario parameter indicating that

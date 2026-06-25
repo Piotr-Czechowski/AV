@@ -10,7 +10,7 @@ LR = 1e-4  # Learning rate
 USE_ENTROPY = True  # Entropy is a measure of chaos in a system
 # Using the measure of entropy it is easier to avoid getting stuck in a local optima
 # The name of the model which you want to load
-# LOAD_MODEL = 'A_to_B_GPU_34/final_models/a-b_sc7_rgb_discrete_gamma-0.9_lr-0.0001.pth'
+LOAD_MODEL = False
 # LOAD_MODEL_PC = 'A_to_B_GPU_34/final_models/PC_MODEL'
 # If you do not want to load anything keep it empty
 STEP_COUNTER = 200  # How many steps in one episode?
@@ -20,17 +20,17 @@ SHOW_CAM = False  # Vehicle's camera preview
 SERV_RESX = 640  # Server X resolution
 SERV_RESY = 480  # Server Y resolutio
 
-SCENARIO = [14]  # List of scenarios on which the model is trained
+SCENARIO = [10]  # List of scenarios on which the model is trained
 TESTING = False
 SPAWNING_TYPE = 1 # 0 - random, 1 - at the beginning, 2 - in 2 different places one by one
-LOGGING = True
+LOGGING = False
 FILE_LOGGING = False
-DRAW = False
+DRAW = True
 
 """ 
 Specify scenario parameter or spawn_point and terminal_point parameters
-Scenario parameter: {1,2,3,4,5,6,7}
-1) Straight short lanewandb.log
+Scenario parameter: {1,2,3,4,5,6,7,8,10,11,12,13,14,15,16}
+1) Straight short lane
 2) Straight long lane
 3) Turn right
 4) Turn left
@@ -40,6 +40,11 @@ Scenario parameter: {1,2,3,4,5,6,7}
 8) Straight + Left + Straight + Right + Straight
 10) Random paths, based on set of carla points defined in carla_env.py
 11) Random choice between different sets of points, defined for specific manouvers (different turns on different junctions)
+12) Random selection from 43 predefined spawn/goal point pairs
+13) 5 left manouvers
+14) 10 routes (5 straight/5 right maneuvers)
+15) 10 routes (5 left/5 straight maneuvers)
+16) Testing scenario with single predefined route
 
 
 The whole list of scenarios can be specified with switch_scenario parameter indicating that
