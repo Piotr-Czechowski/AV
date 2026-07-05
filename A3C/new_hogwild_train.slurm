@@ -12,7 +12,7 @@
 #SBATCH --error=new-hogwild-a3c-carla-log-%J.txt
 #SBATCH --signal=SIGUSR1@90
 
-PROJECT_DIR="/net/tscratch/people/plgpczechow/AV/A3C"
+PROJECT_DIR="/net/tscratch/people/plgbartoszkawa/AV/A3C"
 CONFIG_FILE="${PROJECT_DIR}/new_hogwild_train_paths.json"
 export CONFIG_FILE
 if [[ -f "${CONFIG_FILE}" ]]; then
