@@ -16,6 +16,8 @@ from datetime import datetime
 
 import psutil
 
+from new_hogwild_training_logger import build_record, normalize_for_json
+
 try:
     import pynvml
     pynvml.nvmlInit()
@@ -146,8 +148,12 @@ def _sample_worker(pid):
 
 
 class _BaseMonitor:
-    def __init__(self, log_path, interval):
+    def __init__(self, log_path, interval, session_id='legacy',
+                 global_step_getter=None, telemetry_callback=None):
         self.interval = interval
+        self.session_id = session_id
+        self.global_step_getter = global_step_getter
+        self.telemetry_callback = telemetry_callback
         self._stop_event = threading.Event()
         self._thread = None
 
@@ -162,8 +168,8 @@ class _BaseMonitor:
 
     def stop(self):
         self._stop_event.set()
-        if self._thread is not None:
-            self._thread.join(timeout=self.interval + 2)
+        if self._thread is not None and self._thread.is_alive():
+            self._thread.join()
         try:
             self._file.flush()
             self._file.close()
@@ -173,20 +179,36 @@ class _BaseMonitor:
     def _sample(self):
         raise NotImplementedError
 
+    def _collect_and_write(self):
+        local_record = self._sample()
+        local_record['ts'] = _ts()
+        local_record = normalize_for_json(local_record)
+        self._file.write(json.dumps(
+            local_record, allow_nan=False) + '\n')
+        if self.telemetry_callback is not None:
+            queued_data = dict(local_record)
+            if self.global_step_getter is not None:
+                try:
+                    queued_data['global_t'] = self.global_step_getter()
+                except (AttributeError, TypeError, ValueError, RuntimeError):
+                    pass
+            self.telemetry_callback(build_record(
+                'system', session_id=self.session_id,
+                worker_id=None, data=queued_data))
+        return local_record
+
     def _loop(self):
         sample_count = 0
         self._on_loop_start()
 
         while not self._stop_event.is_set():
             try:
-                log_record = self._sample()
-                log_record['ts'] = _ts()
-                self._file.write(json.dumps(log_record) + '\n')
+                self._collect_and_write()
             except Exception as e:
                 try:
-                    self._file.write(json.dumps({
+                    self._file.write(json.dumps(normalize_for_json({
                         'ts': _ts(), 'error': str(e),
-                    }) + '\n')
+                    }), allow_nan=False) + '\n')
                 except Exception:
                     pass
 
@@ -204,9 +226,13 @@ class _BaseMonitor:
 
 class RunMonitor(_BaseMonitor):
     def __init__(self, run_output_dir, interval=10.0, track_carla=True,
-                 track_gpu=True):
+                 track_gpu=True, session_id='legacy',
+                 global_step_getter=None, telemetry_callback=None):
         log_path = os.path.join(run_output_dir, 'logs', 'system.jsonl')
-        super().__init__(log_path, interval)
+        super().__init__(
+            log_path, interval, session_id=session_id,
+            global_step_getter=global_step_getter,
+            telemetry_callback=telemetry_callback)
         self.track_carla = track_carla
         self.track_gpu = track_gpu
         self._carla_pids = []

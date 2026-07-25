@@ -6,18 +6,13 @@ when that happens.
 """
 
 import glob
-import json
 import os
 import time
-from datetime import datetime
 
 import torch
 
 from new_hogwild_a3c import A3CWorker, has_nan_params
-
-
-def _ts():
-    return datetime.now().strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3]
+from new_hogwild_training_logger import build_record, enqueue_telemetry
 
 
 def find_latest_checkpoint(run_output_dir):
@@ -133,7 +128,8 @@ def rollback_global_network(global_network, run_output_dir, worker_idx=None):
 
 
 def _start_worker(worker_id, global_network, config, port, device,
-                  run_output_dir, shutdown_event, log_queue, run_id):
+                  run_output_dir, shutdown_event, log_queue, run_id,
+                  session_id, dropped_counter):
     w = A3CWorker(
         worker_id=worker_id,
         global_network=global_network,
@@ -144,25 +140,28 @@ def _start_worker(worker_id, global_network, config, port, device,
         shutdown_event=shutdown_event,
         log_queue=log_queue,
         run_id=run_id,
+        session_id=session_id,
+        dropped_counter=dropped_counter,
     )
     w.start()
     return w
 
 
-def _append_event(run_output_dir, **kwargs):
-    try:
-        path = os.path.join(run_output_dir, 'logs', 'events.jsonl')
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        kwargs['ts'] = _ts()
-        kwargs['worker'] = kwargs.get('worker', -1)
-        with open(path, 'a') as f:
-            f.write(json.dumps(kwargs) + '\n')
-    except Exception:
-        pass
+def _emit_event(telemetry_queue, session_id, event_type,
+                global_step=None, worker_id=None, dropped_counter=None,
+                **details):
+    details.update({'event': event_type, 'global_t': global_step})
+    record = build_record(
+        'event', session_id=session_id, worker_id=worker_id, data=details)
+    enqueue_telemetry(
+        telemetry_queue, record, required=True,
+        dropped_counter=dropped_counter)
+    return record
 
 
 def run_with_restart(global_network, config, run_output_dir, shutdown_event,
-                     log_queue=None, run_id=''):
+                     log_queue=None, run_id='', session_id='legacy',
+                     dropped_counter=None):
     """Start N workers and keep the run alive.
 
     Restart dead workers, cap per-worker restart counts, and on
@@ -179,9 +178,11 @@ def run_with_restart(global_network, config, run_output_dir, shutdown_event,
         device = config.worker_gpus[i]
         workers[i] = _start_worker(
             i, global_network, config, port, device, run_output_dir,
-            shutdown_event, log_queue, run_id)
-        _append_event(run_output_dir, event='worker_start', worker=i,
-                      port=port, device=device)
+            shutdown_event, log_queue, run_id, session_id, dropped_counter)
+        _emit_event(
+            log_queue, session_id, 'worker_start', worker_id=i,
+            global_step=global_network.global_step.value,
+            dropped_counter=dropped_counter, port=port, device=device)
 
     try:
         while not shutdown_event.is_set():
@@ -212,10 +213,11 @@ def run_with_restart(global_network, config, run_output_dir, shutdown_event,
 
                 print('[RESTART] W{} died (restart #{}) at step {}'.format(
                     i, restart_counts[i], current_step), flush=True)
-                _append_event(run_output_dir, event='worker_restart',
-                              worker=i,
-                              restart_count=restart_counts[i],
-                              global_t=current_step)
+                _emit_event(
+                    log_queue, session_id, 'worker_restart', worker_id=i,
+                    global_step=current_step,
+                    dropped_counter=dropped_counter,
+                    restart_count=restart_counts[i])
 
                 # Remove local core dumps so repeated CARLA crashes do not
                 # fill the job directory.
@@ -230,9 +232,11 @@ def run_with_restart(global_network, config, run_output_dir, shutdown_event,
                           'giving up'.format(
                               i, config.max_restarts_per_worker),
                           flush=True)
-                    _append_event(run_output_dir, event='worker_give_up',
-                                  worker=i,
-                                  restart_count=restart_counts[i])
+                    _emit_event(
+                        log_queue, session_id, 'worker_give_up', worker_id=i,
+                        global_step=current_step,
+                        dropped_counter=dropped_counter,
+                        restart_count=restart_counts[i])
                     continue
 
                 if rapid_crash_count[i] >= config.rapid_crash_threshold:
@@ -240,10 +244,11 @@ def run_with_restart(global_network, config, run_output_dir, shutdown_event,
                           .format(i, rapid_crash_count[i]), flush=True)
                     ok = rollback_global_network(
                         global_network, run_output_dir, worker_idx=i)
-                    _append_event(run_output_dir, event='rollback',
-                                  worker=i,
-                                  rapid_crash_count=rapid_crash_count[i],
-                                  global_t=current_step, success=ok)
+                    _emit_event(
+                        log_queue, session_id, 'rollback', worker_id=i,
+                        global_step=current_step,
+                        dropped_counter=dropped_counter,
+                        rapid_crash_count=rapid_crash_count[i], success=ok)
                     if ok:
                         rapid_crash_count[i] = 0
 
@@ -261,7 +266,8 @@ def run_with_restart(global_network, config, run_output_dir, shutdown_event,
                 device = config.worker_gpus[i]
                 workers[i] = _start_worker(
                     i, global_network, config, port, device, run_output_dir,
-                    shutdown_event, log_queue, run_id)
+                    shutdown_event, log_queue, run_id, session_id,
+                    dropped_counter)
 
     except KeyboardInterrupt:
         print('[SUPERVISOR] KeyboardInterrupt, stopping workers', flush=True)

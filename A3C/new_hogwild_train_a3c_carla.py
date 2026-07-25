@@ -6,8 +6,10 @@ launches do not need to pass a long list of constant values.
 """
 
 import argparse
+import importlib.util
 import json
 import os
+import queue
 import random
 import signal
 import sys
@@ -22,16 +24,14 @@ import torch.multiprocessing as mp
 
 from ACTIONS import ACTIONS as ac
 from new_hogwild_prepare_output_dir import prepare_output_dir
-from new_hogwild_training_logger import TrainingLogger
+from new_hogwild_training_logger import (
+    TrainingLogger, enqueue_telemetry, make_telemetry_stop,
+    telemetry_process_main)
 from new_hogwild_system_monitor import RunMonitor
 from new_hogwild_a3c import GlobalNetwork
 from new_hogwild_run_a3c import run_with_restart, find_latest_checkpoint
 
-try:
-    import wandb
-    HAS_WANDB = True
-except ImportError:
-    HAS_WANDB = False
+HAS_WANDB = importlib.util.find_spec('wandb') is not None
 
 
 # Run shape
@@ -96,6 +96,8 @@ DEFAULT_WANDB_PROJECT = 'a3c-carla'
 DEFAULT_WANDB_RUN_NAME = None
 DEFAULT_WANDB_ENTITY = None
 DEFAULT_NO_WANDB = False
+DEFAULT_WANDB_UPDATE_INTERVAL = 100
+DEFAULT_WANDB_SYSTEM_INTERVAL = 60.0
 DEFAULT_SAVE_EPISODES = None
 DEFAULT_SAVE_EPISODE_INTERVAL = 0
 
@@ -126,54 +128,6 @@ DEFAULT_REWARD_CLIP = 50.0
 
 # Fixed implementation choices
 DEFAULT_ACTION_TYPE = 'discrete'
-
-
-# ---------------------------------------------------------------------------
-# W&B subprocess (non-blocking I/O path)
-# ---------------------------------------------------------------------------
-
-def wandb_logger_process(log_queue, shutdown_event, config, run_output_dir,
-                        wandb_id):
-    if not HAS_WANDB or config.no_wandb:
-        return
-    os.environ['WANDB_INSECURE_DISABLE_SSL'] = 'true'
-    wandb.init(
-        project=config.wandb_project,
-        entity=config.wandb_entity,
-        name=config.wandb_run_name or 'a3c-{}w-{}'.format(
-            config.num_workers, wandb_id),
-        id=wandb_id,
-        resume='allow',
-        dir=run_output_dir,
-        config=_config_to_dict(config),
-    )
-    try:
-        while not shutdown_event.is_set():
-            try:
-                record = log_queue.get(timeout=1.0)
-            except Exception:
-                continue
-            if record is None:
-                break
-            worker_id = record.pop('worker_id', None)
-            metrics = {}
-            for k, v in record.items():
-                if worker_id is not None and k not in \
-                        ('episode', 'global_step'):
-                    metrics['worker/{}/{}'.format(worker_id, k)] = v
-                else:
-                    metrics[k] = v
-            try:
-                wandb.log(metrics)
-            except Exception:
-                pass
-    except Exception:
-        pass
-    finally:
-        try:
-            wandb.finish()
-        except Exception:
-            pass
 
 
 # ---------------------------------------------------------------------------
@@ -298,6 +252,10 @@ def build_parser():
                    default=DEFAULT_WANDB_ENTITY)
     p.add_argument('--no-wandb', action='store_true',
                    default=DEFAULT_NO_WANDB)
+    p.add_argument('--wandb-update-interval', type=int,
+                   default=DEFAULT_WANDB_UPDATE_INTERVAL)
+    p.add_argument('--wandb-system-interval', type=float,
+                   default=DEFAULT_WANDB_SYSTEM_INTERVAL)
     p.add_argument('--save-episodes', type=int, nargs='+',
                    default=DEFAULT_SAVE_EPISODES)
     p.add_argument('--save-episode-interval', type=int,
@@ -446,6 +404,21 @@ def _install_signal_handlers(shutdown_event):
             signal.signal(sig, _handle_signal)
 
 
+def _stop_telemetry_process(log_queue, telemetry_process,
+                            final_summary=None):
+    try:
+        log_queue.put(
+            make_telemetry_stop(final_summary or {}), timeout=10)
+    except (queue.Full, OSError, ValueError):
+        print('[TELEMETRY] failed to enqueue stop sentinel', flush=True)
+
+    telemetry_process.join(timeout=30)
+    if telemetry_process.is_alive():
+        print('[TELEMETRY] drain timeout; terminating process', flush=True)
+        telemetry_process.terminate()
+        telemetry_process.join(timeout=5)
+
+
 def _assign_worker_gpus(num_workers, workers_per_gpu, worker_gpu_start):
     n_gpus = torch.cuda.device_count()
     if workers_per_gpu <= 0 or n_gpus == 0:
@@ -485,23 +458,24 @@ def main():
         torch.cuda.manual_seed_all(args.seed)
 
     args.n_actions = len(ac.ACTIONS_NAMES)
-
+    args.wandb_enabled = bool(HAS_WANDB and not args.no_wandb)
     args.worker_gpus = _assign_worker_gpus(
         args.num_workers, args.workers_per_gpu, args.worker_gpu_start)
 
     user_run_output_dir = args.resume or args.outdir
-    run_output_dir = prepare_output_dir(args, user_run_output_dir,
-                                        resume=bool(args.resume))
+    run_output_dir = prepare_output_dir(
+        args, user_run_output_dir, resume=bool(args.resume))
     print('[RUN] outdir: {}'.format(run_output_dir), flush=True)
 
     config = SimpleNamespace(**vars(args))
-
     mp.set_start_method('spawn', force=True)
     shutdown_event = mp.Event()
     _install_signal_handlers(shutdown_event)
-
-    log_queue = mp.Queue(maxsize=1000) \
-        if (HAS_WANDB and not args.no_wandb) else None
+    log_queue = mp.Queue(maxsize=1000)
+    telemetry_counters = {
+        'queue_drops': mp.Value('l', 0),
+        'wandb_errors': mp.Value('l', 0),
+    }
 
     global_network = GlobalNetwork(
         config, state_shape=[args.res, args.res, 3],
@@ -525,111 +499,178 @@ def main():
                         'weight_decay', 'optimizer'):
                 saved = saved_args.get(key)
                 current = getattr(config, key, None)
-                if saved is not None and current is not None \
-                        and saved != current:
+                if saved is not None and current is not None and \
+                        saved != current:
                     print('[RESUME] WARNING: --{} changed {} -> {}'.format(
                         key, saved, current), flush=True)
 
-    n_params_model = sum(p.numel()
-                         for p in global_network.model.parameters())
-    model_name = 'SharedActorCritic'
-    model_extra = {'model_params': n_params_model}
-    total_params = n_params_model
+    n_params_model = sum(
+        p.numel() for p in global_network.model.parameters())
     TrainingLogger.write_metadata(
         run_output_dir, _config_to_dict(config),
-        model_name=model_name,
-        n_params=total_params,
+        model_name='SharedActorCritic',
+        n_params=n_params_model,
         n_workers=args.num_workers,
-        **model_extra
-    )
-
-    _events = TrainingLogger(run_output_dir, worker_id=-1, log_steps=False)
-    _events.log_event('training_start',
-                      global_t=global_network.global_step.value,
-                      n_workers=args.num_workers,
-                      resumed=bool(args.resume),
-                      worker_gpus=args.worker_gpus)
-    _events.close()
-
-    run_monitor = None
-    if not args.no_system_monitor:
-        run_monitor = RunMonitor(run_output_dir,
-                                 interval=args.monitor_interval,
-                                 track_carla=True,
-                                 track_gpu=not args.no_gpu_monitor)
-        run_monitor.start()
+        model_params=n_params_model)
 
     wandb_id = None
-    wandb_logger_process_handle = None
-    if HAS_WANDB and not args.no_wandb:
+    if args.wandb_enabled:
         wandb_id_file = os.path.join(run_output_dir, 'wandb_run_id.txt')
         if args.resume and os.path.exists(wandb_id_file):
-            with open(wandb_id_file) as f:
-                wandb_id = f.read().strip()
-        else:
+            with open(wandb_id_file) as handle:
+                wandb_id = handle.read().strip()
+        if not wandb_id:
             wandb_id = uuid.uuid4().hex[:8]
             try:
-                with open(wandb_id_file, 'w') as f:
-                    f.write(wandb_id)
-            except OSError:
-                pass
+                with open(wandb_id_file, 'w') as handle:
+                    handle.write(wandb_id)
+            except OSError as error:
+                print('[WANDB] failed to persist run id: {}'.format(error),
+                      flush=True)
 
-        wandb_logger_process_handle = mp.Process(
-            target=wandb_logger_process,
-            args=(log_queue, shutdown_event, config, run_output_dir,
-                  wandb_id),
-            name='WandBLogger')
-        wandb_logger_process_handle.start()
-
+    session_id = uuid.uuid4().hex
     run_id = os.path.basename(run_output_dir.rstrip('/'))
+    telemetry_config = _config_to_dict(config)
+    telemetry_process = mp.Process(
+        target=telemetry_process_main,
+        kwargs={
+            'telemetry_queue': log_queue,
+            'run_output_dir': run_output_dir,
+            'wandb_enabled': args.wandb_enabled,
+            'wandb_config': telemetry_config,
+            'wandb_init_kwargs': {
+                'project': args.wandb_project,
+                'entity': args.wandb_entity,
+                'name': args.wandb_run_name or 'a3c-{}w-{}'.format(
+                    args.num_workers, wandb_id or run_id),
+                'id': wandb_id,
+                'resume': 'allow',
+                'dir': run_output_dir,
+            },
+            'update_interval': args.wandb_update_interval,
+            'system_interval_s': args.wandb_system_interval,
+            'shared_counters': telemetry_counters,
+            'session_id': session_id,
+        },
+        name='A3CTelemetry')
+    telemetry_process.start()
+
+    events = None
+    run_monitor = None
+    try:
+        events = TrainingLogger(
+            run_output_dir, worker_id=-1, session_id=session_id,
+            telemetry_queue=log_queue,
+            dropped_counter=telemetry_counters['queue_drops'])
+        events.log_event(
+            'training_start',
+            global_t=global_network.global_step.value,
+            n_workers=args.num_workers,
+            resumed=bool(args.resume),
+            worker_gpus=args.worker_gpus,
+            wandb_enabled=args.wandb_enabled)
+        if not args.no_wandb and not HAS_WANDB:
+            events.log_event(
+                'wandb_unavailable',
+                global_t=global_network.global_step.value)
+
+        if not args.no_system_monitor:
+            telemetry_callback = None
+            if args.wandb_enabled:
+                telemetry_callback = lambda record: enqueue_telemetry(
+                    log_queue, record, required=False,
+                    dropped_counter=telemetry_counters['queue_drops'])
+            run_monitor = RunMonitor(
+                run_output_dir, interval=args.monitor_interval,
+                track_carla=True, track_gpu=not args.no_gpu_monitor,
+                session_id=session_id,
+                global_step_getter=lambda:
+                    global_network.global_step.value,
+                telemetry_callback=telemetry_callback)
+            run_monitor.start()
+    except BaseException:
+        shutdown_event.set()
+        try:
+            if run_monitor is not None:
+                run_monitor.stop()
+        finally:
+            _stop_telemetry_process(log_queue, telemetry_process)
+            if events is not None:
+                events.close()
+            try:
+                log_queue.close()
+                log_queue.join_thread()
+            except (OSError, ValueError):
+                pass
+        raise
+
     start_steps = global_network.global_step.value
     session_start_ts = _timestamp()
     start_time = time.time()
+    restart_counts = {i: 0 for i in range(args.num_workers)}
+    failure = None
     try:
-        run_with_restart(global_network, config, run_output_dir,
-                         shutdown_event,
-                         log_queue=log_queue, run_id=run_id)
+        restart_counts = run_with_restart(
+            global_network, config, run_output_dir, shutdown_event,
+            log_queue=log_queue, run_id=run_id,
+            session_id=session_id,
+            dropped_counter=telemetry_counters['queue_drops'])
     except KeyboardInterrupt:
+        shutdown_event.set()
+    except BaseException as error:
+        failure = error
         shutdown_event.set()
     finally:
         shutdown_event.set()
-        if log_queue is not None:
-            try:
-                log_queue.put(None)
-            except Exception:
-                pass
-        if wandb_logger_process_handle is not None:
-            wandb_logger_process_handle.join(timeout=15)
-            if wandb_logger_process_handle.is_alive():
-                wandb_logger_process_handle.terminate()
         if run_monitor is not None:
             run_monitor.stop()
 
-    session_elapsed = time.time() - start_time
-    cumulative = session_elapsed + elapsed_offset
-    final_steps = global_network.global_step.value
-    session_steps = max(0, final_steps - start_steps)
-    session_end_ts = _timestamp()
-    _write_resume_state(run_output_dir, config, global_network, cumulative,
-                        session_elapsed, session_start_ts, session_end_ts)
-    print('[BENCHMARK] session: {} steps in {:.1f}s '
-          '({:.2f} steps/s); cumulative active: {} steps in {:.1f}s '
-          '({:.2f} steps/s)'.format(
-              session_steps, session_elapsed,
-              session_steps / session_elapsed if session_elapsed > 0 else 0,
-              final_steps, cumulative,
-              final_steps / cumulative if cumulative > 0 else 0),
-          flush=True)
+        session_elapsed = time.time() - start_time
+        cumulative = session_elapsed + elapsed_offset
+        final_steps = global_network.global_step.value
+        session_steps = max(0, final_steps - start_steps)
+        session_end_ts = _timestamp()
+        _write_resume_state(
+            run_output_dir, config, global_network, cumulative,
+            session_elapsed, session_start_ts, session_end_ts)
 
-    _events = TrainingLogger(run_output_dir, worker_id=-1, log_steps=False)
-    _events.log_event('training_end',
-                      global_t=final_steps,
-                      session_steps=session_steps,
-                      session_elapsed_s=round(session_elapsed, 2),
-                      cumulative_elapsed_s=round(cumulative, 2),
-                      active_time_accounting=True)
-    _events.close()
+        events.log_event(
+            'training_end',
+            global_t=final_steps,
+            session_steps=session_steps,
+            session_elapsed_s=round(session_elapsed, 2),
+            cumulative_elapsed_s=round(cumulative, 2),
+            active_time_accounting=True,
+            restart_counts=restart_counts,
+            error=str(failure) if failure is not None else None)
 
+        _stop_telemetry_process(log_queue, telemetry_process, {
+            'final_global_step': final_steps,
+            'final_global_update': global_network.total_updates.value,
+            'best_reward': global_network.best_reward.value,
+            'final_global_mean_reward':
+                global_network.global_mean_reward.value,
+            'session_elapsed_s': round(session_elapsed, 3),
+        })
+        events.close()
+        try:
+            log_queue.close()
+            log_queue.join_thread()
+        except (OSError, ValueError):
+            pass
+
+        print('[BENCHMARK] session: {} steps in {:.1f}s '
+              '({:.2f} steps/s); cumulative active: {} steps in {:.1f}s '
+              '({:.2f} steps/s)'.format(
+                  session_steps, session_elapsed,
+                  session_steps / session_elapsed
+                  if session_elapsed > 0 else 0,
+                  final_steps, cumulative,
+                  final_steps / cumulative if cumulative > 0 else 0),
+              flush=True)
+
+    if failure is not None:
+        raise failure
 
 if __name__ == '__main__':
     main()

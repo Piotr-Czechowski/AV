@@ -205,6 +205,21 @@ def compute_total_gradient_norm(model):
     return total ** 0.5
 
 
+def clip_gradients_and_measure(model, max_norm):
+    """Return gradient norm before/after clipping and the clipped flag."""
+    if max_norm > 0:
+        pre_clip = float(torch.nn.utils.clip_grad_norm_(
+            model.parameters(), float(max_norm)))
+    else:
+        pre_clip = compute_total_gradient_norm(model)
+    post_clip = compute_total_gradient_norm(model)
+    return pre_clip, post_clip, bool(max_norm > 0 and pre_clip > max_norm)
+
+
+def system_monitor_enabled(config):
+    return not bool(getattr(config, 'no_system_monitor', False))
+
+
 def create_shared_optimizer(params, config):
     optimizer = getattr(config, 'optimizer', 'shared-rmsprop')
     if optimizer == 'shared-rmsprop':
@@ -475,7 +490,8 @@ class GlobalNetwork:
 
 class A3CWorker(mp.Process):
     def __init__(self, worker_id, global_network, config, port, device,
-                 run_output_dir, shutdown_event, log_queue=None, run_id=''):
+                 run_output_dir, shutdown_event, log_queue=None, run_id='',
+                 session_id='legacy', dropped_counter=None):
         super().__init__()
         self.worker_id = worker_id
         self.global_network = global_network
@@ -486,6 +502,8 @@ class A3CWorker(mp.Process):
         self.shutdown_event = shutdown_event
         self.log_queue = log_queue
         self.run_id = run_id
+        self.session_id = session_id
+        self.dropped_counter = dropped_counter
 
         self.device = None
         self.model = None
@@ -621,9 +639,9 @@ class A3CWorker(mp.Process):
         total_loss.backward()
         timer.record('backward', phase_start_time)
 
-        if self.config.max_grad_norm > 0:
-            torch.nn.utils.clip_grad_norm_(self.model.parameters(),
-                                           self.config.max_grad_norm)
+        gradient_norm_pre_clip, gradient_norm, grad_clipped = \
+            clip_gradients_and_measure(
+                self.model, self.config.max_grad_norm)
 
         layers_with_nan_grad = has_nan_grads(self.model)
         if layers_with_nan_grad:
@@ -638,8 +656,6 @@ class A3CWorker(mp.Process):
             self.sync_with_global()
             self._clear_rollout_buffers()
             return None
-
-        gradient_norm = compute_total_gradient_norm(self.model)
 
         phase_start_time = timer.start()
         update_ctx = self.global_network.update_lock \
@@ -674,6 +690,8 @@ class A3CWorker(mp.Process):
             gradient_norm=gradient_norm,
             lr=current_learning_rate,
             entropy_coef=entropy_coef,
+            gradient_norm_pre_clip=gradient_norm_pre_clip,
+            grad_clipped=grad_clipped,
             advantages=adv_values,
             values=val_values,
             entropies=[float(e.detach().cpu().item()) for e in entropies],
@@ -711,7 +729,7 @@ class A3CWorker(mp.Process):
         action_counts = env._action_counts.tolist() \
             if hasattr(env, '_action_counts') else None
 
-        training_logger.log_episode(
+        record = training_logger.log_episode(
             global_episode=global_episode,
             global_t=global_t,
             total_reward=episode_total_reward,
@@ -728,6 +746,7 @@ class A3CWorker(mp.Process):
             port=env.port,
             local_mean_reward=self.mean_reward,
             global_mean_reward=global_mean,
+            best_reward=self.global_network.best_reward.value,
             is_new_best=is_new_best,
             reward_components=getattr(env, '_episode_reward_components', None),
         )
@@ -743,37 +762,7 @@ class A3CWorker(mp.Process):
                     path=best_path, global_t=global_t,
                     checkpoint_kind='best')
 
-        if self.log_queue is not None:
-            try:
-                log_record = {
-                    'worker_id': self.worker_id,
-                    'episode': global_episode,
-                    'global_step': global_t,
-                    'reward': episode_total_reward,
-                    'local_mean_reward': self.mean_reward,
-                    'global_mean_reward': global_mean,
-                    'episode_length': episode_step_count,
-                    'total_steps': self.total_steps,
-                }
-                if hasattr(env, '_episode_max_speed'):
-                    log_record['max_speed_kmh'] = env._episode_max_speed
-                if hasattr(env, '_episode_min_route_dist'):
-                    log_record['min_route_dist'] = env._episode_min_route_dist
-                if hasattr(env, '_episode_goal_dist'):
-                    log_record['distance_from_target'] = env._episode_goal_dist
-                if hasattr(env, '_episode_reward_components'):
-                    for k, v in env._episode_reward_components.items():
-                        log_record['reward_component_{}'.format(k)] = v
-                if action_counts is not None:
-                    total_a = sum(action_counts)
-                    if total_a > 0:
-                        log_record['most_chosen_action_pct'] = \
-                            max(action_counts) / total_a
-                    for i, c in enumerate(action_counts):
-                        log_record['action_{}'.format(i)] = c
-                self.log_queue.put_nowait(log_record)
-            except Exception:
-                pass
+        return record
 
     # -- main loop --
 
@@ -819,12 +808,19 @@ class A3CWorker(mp.Process):
         training_logger = TrainingLogger(
             self.run_output_dir, self.worker_id,
             log_steps=self.config.log_steps,
-            log_update_arrays=self.config.log_update_arrays)
+            log_update_arrays=self.config.log_update_arrays,
+            session_id=self.session_id,
+            telemetry_queue=self.log_queue,
+            dropped_counter=self.dropped_counter,
+            remote_enabled=getattr(
+                self.config, 'wandb_enabled', False))
 
-        worker_monitor = WorkerMonitor(
-            self.run_output_dir, self.worker_id,
-            interval=self.config.monitor_interval)
-        worker_monitor.start()
+        worker_monitor = None
+        if system_monitor_enabled(self.config):
+            worker_monitor = WorkerMonitor(
+                self.run_output_dir, self.worker_id,
+                interval=self.config.monitor_interval)
+            worker_monitor.start()
 
         timer = TimingAccumulator()
         last_diag_wall = time.time()
@@ -1068,10 +1064,11 @@ class A3CWorker(mp.Process):
                 error=str(e))
             raise
         finally:
-            try:
-                worker_monitor.stop()
-            except Exception:
-                pass
+            if worker_monitor is not None:
+                try:
+                    worker_monitor.stop()
+                except Exception:
+                    pass
             try:
                 training_logger.close()
             except Exception:
