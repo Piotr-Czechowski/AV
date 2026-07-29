@@ -148,10 +148,9 @@ def _sample_worker(pid):
 
 
 class _BaseMonitor:
-    def __init__(self, log_path, interval, session_id='legacy',
+    def __init__(self, log_path, interval,
                  global_step_getter=None, telemetry_callback=None):
         self.interval = interval
-        self.session_id = session_id
         self.global_step_getter = global_step_getter
         self.telemetry_callback = telemetry_callback
         self._stop_event = threading.Event()
@@ -193,8 +192,7 @@ class _BaseMonitor:
                 except (AttributeError, TypeError, ValueError, RuntimeError):
                     pass
             self.telemetry_callback(build_record(
-                'system', session_id=self.session_id,
-                worker_id=None, data=queued_data))
+                'system', worker_id=None, data=queued_data))
         return local_record
 
     def _loop(self):
@@ -226,11 +224,11 @@ class _BaseMonitor:
 
 class RunMonitor(_BaseMonitor):
     def __init__(self, run_output_dir, interval=10.0, track_carla=True,
-                 track_gpu=True, session_id='legacy',
+                 track_gpu=True,
                  global_step_getter=None, telemetry_callback=None):
         log_path = os.path.join(run_output_dir, 'logs', 'system.jsonl')
         super().__init__(
-            log_path, interval, session_id=session_id,
+            log_path, interval,
             global_step_getter=global_step_getter,
             telemetry_callback=telemetry_callback)
         self.track_carla = track_carla

@@ -1,15 +1,29 @@
-"""Local JSONL logging and compact W&B telemetry for A3C.
+"""Local JSONL logging and W&B telemetry for A3C.
 
-Workers keep writing their own detailed files.  Episode and update records
-may additionally be copied to one queue, whose consumer owns W&B and the
-run-global ``events.jsonl`` file.
+Two independent paths, on purpose:
+
+1. Local files.  Every training process owns a ``TrainingLogger`` that
+   writes its own ``logs/worker_<id>/*.jsonl``.  Nothing is shared, so
+   nothing needs locking, and these files are the complete record of a
+   run.
+2. Telemetry.  The same record objects are also pushed onto one
+   ``multiprocessing.Queue``.  A single consumer process
+   (``telemetry_process_main``) drains it and is the only writer of the
+   run-global ``logs/events.jsonl`` and the only caller of ``wandb.*``.
+
+Records travel as plain dicts carrying a ``kind`` field, which is all the
+consumer needs in order to route them.  Values are forwarded to W&B one
+for one: the telemetry path never averages, downsamples, or otherwise
+alters what training produced.
+
+Telemetry is best effort.  A full queue costs W&B points, never local
+records and never training throughput.
 """
 
 import json
 import math
 import os
 import queue as queue_module
-import time
 from datetime import datetime
 
 
@@ -17,37 +31,36 @@ RECORD_KINDS = frozenset(
     ('step', 'episode', 'update', 'timing', 'system', 'event'))
 TELEMETRY_CONTROL_KEY = '_telemetry_control'
 
+# How long a worker may wait for queue space when publishing an event.
+# Metrics never wait at all.
+_EVENT_ENQUEUE_TIMEOUT_S = 1.0
 
-def _increment_counter(counter, amount=1):
+
+def _increment_counter(counter):
+    """Add one to a shared ``mp.Value``; ignore an absent counter."""
     if counter is None:
         return
-    try:
-        lock = counter.get_lock()
-    except (AttributeError, TypeError):
-        lock = None
-    if lock is None:
-        counter.value += amount
-    else:
-        with lock:
-            counter.value += amount
+    with counter.get_lock():
+        counter.value += 1
 
 
 def _counter_value(counter):
-    try:
-        return int(counter.value)
-    except (AttributeError, TypeError, ValueError):
-        return 0
+    """Read a shared ``mp.Value``; an absent counter reads as zero."""
+    return int(counter.value) if counter is not None else 0
 
 
-def normalize_for_json(value, non_finite_counter=None):
-    """Recursively convert runtime values into strict JSON values."""
+def normalize_for_json(value):
+    """Convert runtime values into values ``json.dumps`` accepts.
+
+    Handles NumPy scalars/arrays, torch tensors, and nested
+    dicts/lists/tuples/sets.  ``NaN`` and infinities become ``None``
+    because strict JSON cannot represent them.  Anything else falls back
+    to its ``str()``.
+    """
     if value is None or isinstance(value, (str, bool, int)):
         return value
     if isinstance(value, float):
-        if math.isfinite(value):
-            return value
-        _increment_counter(non_finite_counter)
-        return None
+        return value if math.isfinite(value) else None
 
     try:
         import numpy as np
@@ -56,40 +69,24 @@ def normalize_for_json(value, non_finite_counter=None):
         if isinstance(value, np.integer):
             return int(value)
         if isinstance(value, np.floating):
-            return normalize_for_json(
-                float(value), non_finite_counter)
+            return normalize_for_json(float(value))
         if isinstance(value, np.ndarray):
-            return normalize_for_json(
-                value.tolist(), non_finite_counter)
+            return normalize_for_json(value.tolist())
     except ImportError:
         pass
 
     try:
         import torch
         if isinstance(value, torch.Tensor):
-            return normalize_for_json(
-                value.detach().cpu().tolist(), non_finite_counter)
+            return normalize_for_json(value.detach().cpu().tolist())
     except ImportError:
         pass
 
     if isinstance(value, dict):
-        return {
-            str(key): normalize_for_json(item, non_finite_counter)
-            for key, item in value.items()
-        }
+        return {str(key): normalize_for_json(item)
+                for key, item in value.items()}
     if isinstance(value, (list, tuple, set)):
-        return [normalize_for_json(item, non_finite_counter)
-                for item in value]
-    if hasattr(value, 'value'):
-        try:
-            return normalize_for_json(value.value, non_finite_counter)
-        except (AttributeError, TypeError, ValueError):
-            pass
-    if hasattr(value, 'get'):
-        try:
-            return normalize_for_json(value.get(), non_finite_counter)
-        except (AttributeError, TypeError, ValueError):
-            pass
+        return [normalize_for_json(item) for item in value]
     return str(value)
 
 
@@ -97,39 +94,51 @@ def _timestamp():
     return datetime.now().strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3]
 
 
-def build_record(kind, session_id='legacy', worker_id=None, data=None,
-                 timestamp=None, non_finite_counter=None):
-    """Add the small routing envelope used by local logs and telemetry."""
+def build_record(kind, worker_id=None, data=None):
+    """Wrap ``data`` in the envelope shared by local logs and telemetry.
+
+    ``kind`` is how the telemetry consumer routes the record and must be
+    one of ``RECORD_KINDS``.  ``worker_id`` is the source worker, or
+    ``-1``/``None`` for run-level records.  Runs that resume an existing
+    output directory are told apart by the ``training_start`` and
+    ``training_end`` events in ``events.jsonl``.
+    """
     if kind not in RECORD_KINDS:
         raise ValueError('unsupported record kind: {}'.format(kind))
     record = dict(data or {})
     record['kind'] = kind
-    record['session_id'] = str(session_id)
-    record['ts'] = timestamp or record.get('ts') or _timestamp()
+    record['ts'] = record.get('ts') or _timestamp()
     record['worker'] = worker_id
-    return normalize_for_json(record, non_finite_counter)
+    return normalize_for_json(record)
 
 
-def enqueue_telemetry(telemetry_queue, record, required=False,
-                      dropped_counter=None, timeout_s=1.0):
-    """Publish without allowing optional telemetry to block training."""
+def enqueue_telemetry(telemetry_queue, record, is_event=False,
+                      dropped_counter=None):
+    """Hand one record to the telemetry process without blocking training.
+
+    Metrics are dropped the moment the queue is full.  Events matter more,
+    so they wait up to ``_EVENT_ENQUEUE_TIMEOUT_S`` for space before being
+    dropped as well.  Every drop bumps ``dropped_counter``, which the final
+    summary reports.  Returns whether the record was accepted.
+    """
     if telemetry_queue is None:
         return False
     try:
-        if required:
-            telemetry_queue.put(record, timeout=timeout_s)
+        if is_event:
+            telemetry_queue.put(
+                record, timeout=_EVENT_ENQUEUE_TIMEOUT_S)
         else:
             telemetry_queue.put_nowait(record)
         return True
     except queue_module.Full:
         _increment_counter(dropped_counter)
-        if required:
-            print('[TELEMETRY] required record dropped: queue full',
-                  flush=True)
+        if is_event:
+            print('[TELEMETRY] event dropped: queue full', flush=True)
         return False
 
 
 def _put_metric(payload, name, value):
+    """Add one W&B metric, skipping anything that is not a finite number."""
     if isinstance(value, bool):
         payload[name] = int(value)
     elif isinstance(value, (int, float)) and math.isfinite(float(value)):
@@ -186,177 +195,76 @@ def project_episode_to_wandb(record):
     return payload
 
 
-def wandb_update_policy(config):
-    """Return flags for config values that genuinely vary during a run."""
-    config = config or {}
-    steps = int(config.get('steps') or 0)
-    lr = float(config.get('lr') or 0.0)
-    beta_start = float(config.get(
-        'beta_start', config.get('entropy_coef', 0.0)) or 0.0)
-    beta_end = float(config.get('beta_end', beta_start) or 0.0)
-    anneal_fraction = float(config.get('beta_anneal_frac') or 0.0)
-    return {
-        'include_learning_rate': steps > 0 and lr != 0.0,
-        'include_entropy_coef': (
-            steps > 0 and anneal_fraction > 0.0 and
-            beta_start != beta_end),
-    }
+_UPDATE_METRICS = {
+    'pi_loss': 'train/pi_loss',
+    'v_loss': 'train/v_loss',
+    'total_loss': 'train/total_loss',
+    'gradient_norm': 'train/gradient_norm',
+    'gradient_norm_pre_clip': 'train/gradient_norm_pre_clip',
+    'grad_clipped': 'train/grad_clipped',
+    'ent_mean': 'train/entropy',
+    'advantages_mean': 'train/advantages_mean',
+    'advantages_std': 'train/advantages_std',
+    'val_mean': 'train/value_mean',
+    'val_std': 'train/value_std',
+    'rew_mean': 'train/reward_mean',
+    'rew_sum': 'train/reward_sum',
+    'trajectory_length': 'train/trajectory_length',
+    'lr': 'train/lr',
+    'entropy_coef': 'train/entropy_coef',
+}
+
+_SYSTEM_METRICS = (
+    'cpu_percent_mean', 'cpu_percent_max', 'mem_percent',
+    'mem_available_gb', 'swap_used_gb',
+)
 
 
-class TelemetryAggregator:
-    """Aggregate update and node-system records into compact W&B points."""
+def project_update_to_wandb(record):
+    """Project one optimizer update onto W&B metrics, values untouched.
 
-    _UPDATE_FIELDS = {
-        'pi_loss': 'train/pi_loss',
-        'v_loss': 'train/v_loss',
-        'total_loss': 'train/total_loss',
-        'gradient_norm': 'train/gradient_norm',
-        'gradient_norm_pre_clip': 'train/gradient_norm_pre_clip',
-        'ent_mean': 'train/entropy',
-        'advantages_mean': 'train/advantages_mean',
-        'advantages_std': 'train/advantages_std',
-        'val_mean': 'train/value_mean',
-        'val_std': 'train/value_std',
-        'rew_mean': 'train/reward_mean',
-        'rew_sum': 'train/reward_sum',
-    }
+    Emits ``train/<metric>`` for the run as a whole plus
+    ``worker_<id>/train/<metric>`` so a single misbehaving worker stays
+    visible.  Reward components are forwarded under their own names.  Raw
+    per-step arrays are skipped: ``_put_metric`` only accepts scalars.
+    """
+    payload = {}
+    _put_metric(payload, 'global_step', record.get('global_t'))
+    for source, target in _UPDATE_METRICS.items():
+        _put_metric(payload, target, record.get(source))
+    for name, value in record.items():
+        if name.startswith('reward_') and name != 'reward_total_sum':
+            _put_metric(payload, 'train/{}'.format(name), value)
 
-    def __init__(self, update_interval=100, system_interval_s=60.0,
-                 include_learning_rate=True, include_entropy_coef=True):
-        self.update_interval = max(1, int(update_interval))
-        self.system_interval_s = max(0.0, float(system_interval_s))
-        self.include_learning_rate = bool(include_learning_rate)
-        self.include_entropy_coef = bool(include_entropy_coef)
-        self._updates = []
-        self._systems = []
-        self._system_window_started = None
+    worker_id = record.get('worker')
+    if worker_id is not None and int(worker_id) >= 0:
+        prefix = 'worker_{}/'.format(worker_id)
+        for name in [key for key in payload if key.startswith('train/')]:
+            payload[prefix + name] = payload[name]
+    return payload
 
-    @staticmethod
-    def _values(records, field):
-        values = []
-        for record in records:
-            value = record.get(field)
-            if isinstance(value, bool):
-                values.append(float(value))
-            elif isinstance(value, (int, float)) and math.isfinite(value):
-                values.append(float(value))
-        return values
 
-    @staticmethod
-    def _nested_values(records, section, field):
-        values = []
-        for record in records:
-            nested = record.get(section)
-            if not isinstance(nested, dict):
-                continue
-            value = nested.get(field)
-            if isinstance(value, (int, float)) and not isinstance(value, bool) \
-                    and math.isfinite(value):
-                values.append(float(value))
-        return values
+def project_system_to_wandb(record):
+    """Project one resource sample onto W&B metrics, values untouched.
 
-    def _flush_updates(self):
-        if not self._updates:
-            return None
-        records, self._updates = self._updates, []
-        steps = self._values(records, 'global_t')
-        payload = {'global_step': int(max(steps))} if steps else {}
-        fields = dict(self._UPDATE_FIELDS)
-        if self.include_learning_rate:
-            fields['lr'] = 'train/lr'
-        if self.include_entropy_coef:
-            fields['entropy_coef'] = 'train/entropy_coef'
-        for source, target in fields.items():
-            values = self._values(records, source)
-            if values:
-                payload[target] = sum(values) / len(values)
-
-        clipped = self._values(records, 'grad_clipped')
-        if clipped:
-            payload['train/grad_clip_fraction'] = \
-                sum(clipped) / len(clipped)
-        component_fields = sorted({
-            key for record in records for key in record
-            if key.startswith('reward_') and key.endswith('_sum')
-            and key != 'reward_total_sum'
-        })
-        for field in component_fields:
-            values = self._values(records, field)
-            if values:
-                payload['train/{}'.format(field)] = \
-                    sum(values) / len(values)
-        return payload or None
-
-    def _flush_system(self):
-        if not self._systems:
-            return None
-        records, self._systems = self._systems, []
-        self._system_window_started = None
-        steps = self._values(records, 'global_t')
-        payload = {'global_step': int(max(steps))} if steps else {}
-
-        fields = (
-            ('cpu_percent_mean', 'system/cpu_mean_percent', 'mean'),
-            ('cpu_percent_max', 'system/cpu_max_percent', 'max'),
-            ('mem_percent', 'system/memory_percent', 'max'),
-            ('mem_available_gb', 'system/memory_available_gb', 'min'),
-            ('swap_used_gb', 'system/swap_used_gb', 'max'),
-        )
-        for source, target, operation in fields:
-            values = self._nested_values(records, 'system', source)
-            if not values:
-                continue
-            if operation == 'mean':
-                payload[target] = sum(values) / len(values)
-            elif operation == 'min':
-                payload[target] = min(values)
-            else:
-                payload[target] = max(values)
-
-        gpu_samples = {}
-        for record in records:
-            for gpu in record.get('gpus') or ():
-                if not isinstance(gpu, dict) or \
-                        not isinstance(gpu.get('index'), int):
-                    continue
-                samples = gpu_samples.setdefault(
-                    gpu['index'], {'util': [], 'memory': []})
-                for source, target in (
-                        ('util_percent', 'util'),
-                        ('mem_used_gb', 'memory')):
-                    value = gpu.get(source)
-                    if isinstance(value, (int, float)) and \
-                            math.isfinite(value):
-                        samples[target].append(float(value))
-        for index, samples in sorted(gpu_samples.items()):
-            prefix = 'system/gpu{}'.format(index)
-            if samples['util']:
-                payload[prefix + '_util_mean_percent'] = \
-                    sum(samples['util']) / len(samples['util'])
-                payload[prefix + '_util_max_percent'] = max(samples['util'])
-            if samples['memory']:
-                payload[prefix + '_memory_max_gb'] = max(samples['memory'])
-        return payload or None
-
-    def add(self, record):
-        kind = record.get('kind')
-        if kind == 'update':
-            self._updates.append(record)
-            if len(self._updates) >= self.update_interval:
-                return [self._flush_updates()]
-        elif kind == 'system':
-            if self._system_window_started is None:
-                self._system_window_started = time.monotonic()
-            self._systems.append(record)
-            if self.system_interval_s == 0 or time.monotonic() - \
-                    self._system_window_started >= self.system_interval_s:
-                return [self._flush_system()]
-        return []
-
-    def flush(self):
-        return [payload for payload in (
-            self._flush_updates(), self._flush_system())
-            if payload is not None]
+    Only node-level CPU/memory/GPU numbers travel.  Process listings,
+    CARLA server details, and PIDs stay in the local ``system.jsonl``.
+    """
+    payload = {}
+    _put_metric(payload, 'global_step', record.get('global_t'))
+    section = record.get('system')
+    if isinstance(section, dict):
+        for name in _SYSTEM_METRICS:
+            _put_metric(
+                payload, 'system/{}'.format(name), section.get(name))
+    for gpu in record.get('gpus') or ():
+        if not isinstance(gpu, dict) or \
+                not isinstance(gpu.get('index'), int):
+            continue
+        prefix = 'system/gpu{}_'.format(gpu['index'])
+        for name in ('util_percent', 'mem_used_gb'):
+            _put_metric(payload, prefix + name, gpu.get(name))
+    return payload
 
 
 def make_telemetry_stop(final_summary=None):
@@ -386,18 +294,37 @@ _HEALTH_METRICS = {
 }
 
 
+_PROJECTIONS = {
+    'episode': project_episode_to_wandb,
+    'update': project_update_to_wandb,
+    'system': project_system_to_wandb,
+}
+
+
+def _shared_counter(shared_counters, name):
+    """Look one shared counter up; missing counters read as absent."""
+    if not isinstance(shared_counters, dict):
+        return None
+    return shared_counters.get(name)
+
+
 def run_telemetry_loop(telemetry_queue, run_output_dir, wandb_run=None,
-                       update_interval=100, system_interval_s=60.0,
-                       include_learning_rate=True,
-                       include_entropy_coef=True, shared_counters=None,
-                       startup_events=None):
-    """Drain the telemetry queue until sentinel and own events.jsonl."""
+                       shared_counters=None, startup_events=None):
+    """Drain the telemetry queue until the stop sentinel arrives.
+
+    This is the only writer of ``events.jsonl`` and the only place that
+    calls ``wandb_run.log``.  Every record is forwarded as its own W&B
+    point with the values training produced; nothing is batched or
+    averaged.  W&B failures are counted and swallowed so that losing the
+    network never costs a local event.
+
+    ``wandb_run`` may be ``None``, in which case the loop still owns
+    ``events.jsonl``.  ``startup_events`` are records created before the
+    loop began and are written first to keep the file chronological.
+    """
     logs_dir = os.path.join(run_output_dir, 'logs')
     os.makedirs(logs_dir, exist_ok=True)
     events_path = os.path.join(logs_dir, 'events.jsonl')
-    aggregator = TelemetryAggregator(
-        update_interval, system_interval_s,
-        include_learning_rate, include_entropy_coef)
     health_counts = {}
 
     def log_wandb(payload):
@@ -406,8 +333,7 @@ def run_telemetry_loop(telemetry_queue, run_output_dir, wandb_run=None,
         try:
             wandb_run.log(payload)
         except Exception as error:
-            counter = shared_counters.get('wandb_errors') \
-                if isinstance(shared_counters, dict) else None
+            counter = _shared_counter(shared_counters, 'wandb_errors')
             _increment_counter(counter)
             count = _counter_value(counter) or 1
             if count == 1 or count % 100 == 0:
@@ -426,13 +352,14 @@ def run_telemetry_loop(telemetry_queue, run_output_dir, wandb_run=None,
             record = telemetry_queue.get()
             if isinstance(record, dict) and \
                     record.get(TELEMETRY_CONTROL_KEY) == 'stop':
-                for payload in aggregator.flush():
-                    log_wandb(payload)
                 final_summary = dict(record.get('final_summary') or {})
                 final_summary.update(health_counts)
                 if isinstance(shared_counters, dict):
                     for name, counter in shared_counters.items():
                         final_summary[name] = _counter_value(counter)
+                write_event(build_record(
+                    'event', worker_id=-1,
+                    data=dict(final_summary, event='final_summary')))
                 if wandb_run is not None:
                     try:
                         wandb_run.summary.update(
@@ -446,6 +373,7 @@ def run_telemetry_loop(telemetry_queue, run_output_dir, wandb_run=None,
 
             kind = record.get('kind')
             if kind == 'event':
+                # Events go to disk first: a broken W&B must not cost one.
                 write_event(record)
                 metric = _HEALTH_METRICS.get(record.get('event'))
                 if metric:
@@ -454,22 +382,32 @@ def run_telemetry_loop(telemetry_queue, run_output_dir, wandb_run=None,
                     _put_metric(payload, 'global_step',
                                 record.get('global_t'))
                     log_wandb(payload)
-            elif kind == 'episode':
-                log_wandb(project_episode_to_wandb(record))
-            else:
-                for payload in aggregator.add(record):
-                    log_wandb(payload)
+            elif kind in _PROJECTIONS:
+                log_wandb(_PROJECTIONS[kind](record))
 
 
 def telemetry_process_main(telemetry_queue, run_output_dir,
                            wandb_enabled=False, wandb_config=None,
-                           wandb_init_kwargs=None, update_interval=100,
-                           system_interval_s=60.0, shared_counters=None,
-                           session_id='legacy'):
-    """Initialize W&B in its sole owner process and drain telemetry."""
+                           wandb_init_kwargs=None, shared_counters=None):
+    """Entry point of the telemetry process: own W&B, then drain the queue.
+
+    Kept separate from ``run_telemetry_loop`` so the loop itself can be
+    exercised without W&B.  ``wandb`` is imported here and nowhere else,
+    which keeps the SDK out of every training process.  A failed
+    ``wandb.init`` degrades to local-only logging and is recorded as an
+    event rather than raised.
+    """
     wandb_run = None
     startup_events = []
     config = dict(wandb_config or {})
+
+    def record_wandb_failure(event_type, error):
+        startup_events.append(build_record(
+            'event', worker_id=-1,
+            data={'event': event_type, 'error': str(error)}))
+        _increment_counter(
+            _shared_counter(shared_counters, 'wandb_errors'))
+
     if wandb_enabled:
         try:
             os.environ.setdefault('WANDB_INSECURE_DISABLE_SSL', 'true')
@@ -477,62 +415,64 @@ def telemetry_process_main(telemetry_queue, run_output_dir,
             wandb_run = wandb.init(
                 config=config, **dict(wandb_init_kwargs or {}))
         except Exception as error:
-            startup_events.append(build_record(
-                'event', session_id=session_id, worker_id=-1,
-                data={'event': 'wandb_init_failed', 'error': str(error)}))
-            counter = shared_counters.get('wandb_errors') \
-                if isinstance(shared_counters, dict) else None
-            _increment_counter(counter)
+            record_wandb_failure('wandb_init_failed', error)
             wandb_run = None
         if wandb_run is not None:
             try:
                 configure_wandb_metrics(
                     wandb_run, config.get('num_workers', 0))
             except Exception as error:
-                startup_events.append(build_record(
-                    'event', session_id=session_id, worker_id=-1,
-                    data={
-                        'event': 'wandb_metric_setup_failed',
-                        'error': str(error),
-                    }))
-                counter = shared_counters.get('wandb_errors') \
-                    if isinstance(shared_counters, dict) else None
-                _increment_counter(counter)
+                record_wandb_failure('wandb_metric_setup_failed', error)
 
-    policy = wandb_update_policy(config)
     try:
         run_telemetry_loop(
             telemetry_queue, run_output_dir, wandb_run=wandb_run,
-            update_interval=update_interval,
-            system_interval_s=system_interval_s,
             shared_counters=shared_counters,
-            startup_events=startup_events, **policy)
+            startup_events=startup_events)
     finally:
         if wandb_run is not None:
             try:
                 wandb_run.finish()
             except Exception as error:
-                counter = shared_counters.get('wandb_errors') \
-                    if isinstance(shared_counters, dict) else None
-                _increment_counter(counter)
+                _increment_counter(
+                    _shared_counter(shared_counters, 'wandb_errors'))
                 print('[TELEMETRY] wandb.finish failed: {}'.format(error),
                       flush=True)
 
 
 class TrainingLogger:
+    """Per-process writer of ``logs/worker_<id>/*.jsonl``.
+
+    One instance lives in each worker plus one in the main process
+    (``worker_id=-1``, events only).  Files belong to a single process, so
+    writes need no locking, and they are opened lazily so that a logger
+    which never writes leaves no empty directory behind.
+
+    Records are written locally first and only then handed to telemetry,
+    so local logs stay complete even when the queue is full.
+
+    Args:
+        log_steps: also write ``steps.jsonl``; very large, off by default.
+        log_update_arrays: keep raw per-step arrays in update records.
+        telemetry_queue: queue to the telemetry process, or ``None`` for
+            local-only logging.
+        dropped_counter: shared counter bumped when telemetry is dropped.
+        publish_metrics: whether episode/update records are worth sending
+            to telemetry.  Events are always sent regardless, because they
+            are what ``events.jsonl`` is made of.
+    """
+
     def __init__(self, run_output_dir, worker_id, log_steps=False,
-                 log_update_arrays=False, session_id='legacy',
+                 log_update_arrays=False,
                  telemetry_queue=None, dropped_counter=None,
-                 non_finite_counter=None, remote_enabled=False):
+                 publish_metrics=False):
         self.run_output_dir = run_output_dir
         self.worker_id = worker_id
-        self.session_id = session_id
         self.log_steps_enabled = log_steps
         self.log_update_arrays = log_update_arrays
         self.telemetry_queue = telemetry_queue
         self.dropped_counter = dropped_counter
-        self.non_finite_counter = non_finite_counter
-        self.remote_enabled = remote_enabled
+        self.publish_metrics = publish_metrics
         self.log_dir = os.path.join(
             run_output_dir, 'logs', 'worker_{}'.format(worker_id))
         self._files = {}
@@ -548,19 +488,19 @@ class TrainingLogger:
 
     def _record(self, kind, data):
         return build_record(
-            kind, session_id=self.session_id, worker_id=self.worker_id,
-            data=data, non_finite_counter=self.non_finite_counter)
+            kind, worker_id=self.worker_id, data=data)
 
     def _write(self, name, record):
         self._open(name).write(
             json.dumps(record, allow_nan=False) + '\n')
         return record
 
-    def _publish(self, record, required=False):
-        if not required and not self.remote_enabled:
+    def _publish(self, record, is_event=False):
+        """Send a record to telemetry, unless metrics are local-only."""
+        if not is_event and not self.publish_metrics:
             return False
         return enqueue_telemetry(
-            self.telemetry_queue, record, required=required,
+            self.telemetry_queue, record, is_event=is_event,
             dropped_counter=self.dropped_counter)
 
     def log_step(self, global_t, local_t, global_episode, step_in_ep,
@@ -684,10 +624,15 @@ class TrainingLogger:
             'timing.jsonl', self._record('timing', data))
 
     def log_event(self, event_type, **kwargs):
+        """Emit a lifecycle/health event.
+
+        Events are not written by this logger: the telemetry process owns
+        the single shared ``events.jsonl``, so they only travel by queue.
+        """
         data = dict(kwargs)
         data['event'] = event_type
         record = self._record('event', data)
-        self._publish(record, required=True)
+        self._publish(record, is_event=True)
         return record
 
     def log_save(self, path, global_t, **kwargs):

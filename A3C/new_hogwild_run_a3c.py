@@ -129,7 +129,7 @@ def rollback_global_network(global_network, run_output_dir, worker_idx=None):
 
 def _start_worker(worker_id, global_network, config, port, device,
                   run_output_dir, shutdown_event, log_queue, run_id,
-                  session_id, dropped_counter):
+                  dropped_counter):
     w = A3CWorker(
         worker_id=worker_id,
         global_network=global_network,
@@ -140,28 +140,24 @@ def _start_worker(worker_id, global_network, config, port, device,
         shutdown_event=shutdown_event,
         log_queue=log_queue,
         run_id=run_id,
-        session_id=session_id,
         dropped_counter=dropped_counter,
     )
     w.start()
     return w
 
 
-def _emit_event(telemetry_queue, session_id, event_type,
-                global_step=None, worker_id=None, dropped_counter=None,
-                **details):
+def _emit_event(telemetry_queue, event_type, global_step=None,
+                worker_id=None, dropped_counter=None, **details):
     details.update({'event': event_type, 'global_t': global_step})
-    record = build_record(
-        'event', session_id=session_id, worker_id=worker_id, data=details)
+    record = build_record('event', worker_id=worker_id, data=details)
     enqueue_telemetry(
-        telemetry_queue, record, required=True,
+        telemetry_queue, record, is_event=True,
         dropped_counter=dropped_counter)
     return record
 
 
 def run_with_restart(global_network, config, run_output_dir, shutdown_event,
-                     log_queue=None, run_id='', session_id='legacy',
-                     dropped_counter=None):
+                     log_queue=None, run_id='', dropped_counter=None):
     """Start N workers and keep the run alive.
 
     Restart dead workers, cap per-worker restart counts, and on
@@ -178,9 +174,9 @@ def run_with_restart(global_network, config, run_output_dir, shutdown_event,
         device = config.worker_gpus[i]
         workers[i] = _start_worker(
             i, global_network, config, port, device, run_output_dir,
-            shutdown_event, log_queue, run_id, session_id, dropped_counter)
+            shutdown_event, log_queue, run_id, dropped_counter)
         _emit_event(
-            log_queue, session_id, 'worker_start', worker_id=i,
+            log_queue, 'worker_start', worker_id=i,
             global_step=global_network.global_step.value,
             dropped_counter=dropped_counter, port=port, device=device)
 
@@ -214,7 +210,7 @@ def run_with_restart(global_network, config, run_output_dir, shutdown_event,
                 print('[RESTART] W{} died (restart #{}) at step {}'.format(
                     i, restart_counts[i], current_step), flush=True)
                 _emit_event(
-                    log_queue, session_id, 'worker_restart', worker_id=i,
+                    log_queue, 'worker_restart', worker_id=i,
                     global_step=current_step,
                     dropped_counter=dropped_counter,
                     restart_count=restart_counts[i])
@@ -233,7 +229,7 @@ def run_with_restart(global_network, config, run_output_dir, shutdown_event,
                               i, config.max_restarts_per_worker),
                           flush=True)
                     _emit_event(
-                        log_queue, session_id, 'worker_give_up', worker_id=i,
+                        log_queue, 'worker_give_up', worker_id=i,
                         global_step=current_step,
                         dropped_counter=dropped_counter,
                         restart_count=restart_counts[i])
@@ -245,7 +241,7 @@ def run_with_restart(global_network, config, run_output_dir, shutdown_event,
                     ok = rollback_global_network(
                         global_network, run_output_dir, worker_idx=i)
                     _emit_event(
-                        log_queue, session_id, 'rollback', worker_id=i,
+                        log_queue, 'rollback', worker_id=i,
                         global_step=current_step,
                         dropped_counter=dropped_counter,
                         rapid_crash_count=rapid_crash_count[i], success=ok)
@@ -266,8 +262,7 @@ def run_with_restart(global_network, config, run_output_dir, shutdown_event,
                 device = config.worker_gpus[i]
                 workers[i] = _start_worker(
                     i, global_network, config, port, device, run_output_dir,
-                    shutdown_event, log_queue, run_id, session_id,
-                    dropped_counter)
+                    shutdown_event, log_queue, run_id, dropped_counter)
 
     except KeyboardInterrupt:
         print('[SUPERVISOR] KeyboardInterrupt, stopping workers', flush=True)

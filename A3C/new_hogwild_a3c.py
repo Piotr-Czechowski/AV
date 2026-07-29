@@ -491,7 +491,7 @@ class GlobalNetwork:
 class A3CWorker(mp.Process):
     def __init__(self, worker_id, global_network, config, port, device,
                  run_output_dir, shutdown_event, log_queue=None, run_id='',
-                 session_id='legacy', dropped_counter=None):
+                 dropped_counter=None):
         super().__init__()
         self.worker_id = worker_id
         self.global_network = global_network
@@ -502,7 +502,6 @@ class A3CWorker(mp.Process):
         self.shutdown_event = shutdown_event
         self.log_queue = log_queue
         self.run_id = run_id
-        self.session_id = session_id
         self.dropped_counter = dropped_counter
 
         self.device = None
@@ -809,10 +808,9 @@ class A3CWorker(mp.Process):
             self.run_output_dir, self.worker_id,
             log_steps=self.config.log_steps,
             log_update_arrays=self.config.log_update_arrays,
-            session_id=self.session_id,
             telemetry_queue=self.log_queue,
             dropped_counter=self.dropped_counter,
-            remote_enabled=getattr(
+            publish_metrics=getattr(
                 self.config, 'wandb_enabled', False))
 
         worker_monitor = None

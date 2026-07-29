@@ -96,8 +96,10 @@ DEFAULT_WANDB_PROJECT = 'a3c-carla'
 DEFAULT_WANDB_RUN_NAME = None
 DEFAULT_WANDB_ENTITY = None
 DEFAULT_NO_WANDB = False
-DEFAULT_WANDB_UPDATE_INTERVAL = 100
-DEFAULT_WANDB_SYSTEM_INTERVAL = 60.0
+# Telemetry buffer between the training processes and the single process
+# that owns events.jsonl and W&B.  Large enough that a slow consumer costs
+# nothing; overflow drops W&B points only, never local logs.
+TELEMETRY_QUEUE_SIZE = 10000
 DEFAULT_SAVE_EPISODES = None
 DEFAULT_SAVE_EPISODE_INTERVAL = 0
 
@@ -113,7 +115,7 @@ DEFAULT_EPISODE_MAX_DECISIONS = 100
 DEFAULT_WORLD_RELOAD_INTERVAL = 0
 DEFAULT_REWARD_MODE = 'legacy'#'shaped'
 
-# Reward shaping
+# Reward shaping / reward potential modificators
 DEFAULT_REWARD_PROGRESS_COEF = 1.0
 DEFAULT_REWARD_TARGET_SPEED_COEF = 1.0
 DEFAULT_REWARD_ROUTE_PENALTY_COEF = 0.1
@@ -252,10 +254,6 @@ def build_parser():
                    default=DEFAULT_WANDB_ENTITY)
     p.add_argument('--no-wandb', action='store_true',
                    default=DEFAULT_NO_WANDB)
-    p.add_argument('--wandb-update-interval', type=int,
-                   default=DEFAULT_WANDB_UPDATE_INTERVAL)
-    p.add_argument('--wandb-system-interval', type=float,
-                   default=DEFAULT_WANDB_SYSTEM_INTERVAL)
     p.add_argument('--save-episodes', type=int, nargs='+',
                    default=DEFAULT_SAVE_EPISODES)
     p.add_argument('--save-episode-interval', type=int,
@@ -471,7 +469,7 @@ def main():
     mp.set_start_method('spawn', force=True)
     shutdown_event = mp.Event()
     _install_signal_handlers(shutdown_event)
-    log_queue = mp.Queue(maxsize=1000)
+    log_queue = mp.Queue(maxsize=TELEMETRY_QUEUE_SIZE)
     telemetry_counters = {
         'queue_drops': mp.Value('l', 0),
         'wandb_errors': mp.Value('l', 0),
@@ -528,7 +526,6 @@ def main():
                 print('[WANDB] failed to persist run id: {}'.format(error),
                       flush=True)
 
-    session_id = uuid.uuid4().hex
     run_id = os.path.basename(run_output_dir.rstrip('/'))
     telemetry_config = _config_to_dict(config)
     telemetry_process = mp.Process(
@@ -547,10 +544,7 @@ def main():
                 'resume': 'allow',
                 'dir': run_output_dir,
             },
-            'update_interval': args.wandb_update_interval,
-            'system_interval_s': args.wandb_system_interval,
             'shared_counters': telemetry_counters,
-            'session_id': session_id,
         },
         name='A3CTelemetry')
     telemetry_process.start()
@@ -559,8 +553,7 @@ def main():
     run_monitor = None
     try:
         events = TrainingLogger(
-            run_output_dir, worker_id=-1, session_id=session_id,
-            telemetry_queue=log_queue,
+            run_output_dir, worker_id=-1, telemetry_queue=log_queue,
             dropped_counter=telemetry_counters['queue_drops'])
         events.log_event(
             'training_start',
@@ -578,12 +571,11 @@ def main():
             telemetry_callback = None
             if args.wandb_enabled:
                 telemetry_callback = lambda record: enqueue_telemetry(
-                    log_queue, record, required=False,
+                    log_queue, record,
                     dropped_counter=telemetry_counters['queue_drops'])
             run_monitor = RunMonitor(
                 run_output_dir, interval=args.monitor_interval,
                 track_carla=True, track_gpu=not args.no_gpu_monitor,
-                session_id=session_id,
                 global_step_getter=lambda:
                     global_network.global_step.value,
                 telemetry_callback=telemetry_callback)
@@ -613,7 +605,6 @@ def main():
         restart_counts = run_with_restart(
             global_network, config, run_output_dir, shutdown_event,
             log_queue=log_queue, run_id=run_id,
-            session_id=session_id,
             dropped_counter=telemetry_counters['queue_drops'])
     except KeyboardInterrupt:
         shutdown_event.set()

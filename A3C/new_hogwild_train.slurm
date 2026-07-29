@@ -48,7 +48,7 @@ fi
 #   2. Start N CARLA servers via carla_athena_multiserver_v3.py
 #      (one per worker, placed on GPUs via --servers-per-gpu).
 #   3. Wait until all N CARLA ports are LISTEN.
-#   4. Launch new_hogwild_train_a3c_carla.py against those servers.
+#   4. Launch new_train_a3c_carla.py against those servers.
 #   5. Tail the training log, clean up both CARLA + training on exit.
 #
 # Usage:
