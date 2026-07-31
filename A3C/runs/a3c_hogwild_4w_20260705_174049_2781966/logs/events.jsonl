@@ -1,0 +1,17 @@
+{"global_t": 0, "n_workers": 4, "resumed": false, "worker_gpus": ["cuda:0", "cuda:0", "cuda:0", "cuda:0"], "event": "training_start", "ts": "2026-07-05T17:41:23.827", "worker": -1}
+{"event": "worker_start", "worker": 0, "port": 2000, "device": "cuda:0", "ts": "2026-07-05T17:41:23.853"}
+{"event": "worker_start", "worker": 1, "port": 2100, "device": "cuda:0", "ts": "2026-07-05T17:41:23.868"}
+{"event": "worker_start", "worker": 2, "port": 2200, "device": "cuda:0", "ts": "2026-07-05T17:41:23.880"}
+{"event": "worker_start", "worker": 3, "port": 2300, "device": "cuda:0", "ts": "2026-07-05T17:41:23.892"}
+{"path": "/net/tscratch/people/plgbartoszkawa/AV/A3C/runs/a3c_hogwild_4w_20260705_174049_2781966/best_checkpoint.pth", "global_t": 358, "checkpoint_kind": "best", "event": "checkpoint_save", "ts": "2026-07-05T17:42:58.804", "worker": 3}
+{"path": "/net/tscratch/people/plgbartoszkawa/AV/A3C/runs/a3c_hogwild_4w_20260705_174049_2781966/best_checkpoint.pth", "global_t": 390, "checkpoint_kind": "best", "event": "checkpoint_save", "ts": "2026-07-05T17:43:03.369", "worker": 0}
+{"path": "/net/tscratch/people/plgbartoszkawa/AV/A3C/runs/a3c_hogwild_4w_20260705_174049_2781966/best_checkpoint.pth", "global_t": 395, "checkpoint_kind": "best", "event": "checkpoint_save", "ts": "2026-07-05T17:43:04.370", "worker": 1}
+{"path": "/net/tscratch/people/plgbartoszkawa/AV/A3C/runs/a3c_hogwild_4w_20260705_174049_2781966/best_checkpoint.pth", "global_t": 750, "checkpoint_kind": "best", "event": "checkpoint_save", "ts": "2026-07-05T17:43:56.641", "worker": 3}
+{"path": "/net/tscratch/people/plgbartoszkawa/AV/A3C/runs/a3c_hogwild_4w_20260705_174049_2781966/best_checkpoint.pth", "global_t": 1136, "checkpoint_kind": "best", "event": "checkpoint_save", "ts": "2026-07-05T17:44:50.098", "worker": 3}
+{"global_t": 1754, "error": "time-out of 120000ms while waiting for the simulator, make sure the simulator is ready and connected to localhost:2300", "event": "crash_recovery", "ts": "2026-07-05T17:46:50.429", "worker": 3}
+{"event": "worker_restart", "worker": 3, "restart_count": 1, "global_t": 1845, "ts": "2026-07-05T17:47:09.228"}
+{"path": "/net/tscratch/people/plgbartoszkawa/AV/A3C/runs/a3c_hogwild_4w_20260705_174049_2781966/best_checkpoint.pth", "global_t": 1986, "checkpoint_kind": "best", "event": "checkpoint_save", "ts": "2026-07-05T17:47:34.609", "worker": 2}
+{"path": "/net/tscratch/people/plgbartoszkawa/AV/A3C/runs/a3c_hogwild_4w_20260705_174049_2781966/best_checkpoint.pth", "global_t": 2050, "checkpoint_kind": "best", "event": "checkpoint_save", "ts": "2026-07-05T17:47:47.054", "worker": 1}
+{"path": "/net/tscratch/people/plgbartoszkawa/AV/A3C/runs/a3c_hogwild_4w_20260705_174049_2781966/best_checkpoint.pth", "global_t": 6512, "checkpoint_kind": "best", "event": "checkpoint_save", "ts": "2026-07-05T17:54:45.578", "worker": 3}
+{"path": "/net/tscratch/people/plgbartoszkawa/AV/A3C/runs/a3c_hogwild_4w_20260705_174049_2781966/checkpoint.pth", "global_t": 100000, "event": "checkpoint_save", "ts": "2026-07-05T20:38:08.241", "worker": 1}
+{"global_t": 176467, "session_steps": 176467, "session_elapsed_s": 17983.3, "cumulative_elapsed_s": 17983.3, "active_time_accounting": true, "event": "training_end", "ts": "2026-07-05T22:41:07.141", "worker": -1}
