@@ -12,7 +12,8 @@ It includes:
 - `new_hogwild_carla_wrapper.py` — CARLA environment wrapper,
 - `new_hogwild_run_a3c.py` — worker orchestration, supervision, and restart logic,
 - `new_hogwild_training_logger.py` and `new_hogwild_system_monitor.py` — structured logging and monitoring,
-- `new_hogwild_prepare_output_dir.py` and `new_hogwild_train.slurm` — output preparation and HPC job support.
+- `new_hogwild_prepare_output_dir.py` and `new_hogwild_train.slurm` — output preparation and HPC job support,
+- `new_hogwild_train_paths.sh.example` — template for the single file holding every user-specific path.
 
 Key acceleration features in `A3C`:
 - multi-process Hogwild-style training,
@@ -39,22 +40,32 @@ on exit.
 
 ```bash
 cd A3C
-cp new_hogwild_train_paths.json.example new_hogwild_train_paths.json
+cp new_hogwild_train_paths.sh.example new_hogwild_train_paths.sh
 ```
 
-Fill in `VENV`, `PROJECT_DIR`, `MULTISERVER_SCRIPT`, and the three `WANDB_*`
-keys. All six must be present; use `null`, not `""`, for W&B values you skip.
-The script exits immediately if the file is missing.
+This is the only file to edit, and it has **one required line** — the path to
+your CARLA Apptainer image:
 
-Two paths are **not** read from that file and have to be set separately:
+```sh
+export CARLA_CONTAINER_IMAGE=/net/tscratch/people/you/carla_0.9.15.sif
+```
 
-- `new_hogwild_train.slurm`, line 15 — `PROJECT_DIR` is hardcoded there, because
-  that is what finds the JSON file in the first place.
-- `settings.py` — `CARLA_PATH` and `CARLA_EGG_PATH`, only needed if you start
-  CARLA yourself instead of through `MULTISERVER_SCRIPT`.
+Everything else is derived from where you submit from, or has a working
+default; the file documents each option next to the value it would override.
+The SLURM script sources the file and the Python modules read the resulting
+environment, so nothing else in the repository carries a machine-specific path.
 
-Also review the `#SBATCH` header: `--account`, `--partition`, and `--time` are
-set for one specific allocation.
+The file is looked up next to the directory you submit from, so submit as
+`cd A3C && sbatch new_hogwild_train.slurm`, or set `CONFIG_FILE` to its path.
+It is gitignored, so your paths and W&B settings stay local. Running anything
+outside `sbatch` — the trainer, the CARLA multiserver — means sourcing it
+first: `source new_hogwild_train_paths.sh`.
+
+One thing still lives outside it: the `#SBATCH` header of
+`new_hogwild_train.slurm` — `--account`, `--partition`, and `--time` are set for
+one specific allocation. SLURM parses those directives before any code runs, so
+they cannot come from JSON; override them on the command line
+(`sbatch --account=... --partition=...`) or edit the header once.
 
 ### 2. Launch
 
@@ -89,8 +100,10 @@ Full option list, including GPU placement, ports, recovery, and logging flags:
 
 ### 3. Read the results
 
-Each run directory holds checkpoints, `a3c_training.log`, `carla_servers.log`,
-`gpu_dmon.log`, and a `logs/` tree of JSONL records — the complete history of the
+Everything a run produces lands in one directory under `RUNS_DIR`: checkpoints,
+`a3c_training.log`, `carla_servers.log`, `server_logs/`, `gpu_dmon.log`,
+`slurm.log` (a link to the SLURM job output), saved episode frames under
+`episodes/`, and a `logs/` tree of JSONL records — the complete history of the
 run. W&B, when enabled, mirrors a curated subset of it.
 
 - [`A3C/docs/running.md`](A3C/docs/running.md) — every parameter, what it

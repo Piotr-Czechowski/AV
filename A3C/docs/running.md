@@ -1,32 +1,57 @@
 # Running the trainer, and what every parameter does
 
-`README.md` covers the normal path: fill in the paths JSON, fix `PROJECT_DIR` in
-the SLURM header, `sbatch`. This document explains what happens underneath and
-what each parameter actually changes.
+`README.md` covers the normal path: fill in the paths JSON, `sbatch`. This
+document explains what happens underneath and what each parameter actually
+changes.
 
 ## The paths file
 
-`new_hogwild_train.slurm` reads `new_hogwild_train_paths.json` from the
-directory named in its own line-15 `PROJECT_DIR`, and exits with an error if the
-file is missing or if any key is absent. Use `null` rather than `""` for values
-you want left unset.
+Every user-specific path lives in `new_hogwild_train_paths.sh`, a plain list of
+`export` lines. Nothing else in the repository holds one, so a new user edits
+exactly this file.
 
-| Key | Meaning |
-|---|---|
-| `VENV` | Virtualenv to activate. Skipped silently if the directory does not exist, so a typo here shows up later as a missing-import error. |
-| `PROJECT_DIR` | Absolute path of the `A3C/` directory on the cluster. Becomes the working directory and the parent of `runs/`. |
-| `MULTISERVER_SCRIPT` | Absolute path to the CARLA multiserver launcher (`carla_athena_multiserver_v3*.py`). Ignored with `--no-carla`. |
-| `WANDB_PROJECT` | W&B project name. |
-| `WANDB_RUN_NAME` | W&B run name, or `null` for `a3c-<workers>w-<id>`. |
-| `WANDB_ENTITY` | W&B team or user, or `null` for your default. |
+`new_hogwild_train.slurm` sources it, and everything in it is exported, so the
+trainer and the CARLA multiserver inherit the values with no further plumbing.
+The lookup order is:
+
+1. `$CONFIG_FILE`, if set,
+2. `${SLURM_SUBMIT_DIR}/new_hogwild_train_paths.sh` — the directory you ran
+   `sbatch` from, falling back to `$PWD`.
+
+So `cd /path/to/A3C && sbatch new_hogwild_train.slurm` works with no path baked
+into the job script.
+
+Only `CARLA_CONTAINER_IMAGE` has to be filled in. The rest is derived from the
+submit directory or falls back to a working default, and each value is checked
+where it is used, so an error names both the variable and the file to fix.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `CARLA_CONTAINER_IMAGE` | **none — you set this** | Apptainer `.sif` holding the CARLA server. Checked just before the servers start, so `--no-carla` runs do not need it. |
+| `PROJECT_DIR` | the directory you ran `sbatch` from | Absolute path of the `A3C/` directory. Becomes the working directory. |
+| `MULTISERVER_SCRIPT` | `${PROJECT_DIR}/../carla_athena_multiserver_v3.py` | CARLA multiserver launcher — its location in a fresh checkout. The job stops with its path if the file is not there. |
+| `RUNS_DIR` | `${PROJECT_DIR}/runs` | Parent of the per-run output directories. Point it elsewhere when code and results live on different filesystems. |
+| `VENV` | unset — use the Python on `PATH` | Virtualenv to activate. When set it must exist; the job stops rather than running on the wrong Python. |
+| `CARLA_BINARY` | `/home/carla/CarlaUE4.sh` | CARLA launcher path *inside* the container image. Change only for a custom build. |
+| `WANDB_PROJECT` | `a3c-carla` | W&B project name. |
+| `WANDB_RUN_NAME` | `a3c-<workers>w-<id>` | W&B run name. |
+| `WANDB_ENTITY` | your personal entity | W&B team or user. |
+| `WANDB_API_KEY` | `~/.netrc` | Only when netrc is not set up on the cluster. |
+| `CARLA_PATH` | empty | CARLA executable directory, only for starting CARLA from Python instead of through `MULTISERVER_SCRIPT`. Reaches the code as `settings.CARLA_PATH`. |
+| `CARLA_EGG_PATH` | empty | CARLA `.egg` glob pattern, same case as above. |
 
 `--venv`, `--project-dir`, and `--multiserver-script` override the first three
 for a single job without editing the file.
 
-Two paths live outside the JSON: `PROJECT_DIR` in the SLURM header (it is what
-locates the JSON), and `CARLA_PATH` / `CARLA_EGG_PATH` in `settings.py`, needed
-only when CARLA is started from Python rather than through
-`MULTISERVER_SCRIPT`.
+The file is gitignored, so a W&B key or a private scratch path in it is not
+committed.
+
+Running the trainer or the multiserver outside `sbatch`: source the file first.
+
+```bash
+source new_hogwild_train_paths.sh
+python new_hogwild_train_a3c_carla.py --num-workers 1 --outdir /tmp/run
+```
 
 ## What a run consists of
 

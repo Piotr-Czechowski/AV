@@ -5,7 +5,7 @@ import numpy as np
 
 
 class StateObserver:
-    def __init__(self):
+    def __init__(self, output_dir=None):
         self.snapshot_date = None
         self.action = None
         self.reward = None
@@ -13,6 +13,16 @@ class StateObserver:
         self.episode = None
         self.step = None
         self.manouver = None
+        # Root for annotated frames. The wrapper points this at the current
+        # run directory; the fallback keeps standalone use working.
+        self.output_dir = output_dir or os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), 'images')
+
+    def _episode_dir(self, *parts):
+        """Return a path under output_dir, creating the directory."""
+        directory = os.path.join(self.output_dir, *parts)
+        os.makedirs(directory, exist_ok=True)
+        return directory
 
     def save_to_disk(self):
         # # Convert the image to a format that OpenCV can work with (BGR format)
@@ -29,7 +39,8 @@ class StateObserver:
 
         # # Put text on the image
         # cv2.putText(img, text, position, font, font_scale, color, thickness)
-        self.image.save_to_disk(f"A_to_B_GPU_34/images/{self.episode}/{int(self.step)}.jpeg")
+        self.image.save_to_disk(os.path.join(
+            self._episode_dir(str(self.episode)), f"{int(self.step)}.jpeg"))
         # self.episode = self.episode
         # self.step = self.step
 
@@ -58,13 +69,18 @@ class StateObserver:
 
         self.image_sub = np.vstack((image_sub,))
 
-        cv2.imwrite(f"A_to_B_GPU_34/images/{self.episode}/{int(self.step)}_s.jpeg", image_sub)
+        episode_dir = self._episode_dir(str(self.episode))
+        cv2.imwrite(os.path.join(
+            episode_dir, f"{int(self.step)}_s.jpeg"), image_sub)
 
     def save_together(self):
-        
+
+        episode_dir = self._episode_dir(str(self.episode))
         # Wczytanie dwóch obrazów JPG
-        image1 = cv2.imread(f"A_to_B_GPU_34/images/{self.episode}/{int(self.step)}.jpeg")
-        image2 = cv2.imread(f"A_to_B_GPU_34/images/{self.episode}/{int(self.step)}_s.jpeg")
+        image1 = cv2.imread(os.path.join(
+            episode_dir, f"{int(self.step)}.jpeg"))
+        image2 = cv2.imread(os.path.join(
+            episode_dir, f"{int(self.step)}_s.jpeg"))
 
         # Sprawdzanie, czy obrazy zostały poprawnie wczytane
         if image1 is None or image2 is None:
@@ -80,15 +96,9 @@ class StateObserver:
         combined_image = np.vstack((image1, image2))
 
         # Zapis i wyświetlenie połączonego obrazu
-        try:
-            os.mkdir("A_to_B_GPU_34/images/combined")
-        except FileExistsError:
-            pass
-        try:
-            os.mkdir(f"A_to_B_GPU_34/images/combined/{self.episode}")
-        except FileExistsError:
-            pass
-        cv2.imwrite(f"A_to_B_GPU_34/images/combined/{self.episode}/{int(self.step)}_combined.jpeg", combined_image)
+        combined_dir = self._episode_dir('combined', str(self.episode))
+        cv2.imwrite(os.path.join(
+            combined_dir, f"{int(self.step)}_combined.jpeg"), combined_image)
     
     def reset(self):
         self.snapshot_date = None

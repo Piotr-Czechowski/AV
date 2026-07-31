@@ -8,37 +8,38 @@
 #SBATCH --gpus=1
 #SBATCH --account=plgdyplomanci7-gpu-a100
 #SBATCH --job-name=new-hogwild-a3c-carla
-#SBATCH --output=new-hogwild-a3c-carla-log-%J.txt
-#SBATCH --error=new-hogwild-a3c-carla-log-%J.txt
+#SBATCH --output=new-hogwild-a3c-carla-log-%J.log
+#SBATCH --error=new-hogwild-a3c-carla-log-%J.log
 #SBATCH --signal=SIGUSR1@90
 
-PROJECT_DIR="/net/tscratch/people/plgbartoszkawa/AV/A3C"
-CONFIG_FILE="${PROJECT_DIR}/new_hogwild_train_paths.json"
-export CONFIG_FILE
-if [[ -f "${CONFIG_FILE}" ]]; then
-    if command -v python3 >/dev/null 2>&1; then
-        PYTHON_CMD=python3
-    else
-        PYTHON_CMD=python
-    fi
-    eval "$("${PYTHON_CMD}" - <<'PY'
-import json, os, shlex
-path = os.environ['CONFIG_FILE']
-with open(path, 'r', encoding='utf-8') as f:
-    cfg = json.load(f)
-for key in ('VENV', 'PROJECT_DIR', 'MULTISERVER_SCRIPT', 'WANDB_PROJECT', 'WANDB_RUN_NAME', 'WANDB_ENTITY'):
-    if key not in cfg:
-        raise SystemExit(f'Missing key {key} in config file {path}')
-    if cfg[key] is not None:
-        print(f"{key}={shlex.quote(str(cfg[key]))}")
-    else:
-        print(f"{key}=")
-PY
-)"
-else
-    echo "ERROR: missing config file ${CONFIG_FILE}" >&2
+# ----- user paths ------------------------------------------------------------
+# Every user-specific path comes from one file; see
+# new_hogwild_train_paths.sh.example.  It is looked up next to the directory
+# you submit from, so submit with:
+#     cd /path/to/A3C && sbatch new_hogwild_train.slurm
+# or point CONFIG_FILE at it explicitly.  Everything it sets is exported, so
+# the trainer and the CARLA multiserver inherit it.
+CONFIG_FILE="${CONFIG_FILE:-${SLURM_SUBMIT_DIR:-$PWD}/new_hogwild_train_paths.sh}"
+if [[ ! -f "${CONFIG_FILE}" ]]; then
+    echo "ERROR: missing paths file ${CONFIG_FILE}" >&2
+    echo "       cp new_hogwild_train_paths.sh.example new_hogwild_train_paths.sh" >&2
     exit 1
 fi
+export CONFIG_FILE
+# shellcheck disable=SC1090
+source "${CONFIG_FILE}"
+
+# Everything below has a working default derived from the checkout layout, so
+# the paths file only has to name what cannot be guessed.  Each value is
+# checked where it is used, which is where a precise error can be printed.
+PROJECT_DIR="${PROJECT_DIR:-${SLURM_SUBMIT_DIR:-$PWD}}"
+MULTISERVER_SCRIPT="${MULTISERVER_SCRIPT:-${PROJECT_DIR}/../carla_athena_multiserver_v3.py}"
+RUNS_DIR="${RUNS_DIR:-${PROJECT_DIR}/runs}"
+VENV="${VENV:-}"
+CARLA_CONTAINER_IMAGE="${CARLA_CONTAINER_IMAGE:-}"
+WANDB_PROJECT="${WANDB_PROJECT:-a3c-carla}"
+WANDB_RUN_NAME="${WANDB_RUN_NAME:-}"
+WANDB_ENTITY="${WANDB_ENTITY:-}"
 
 # =============================================================================
 # new_hogwild_train.slurm -- full pipeline for the new_hogwild_* implementation.
@@ -164,9 +165,15 @@ fi
 module load GCCcore/13.2.0 Python/3.11.5 2>/dev/null || true
 module load CUDA/12.4.0 cuDNN/9.2.1.18-CUDA-12.4.0 2>/dev/null || true
 
-if [ -d "${VENV}" ]; then
+if [ -n "${VENV}" ]; then
+    if [ ! -d "${VENV}" ]; then
+        echo "ERROR: VENV=${VENV} does not exist (set in ${CONFIG_FILE})" >&2
+        exit 1
+    fi
     # shellcheck disable=SC1091
     source "${VENV}/bin/activate"
+else
+    echo "[SLURM] VENV not set; using the Python already on PATH"
 fi
 
 export OMP_NUM_THREADS=1
@@ -186,8 +193,16 @@ elif [ -n "${OUTDIR_OVERRIDE}" ]; then
     OUTPUT_DIR="${OUTDIR_OVERRIDE}"
     mkdir -p "${OUTPUT_DIR}"
 else
-    OUTPUT_DIR="${PROJECT_DIR}/runs/a3c_hogwild_${NUM_WORKERS}w_${TIMESTAMP}_${SLURM_JOB_ID:-local}"
+    OUTPUT_DIR="${RUNS_DIR}/a3c_hogwild_${NUM_WORKERS}w_${TIMESTAMP}_${SLURM_JOB_ID:-local}"
     mkdir -p "${OUTPUT_DIR}"
+fi
+
+# SLURM writes its own stdout next to the submit directory, because the run
+# directory does not exist yet at submit time. Link it in, so one directory
+# holds everything the run produced.
+if [ -n "${SLURM_JOB_ID:-}" ] && [ -n "${SLURM_SUBMIT_DIR:-}" ]; then
+    ln -sfn "${SLURM_SUBMIT_DIR}/new-hogwild-a3c-carla-log-${SLURM_JOB_ID}.log" \
+        "${OUTPUT_DIR}/slurm.log" 2>/dev/null || true
 fi
 
 RUN_LOG="${OUTPUT_DIR}/a3c_training.log"
@@ -290,6 +305,17 @@ fi
 
 # ----- start CARLA servers ---------------------------------------------------
 if [ -z "${NO_CARLA}" ]; then
+    if [ -z "${CARLA_CONTAINER_IMAGE}" ] || \
+       [ "${CARLA_CONTAINER_IMAGE}" != "${CARLA_CONTAINER_IMAGE/CHANGE_ME/}" ]; then
+        echo "ERROR: set CARLA_CONTAINER_IMAGE in ${CONFIG_FILE}" >&2
+        echo "       (or pass --no-carla if the servers are already running)" >&2
+        exit 1
+    fi
+    if [ ! -f "${MULTISERVER_SCRIPT}" ]; then
+        echo "ERROR: MULTISERVER_SCRIPT=${MULTISERVER_SCRIPT} does not exist" >&2
+        echo "       set it in ${CONFIG_FILE}" >&2
+        exit 1
+    fi
     echo "[SLURM] starting ${NUM_WORKERS} CARLA server(s)..."
     nohup python -u "${MULTISERVER_SCRIPT}" \
         --num-servers "${NUM_WORKERS}" \
@@ -297,6 +323,7 @@ if [ -z "${NO_CARLA}" ]; then
         --server-gpu-start "${SERVER_GPU_START}" \
         --start-port "${START_PORT}" \
         --port-step "${PORT_STEP}" \
+        --outdir "${OUTPUT_DIR}" \
         > "${CARLA_LOG}" 2>&1 &
     CARLA_PID=$!
     echo "[SLURM] CARLA supervisor PID=${CARLA_PID} -> ${CARLA_LOG}"
