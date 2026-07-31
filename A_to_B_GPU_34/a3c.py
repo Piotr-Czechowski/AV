@@ -1,5 +1,5 @@
-# /net/tscratch/people/plgbartoszkawa/AV/.venv/bin/python /net/tscratch/people/plgbartoszkawa/AV/A_to_B_GPU_34/a3c.py
-#nohup /net/tscratch/people/plgbartoszkawa/AV/.venv/bin/python /net/tscratch/people/plgbartoszkawa/AV/A_to_B_GPU_34/a3c.py > a3c_out.log 2>&1 &
+# /net/tscratch/people/plgpczechow/AV/.venv/bin/python /net/tscratch/people/plgpczechow/AV/A_to_B_GPU_34/a3c.py
+#nohup /net/tscratch/people/plgpczechow/AV/.venv/bin/python /net/tscratch/people/plgpczechow/AV/A_to_B_GPU_34/a3c.py > a3c_out.log 2>&1 &
 
 import glob
 import time
