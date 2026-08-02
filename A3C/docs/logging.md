@@ -16,7 +16,7 @@ are simply not sent to W&B.
 | File | Written by | One line per |
 |---|---|---|
 | `logs/worker_<id>/episodes.jsonl` | each worker | finished episode |
-| `logs/worker_<id>/updates.jsonl` | each worker | optimizer update (every `--rollout-length` steps, or on episode end) |
+| `logs/worker_<id>/updates.jsonl` | each worker | optimizer update |
 | `logs/worker_<id>/timing.jsonl` | each worker | diagnostic window (`--diag-log-interval` updates or `--diag-log-wall-s` seconds) |
 | `logs/worker_<id>/steps.jsonl` | each worker | environment step — **only with `--log-steps`** |
 | `logs/worker_<id>/system.jsonl` | each worker | resource sample, every `--monitor-interval` s |
@@ -27,9 +27,28 @@ are simply not sent to W&B.
 Every record carries `kind` (record type), `ts` (timestamp), `worker` (source
 worker, `-1` for run-level) and, where meaningful, `global_t`.
 
+## Step, update, episode
+
+Training writes on three cadences, from densest to sparsest:
+
+- **step** — every `env.step()`. Written only with `--log-steps`, only to
+  `steps.jsonl`, never to W&B: `action`, `value`, `entropy`, `reward`, `done`,
+  `step_in_ep`, plus `speed_kmh`, `route_dist`, `goal_dist`, `maneuver` and
+  `reward_components` when the environment reports them. The only view inside
+  an episode, and gigabytes per hour with 16 workers — hence off by default.
+- **update** — every `--rollout-length` steps (default 20) *or* at episode end,
+  whichever comes first. Losses, gradients, and statistics of that one rollout.
+  This is the dense W&B path: roughly 16 points per second with 16 workers.
+- **episode** — at episode end. Outcome of the whole episode, plus the
+  run-wide bests and rolling means as they stood at that moment.
+
+`timing` and `system` records follow their own clocks and are independent of
+all three.
+
 ## Episode values
 
-Written on every episode end. All of them reach W&B.
+Written on every episode end, aggregating the whole episode. All of them reach
+W&B.
 
 | Field | W&B metric | Meaning |
 |---|---|---|
@@ -53,9 +72,10 @@ Written on every episode end. All of them reach W&B.
 
 ## Update values
 
-Written on every optimizer update. All of them reach W&B twice: once as
-`train/<metric>` (all workers interleaved) and once as
-`worker_<id>/train/<metric>` (that worker alone).
+Written on every optimizer update, covering that one rollout rather than the
+episode around it. All of them reach W&B twice: once as `train/<metric>` (all
+workers interleaved) and once as `worker_<id>/train/<metric>` (that worker
+alone).
 
 | Field | W&B metric | Meaning |
 |---|---|---|
