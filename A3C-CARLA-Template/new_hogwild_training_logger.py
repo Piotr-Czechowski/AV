@@ -18,13 +18,24 @@ alters what training produced.
 
 Telemetry is best effort.  A full queue costs W&B points, never local
 records and never training throughput.
+
+``ResourceLogger`` runs only in runs launched with ``--log-resources``:
+one daemon thread per process samples its own CPU/RAM usage, and the
+main process additionally samples every visible GPU, into ``system``
+records that travel the same two paths.
 """
 
 import json
 import math
 import os
 import queue as queue_module
+import threading
 from datetime import datetime
+
+try:
+    import psutil
+except ImportError:
+    psutil = None
 
 
 RECORD_KINDS = frozenset(
@@ -214,10 +225,7 @@ _UPDATE_METRICS = {
     'entropy_coef': 'train/entropy_coef',
 }
 
-_SYSTEM_METRICS = (
-    'cpu_percent_mean', 'cpu_percent_max', 'mem_percent',
-    'mem_available_gb', 'swap_used_gb',
-)
+_SYSTEM_METRICS = ('proc_cpu_percent', 'proc_rss_gb')
 
 
 def project_update_to_wandb(record):
@@ -247,16 +255,19 @@ def project_update_to_wandb(record):
 def project_system_to_wandb(record):
     """Project one resource sample onto W&B metrics, values untouched.
 
-    Only node-level CPU/memory/GPU numbers travel.  Process listings,
-    CARLA server details, and PIDs stay in the local ``system.jsonl``.
+    The main process reports its own CPU/RSS plus one sample per
+    visible GPU under ``system/*``.  Workers, which own no GPU view,
+    report their process numbers under ``worker_<id>/system/*``.
     """
     payload = {}
     _put_metric(payload, 'global_step', record.get('global_t'))
-    section = record.get('system')
-    if isinstance(section, dict):
-        for name in _SYSTEM_METRICS:
-            _put_metric(
-                payload, 'system/{}'.format(name), section.get(name))
+    worker_id = record.get('worker')
+    prefix = ''
+    if worker_id is not None and int(worker_id) >= 0:
+        prefix = 'worker_{}/'.format(worker_id)
+    for name in _SYSTEM_METRICS:
+        _put_metric(
+            payload, prefix + 'system/{}'.format(name), record.get(name))
     for gpu in record.get('gpus') or ():
         if not isinstance(gpu, dict) or \
                 not isinstance(gpu.get('index'), int):
@@ -438,6 +449,101 @@ def telemetry_process_main(telemetry_queue, run_output_dir,
                     _shared_counter(shared_counters, 'wandb_errors'))
                 print('[TELEMETRY] wandb.finish failed: {}'.format(error),
                       flush=True)
+
+
+class ResourceLogger:
+    """Minimal resource sampler for ``--log-resources`` runs.
+
+    One daemon thread per process samples the host process's own CPU
+    usage and RSS.  The main process, the only one with a node-wide
+    view, additionally samples every visible GPU through pynvml.
+    Each sample becomes one ``system`` record handed to the
+    ``TrainingLogger``, so it lands in the local ``resources.jsonl``
+    and reaches W&B through the ordinary telemetry path.  Sampling
+    errors are swallowed: monitoring must never disturb training.
+    """
+
+    def __init__(self, logger, interval=10.0, gpu_indices=None,
+                 global_step_getter=None):
+        self.logger = logger
+        self.interval = interval
+        self.gpu_indices = list(gpu_indices or ())
+        self.global_step_getter = global_step_getter
+        self._stop_event = threading.Event()
+        self._thread = None
+        self._nvml = None
+        self._proc = None
+
+    def start(self):
+        if psutil is None:
+            print('[RESOURCES] psutil unavailable; '
+                  'resource logging disabled', flush=True)
+            return
+        self._proc = psutil.Process(os.getpid())
+        self._proc.cpu_percent(interval=None)
+        self._thread = threading.Thread(
+            target=self._loop, daemon=True, name='ResourceLogger')
+        self._thread.start()
+
+    def stop(self):
+        self._stop_event.set()
+        if self._thread is not None and self._thread.is_alive():
+            self._thread.join()
+        self._thread = None
+
+    def _ensure_nvml(self):
+        if self._nvml is not None or not self.gpu_indices:
+            return self._nvml
+        try:
+            import pynvml
+            pynvml.nvmlInit()
+            self._nvml = pynvml
+        except Exception:
+            self._nvml = False
+            print('[RESOURCES] pynvml unavailable; '
+                  'GPU sampling disabled', flush=True)
+        return self._nvml
+
+    def _sample(self):
+        data = {
+            'proc_cpu_percent': round(
+                self._proc.cpu_percent(interval=None), 1),
+            'proc_rss_gb': round(
+                self._proc.memory_info().rss / 1e9, 3),
+        }
+        pynvml = self._ensure_nvml()
+        if pynvml:
+            gpus = []
+            for index in self.gpu_indices:
+                try:
+                    handle = pynvml.nvmlDeviceGetHandleByIndex(index)
+                    util = pynvml.nvmlDeviceGetUtilizationRates(handle)
+                    mem = pynvml.nvmlDeviceGetMemoryInfo(handle)
+                    gpus.append({
+                        'index': index,
+                        'util_percent': int(util.gpu),
+                        'mem_used_gb': round(mem.used / 1e9, 3),
+                    })
+                except Exception:
+                    pass
+            data['gpus'] = gpus
+        return data
+
+    def _loop(self):
+        while not self._stop_event.is_set():
+            try:
+                data = self._sample()
+                if self.global_step_getter is not None:
+                    try:
+                        data['global_t'] = self.global_step_getter()
+                    except (AttributeError, TypeError, ValueError,
+                            RuntimeError):
+                        pass
+                self.logger.log_resources(data)
+            except Exception:
+                pass
+            if self._stop_event.wait(timeout=self.interval):
+                break
 
 
 class TrainingLogger:
@@ -622,6 +728,13 @@ class TrainingLogger:
             }
         return self._write(
             'timing.jsonl', self._record('timing', data))
+
+    def log_resources(self, data):
+        """Write one resource sample, then hand it to telemetry."""
+        record = self._write(
+            'resources.jsonl', self._record('system', data))
+        self._publish(record)
+        return record
 
     def log_event(self, event_type, **kwargs):
         """Emit a lifecycle/health event.

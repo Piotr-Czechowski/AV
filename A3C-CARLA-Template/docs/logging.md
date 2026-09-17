@@ -19,8 +19,8 @@ are simply not sent to W&B.
 | `logs/worker_<id>/updates.jsonl` | each worker | optimizer update |
 | `logs/worker_<id>/timing.jsonl` | each worker | diagnostic window (`--diag-log-interval` updates or `--diag-log-wall-s` seconds) |
 | `logs/worker_<id>/steps.jsonl` | each worker | environment step — **only with `--log-steps`** |
-| `logs/worker_<id>/system.jsonl` | each worker | resource sample, every `--monitor-interval` s |
-| `logs/system.jsonl` | main process | node-wide resource sample, every `--monitor-interval` s |
+| `logs/worker_<id>/resources.jsonl` | each worker | resource sample, only with `--log-resources` |
+| `logs/worker_-1/resources.jsonl` | main process | resource sample incl. GPU usage, only with `--log-resources` |
 | `logs/events.jsonl` | telemetry process only | lifecycle or health event |
 | `logs/metadata.json` | main process | written once at startup |
 
@@ -115,21 +115,18 @@ can see which one dominates.
 
 ## Resource values
 
-Sampled every `--monitor-interval` seconds (default 10).
+Written only when the run is launched with `--log-resources`, sampled
+every `--log-resources-interval` seconds (default 10).
 
 | Field | W&B metric | Meaning |
 |---|---|---|
-| `system.cpu_percent_mean` | `system/cpu_percent_mean` | CPU load averaged across cores |
-| `system.cpu_percent_max` | `system/cpu_percent_max` | Busiest single core |
-| `system.mem_percent` | `system/mem_percent` | RAM in use |
-| `system.mem_available_gb` | `system/mem_available_gb` | RAM left. Falling steadily means a leak |
-| `system.swap_used_gb` | `system/swap_used_gb` | Swap in use. Anything above 0 usually means trouble |
-| `gpus[n].util_percent` | `system/gpu<n>_util_percent` | GPU utilization |
+| `proc_cpu_percent` | `system/proc_cpu_percent`, per worker `worker_<id>/system/proc_cpu_percent` | CPU usage of the logging process |
+| `proc_rss_gb` | `system/proc_rss_gb`, per worker `worker_<id>/system/proc_rss_gb` | RAM (RSS) of the logging process. Steady growth means a leak |
+| `gpus[n].util_percent` | `system/gpu<n>_util_percent` | GPU utilization, sampled once by the main process |
 | `gpus[n].mem_used_gb` | `system/gpu<n>_mem_used_gb` | GPU memory in use |
-| `carla.*`, `mem_used_gb`, `cpu_freq_mhz`, `total_procs`, `total_rss_gb` | — | Local only: CARLA process stats, PIDs, extra counters |
 
-Per-worker resource usage goes to `logs/worker_<id>/system.jsonl` and never
-reaches W&B.
+Every record lands in `logs/worker_<id>/resources.jsonl`; GPU samples come
+only from the main process (`worker_-1`).
 
 ## Timing values
 

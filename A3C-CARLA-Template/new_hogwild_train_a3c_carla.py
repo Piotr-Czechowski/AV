@@ -22,12 +22,11 @@ import numpy as np
 import torch
 import torch.multiprocessing as mp
 
-from Actions import Actions as ac
+from rl_configuration import Actions as ac
 from new_hogwild_prepare_output_dir import prepare_output_dir
 from new_hogwild_training_logger import (
-    TrainingLogger, enqueue_telemetry, make_telemetry_stop,
+    ResourceLogger, TrainingLogger, make_telemetry_stop,
     telemetry_process_main)
-from new_hogwild_system_monitor import RunMonitor
 from new_hogwild_a3c import GlobalNetwork
 from new_hogwild_run_a3c import run_with_restart, find_latest_checkpoint
 
@@ -88,9 +87,8 @@ DEFAULT_LOG_STEPS = False
 DEFAULT_LOG_UPDATE_ARRAYS = False
 DEFAULT_DIAG_LOG_INTERVAL = 100
 DEFAULT_DIAG_LOG_WALL_S = 60.0
-DEFAULT_MONITOR_INTERVAL = 10.0
-DEFAULT_NO_SYSTEM_MONITOR = False
-DEFAULT_NO_GPU_MONITOR = False
+DEFAULT_LOG_RESOURCES = False
+DEFAULT_LOG_RESOURCES_INTERVAL = 10.0
 DEFAULT_VERBOSE_ENV_LOGS = False
 DEFAULT_WANDB_PROJECT = 'a3c-carla'
 DEFAULT_WANDB_RUN_NAME = None
@@ -238,12 +236,10 @@ def build_parser():
                    default=DEFAULT_DIAG_LOG_INTERVAL)
     p.add_argument('--diag-log-wall-s', type=float,
                    default=DEFAULT_DIAG_LOG_WALL_S)
-    p.add_argument('--monitor-interval', type=float,
-                   default=DEFAULT_MONITOR_INTERVAL)
-    p.add_argument('--no-system-monitor', action='store_true',
-                   default=DEFAULT_NO_SYSTEM_MONITOR)
-    p.add_argument('--no-gpu-monitor', action='store_true',
-                   default=DEFAULT_NO_GPU_MONITOR)
+    p.add_argument('--log-resources', action='store_true',
+                   default=DEFAULT_LOG_RESOURCES)
+    p.add_argument('--log-resources-interval', type=float,
+                   default=DEFAULT_LOG_RESOURCES_INTERVAL)
     p.add_argument('--verbose-env-logs', action='store_true',
                    default=DEFAULT_VERBOSE_ENV_LOGS)
     p.add_argument('--wandb-project', type=str,
@@ -550,11 +546,12 @@ def main():
     telemetry_process.start()
 
     events = None
-    run_monitor = None
+    resource_logger = None
     try:
         events = TrainingLogger(
             run_output_dir, worker_id=-1, telemetry_queue=log_queue,
-            dropped_counter=telemetry_counters['queue_drops'])
+            dropped_counter=telemetry_counters['queue_drops'],
+            publish_metrics=args.wandb_enabled)
         events.log_event(
             'training_start',
             global_t=global_network.global_step.value,
@@ -567,24 +564,19 @@ def main():
                 'wandb_unavailable',
                 global_t=global_network.global_step.value)
 
-        if not args.no_system_monitor:
-            telemetry_callback = None
-            if args.wandb_enabled:
-                telemetry_callback = lambda record: enqueue_telemetry(
-                    log_queue, record,
-                    dropped_counter=telemetry_counters['queue_drops'])
-            run_monitor = RunMonitor(
-                run_output_dir, interval=args.monitor_interval,
-                track_carla=True, track_gpu=not args.no_gpu_monitor,
+        if args.log_resources:
+            resource_logger = ResourceLogger(
+                events,
+                interval=args.log_resources_interval,
+                gpu_indices=list(range(torch.cuda.device_count())),
                 global_step_getter=lambda:
-                    global_network.global_step.value,
-                telemetry_callback=telemetry_callback)
-            run_monitor.start()
+                    global_network.global_step.value)
+            resource_logger.start()
     except BaseException:
         shutdown_event.set()
         try:
-            if run_monitor is not None:
-                run_monitor.stop()
+            if resource_logger is not None:
+                resource_logger.stop()
         finally:
             _stop_telemetry_process(log_queue, telemetry_process)
             if events is not None:
@@ -613,8 +605,8 @@ def main():
         shutdown_event.set()
     finally:
         shutdown_event.set()
-        if run_monitor is not None:
-            run_monitor.stop()
+        if resource_logger is not None:
+            resource_logger.stop()
 
         session_elapsed = time.time() - start_time
         cumulative = session_elapsed + elapsed_offset

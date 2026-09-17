@@ -5,7 +5,7 @@ local model on its assigned device, collects a short rollout, computes a loss
 locally, copies gradients to the global model, and applies an asynchronous
 optimizer update.
 
-This module intentionally does not read argparse or settings.py. The entry
+This module intentionally does not read argparse or run_settings.py. The entry
 point passes a plain config namespace with every value workers need.
 """
 
@@ -25,8 +25,7 @@ import torch.multiprocessing as mp
 from torch.distributions.categorical import Categorical
 
 from new_hogwild_timing_utils import TimingAccumulator
-from new_hogwild_training_logger import TrainingLogger
-from new_hogwild_system_monitor import WorkerMonitor
+from new_hogwild_training_logger import ResourceLogger, TrainingLogger
 from new_hogwild_carla_wrapper import CarlaA3CWrapper
 
 
@@ -214,10 +213,6 @@ def clip_gradients_and_measure(model, max_norm):
         pre_clip = compute_total_gradient_norm(model)
     post_clip = compute_total_gradient_norm(model)
     return pre_clip, post_clip, bool(max_norm > 0 and pre_clip > max_norm)
-
-
-def system_monitor_enabled(config):
-    return not bool(getattr(config, 'no_system_monitor', False))
 
 
 def create_shared_optimizer(params, config):
@@ -813,12 +808,15 @@ class A3CWorker(mp.Process):
             publish_metrics=getattr(
                 self.config, 'wandb_enabled', False))
 
-        worker_monitor = None
-        if system_monitor_enabled(self.config):
-            worker_monitor = WorkerMonitor(
-                self.run_output_dir, self.worker_id,
-                interval=self.config.monitor_interval)
-            worker_monitor.start()
+        resource_logger = None
+        if getattr(self.config, 'log_resources', False):
+            resource_logger = ResourceLogger(
+                training_logger,
+                interval=getattr(
+                    self.config, 'log_resources_interval', 10.0),
+                global_step_getter=lambda:
+                    self.global_network.global_step.value)
+            resource_logger.start()
 
         timer = TimingAccumulator()
         last_diag_wall = time.time()
@@ -1062,9 +1060,9 @@ class A3CWorker(mp.Process):
                 error=str(e))
             raise
         finally:
-            if worker_monitor is not None:
+            if resource_logger is not None:
                 try:
-                    worker_monitor.stop()
+                    resource_logger.stop()
                 except Exception:
                     pass
             try:

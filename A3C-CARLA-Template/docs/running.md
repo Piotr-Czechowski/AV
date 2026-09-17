@@ -63,7 +63,7 @@ SLURM job
 ├── nvidia-smi dmon            GPU trace -> gpu_dmon.log
 └── new_hogwild_train_a3c_carla.py
     ├── A3CTelemetry           sole owner of events.jsonl and W&B
-    ├── RunMonitor (thread)    node-wide resource sampling
+    ├── ResourceLogger (thread) resource sampling, only with --log-resources
     └── supervisor
         └── worker 0..N-1      each with its own CARLA server and local model
 ```
@@ -202,9 +202,8 @@ checkpoint no longer matches the network.
 | `--log-update-arrays` | off | Keeps raw advantage/value/reward/entropy arrays inside update records. |
 | `--diag-log-interval` | `100` | Updates between timing snapshots. |
 | `--diag-log-wall-s` | `60.0` | Seconds between timing snapshots, whichever comes first. |
-| `--monitor-interval` | `10.0` s | Resource sampling period. |
-| `--no-system-monitor` | off | Disables both the node and the per-worker resource monitors. |
-| `--no-gpu-monitor` | off | Keeps the system monitor but drops GPU sampling. |
+| `--log-resources` | off | Sample per-process CPU/RAM and GPU usage into `resources.jsonl` and W&B. |
+| `--log-resources-interval` | `10.0` s | Resource sampling period. |
 | `--verbose-env-logs` | off | Keeps per-episode CARLA stdout output. |
 | `--save-episodes`, `--save-episode-interval` | none, `0` | Episodes whose camera frames are written to disk. |
 

@@ -7,10 +7,10 @@ import sys
 import time
 import math
 import torch
-import settings
+import run_settings
 import torch.multiprocessing as mp
 from utils import ColoredPrint
-from Actions import Actions as ac
+from rl_configuration import Actions as ac
 import queue
 
 # try:
@@ -27,25 +27,25 @@ import numpy as np
 import subprocess
 import cv2
 
-from utils import reward_function
+from rl_configuration import reward_function
 from carla_navigation.global_route_planner import GlobalRoutePlanner
 from carla_navigation.global_route_planner_dao import GlobalRoutePlannerDAO
-from settings import SHOW_CAM
+from run_settings import SHOW_CAM
 from state_observer import StateObserver
 from carla_navigation.local_planner import RoadOption
 
 
 # Global settings
-how_many_steps = settings.STEP_COUNTER
-sleep_time = settings.SLEEP_BETWEEN_ACTIONS
-mp_reward = settings.REWARD_FROM_MP
-tp_reward = settings.REWARD_FROM_TP
-serv_resx = settings.SERV_RESX
-serv_resy = settings.SERV_RESY
-port = settings.PORT
-spawning_type = settings.SPAWNING_TYPE
-logging = settings.LOGGING
-draw = settings.DRAW
+how_many_steps = run_settings.STEP_COUNTER
+sleep_time = run_settings.SLEEP_BETWEEN_ACTIONS
+mp_reward = run_settings.REWARD_FROM_MP
+tp_reward = run_settings.REWARD_FROM_TP
+serv_resx = run_settings.SERV_RESX
+serv_resy = run_settings.SERV_RESY
+port = run_settings.PORT
+spawning_type = run_settings.SPAWNING_TYPE
+logging = run_settings.LOGGING
+draw = run_settings.DRAW
 
 MAX_ATTEMPTS = 10
 WAIT_TIME = 0.5  # sekundy
@@ -82,7 +82,7 @@ MAP_POINTS_SC15 = [
 
 TESTING_SC = [(28, 154)]
 def start_carla_server(args):
-    return subprocess.Popen(f'CarlaUE4.exe ' + args, cwd=settings.CARLA_PATH, shell=True)
+    return subprocess.Popen(f'CarlaUE4.exe ' + args, cwd=run_settings.CARLA_PATH, shell=True)
 
 def remove_pictures():
     folder_path = 'A_to_B_GPU_34/camera_rgb_outputs'
@@ -508,7 +508,7 @@ class CarlaEnv:
 
     def create_action_space(self, action_space):
         if action_space == 'discrete':
-            self.action_space = [getattr(ac, action) for action in settings.ACTIONS]
+            self.action_space = [getattr(ac, action) for action in run_settings.ACTIONS]
             return self.action_space
         else:
             self.action_space = action_space
