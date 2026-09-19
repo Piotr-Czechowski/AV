@@ -1,7 +1,4 @@
-"""RL configuration for the A3C CARLA agent.
-
-Holds the discrete action space definition and the reward function.
-"""
+"""Discrete action space and the env reward function."""
 
 import math
 from dataclasses import dataclass
@@ -14,9 +11,7 @@ REWARD_FROM_INV = 0
 
 @dataclass()
 class Actions:
-    """
-    Example implementation of discrete action space for RL agent
-    """
+    """Discrete driving actions and their throttle/brake/steer values."""
 
     forward = 0
     forward_left = 1
@@ -32,7 +27,7 @@ class Actions:
     ACTION_CONTROL = {
         # acc, br, steer
         0: [0.5, 0, 0],  # forward
-        1: [0.5, 0, -0.5],  # no
+        1: [0.5, 0, -0.5],  # forward left
         2: [0.5, 0, 0.5],  # forward right
         3: [0, 1, 0],  # brake
         4: [0, 1, -0.5],  # brake left
@@ -69,7 +64,7 @@ def reward_function(
     on_junction,
     prev_speed,
 ):
-
+    """Scalar reward and done flag computed by CarlaEnv."""
     if len(collision_history_list) != 0 or route_distance >= 10:
         done = True
         col_reward = REWARD_FROM_COL
@@ -79,7 +74,8 @@ def reward_function(
 
     inv_reward = invasion_counter * REWARD_FROM_INV
 
-    speed_reward = -1.2 + 4 * math.sin(speed / 10)  # pik jest w okolicach 20 km/h
+    # Peak near 20 km/h.
+    speed_reward = -1.2 + 4 * math.sin(speed / 10)
     if route_distance < 1.5:
         route_distance_reward = 1
         if on_junction and speed_reward > 0:

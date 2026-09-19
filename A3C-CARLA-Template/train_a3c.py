@@ -1,8 +1,8 @@
-"""A3C multi-GPU CARLA training entry point.
+"""A3C CARLA training entry point.
 
 The CLI exposes run-shaping arguments. Stable algorithm, reward, and recovery
-defaults live as uppercase module-level variables below so normal SLURM
-launches do not need to pass a long list of constant values.
+defaults live as uppercase module-level variables below so typical launches
+do not need to pass a long list of constant values.
 """
 
 import argparse
@@ -141,7 +141,7 @@ DEFAULT_RESUME = None
 DEFAULT_ACTION_REPEAT = 2
 DEFAULT_EPISODE_MAX_DECISIONS = 100
 DEFAULT_WORLD_RELOAD_INTERVAL = 0
-DEFAULT_REWARD_MODE = 'legacy'#'shaped'
+DEFAULT_REWARD_MODE = 'legacy'  # or 'shaped'
 
 # Reward shaping / reward potential modificators
 DEFAULT_REWARD_PROGRESS_COEF = 1.0
@@ -165,10 +165,11 @@ DEFAULT_ACTION_TYPE = 'discrete'
 # ---------------------------------------------------------------------------
 
 def build_parser():
+    """Build the training CLI. Defaults live in the ``DEFAULT_*`` constants."""
     p = argparse.ArgumentParser(
-        description='A3C multi-GPU training for CARLA autonomous driving')
+        description='A3C training for CARLA autonomous driving')
 
-    # Run shape: these are the values normally changed from SLURM.
+    # Run shape: workers, ports, map, scenario, camera.
     p.add_argument('--num-workers', type=int,
                    default=DEFAULT_NUM_WORKERS)
     p.add_argument('--workers-per-gpu', type=int,
@@ -291,8 +292,7 @@ def build_parser():
     p.add_argument('--save-episode-interval', type=int,
                    default=DEFAULT_SAVE_EPISODE_INTERVAL)
 
-    # CARLA stepping and reset behavior. Reward coefficients are fixed globals
-    # in uppercase constants; only legacy-vs-shaped mode remains a run option.
+    # CARLA stepping and reset. Reward coefficients stay in uppercase constants.
     p.add_argument('--action-repeat', type=int,
                    default=DEFAULT_ACTION_REPEAT)
     p.add_argument('--episode-max-decisions', type=int,
@@ -307,6 +307,7 @@ def build_parser():
 
 
 def _config_to_dict(config):
+    """Flatten argparse.Namespace / SimpleNamespace to a plain dict."""
     if isinstance(config, dict):
         return config
     if hasattr(config, '__dict__'):
@@ -316,8 +317,7 @@ def _config_to_dict(config):
 
 
 def _apply_config_defaults(args):
-    # Internal defaults below are kept out of the normal CLI because they are
-    # rarely changed and define the current CARLA A3C setup.
+    """Fill fields kept off the CLI (optimizer internals, reward coeffs)."""
     if not hasattr(args, 'mp_density'):
         args.mp_density = DEFAULT_MP_DENSITY
     if not hasattr(args, 'rmsprop_alpha'):
@@ -367,6 +367,7 @@ def _timestamp():
 
 
 def _read_resume_state(run_output_dir):
+    """Load ``resume_state.json``, falling back to ``training_end`` in events."""
     state = {}
     state_path = os.path.join(run_output_dir, 'resume_state.json')
     try:
@@ -400,6 +401,7 @@ def _read_resume_state(run_output_dir):
 def _write_resume_state(run_output_dir, config, global_network,
                         elapsed_training_s, last_session_elapsed_s,
                         session_start_ts, session_end_ts):
+    """Atomically write counters and elapsed time for the next ``--resume``."""
     state = {
         'global_step': global_network.global_step.value,
         'global_episode': global_network.global_episode.value,
@@ -423,6 +425,7 @@ def _write_resume_state(run_output_dir, config, global_network,
 
 
 def _install_signal_handlers(shutdown_event):
+    """Set the shutdown event on SIGTERM / SIGUSR1 / SIGINT."""
     def _handle_signal(signum, _frame):
         try:
             name = signal.Signals(signum).name
@@ -440,6 +443,7 @@ def _install_signal_handlers(shutdown_event):
 
 def _stop_telemetry_process(log_queue, telemetry_process,
                             final_summary=None):
+    """Send the stop sentinel and join the telemetry process."""
     try:
         log_queue.put(
             make_telemetry_stop(final_summary or {}), timeout=10)
@@ -454,6 +458,7 @@ def _stop_telemetry_process(log_queue, telemetry_process,
 
 
 def _assign_worker_gpus(num_workers, workers_per_gpu, worker_gpu_start):
+    """Map workers to ``cuda:N`` strings, repeating the pattern if needed."""
     n_gpus = torch.cuda.device_count()
     if workers_per_gpu <= 0 or n_gpus == 0:
         return ['cpu'] * num_workers
@@ -475,6 +480,7 @@ def _assign_worker_gpus(num_workers, workers_per_gpu, worker_gpu_start):
 
 
 def main():
+    """Parse CLI, start telemetry + workers, write resume state on exit."""
     args = _apply_config_defaults(build_parser().parse_args())
 
     if args.entropy_coef is not None:

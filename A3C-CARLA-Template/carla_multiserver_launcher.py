@@ -46,6 +46,7 @@ CONFIG = None
 
 
 def parse_args(argv=None):
+    """CLI for runtime, server count, ports, image, and binary paths."""
     parser = argparse.ArgumentParser(
         description="Start and supervise CARLA servers for A3C workers")
     parser.add_argument(
@@ -83,6 +84,7 @@ def parse_args(argv=None):
 
 
 def resolve_binary(binary, carla_path, runtime):
+    """Resolve the CARLA binary path; for native, join it with ``CARLA_PATH``."""
     binary = binary or DEFAULT_BINARY
     if runtime == "native" and carla_path:
         if not os.path.isabs(binary):
@@ -174,6 +176,7 @@ def build_cmd(runtime, port, cuda_index, image, binary, extra_args=None):
 
 
 def setup_logging(outdir):
+    """Write ``servers.log`` under ``<outdir>/server_logs`` and echo to stdout."""
     global LOG_DIR
     LOG_DIR = os.path.join(outdir, "server_logs")
     os.makedirs(LOG_DIR, exist_ok=True)
@@ -190,6 +193,7 @@ def setup_logging(outdir):
 
 
 def num_visible_gpus():
+    """Count GPUs from ``CUDA_VISIBLE_DEVICES`` or ``nvidia-smi -L``."""
     cvd = os.environ.get("CUDA_VISIBLE_DEVICES", "").strip()
     if cvd:
         return max(1, len(cvd.split(",")))
@@ -208,6 +212,7 @@ def num_visible_gpus():
 
 
 def port_listening(port):
+    """Return True if TCP ``port`` is LISTEN. Assume yes if ``lsof`` fails."""
     try:
         result = subprocess.run(
             ["lsof", "-nP", "-iTCP:{}".format(port), "-sTCP:LISTEN"],
@@ -247,6 +252,7 @@ def terminate(proc, grace=5.0):
 
 
 def supervise(idx, num_gpus):
+    """Start one CARLA process and restart it on crash or hung RPC port."""
     port = CONFIG.start_port + idx * CONFIG.port_step
     cuda_index = cuda_index_for(
         idx, num_gpus, CONFIG.servers_per_gpu, CONFIG.server_gpu_start)
@@ -336,6 +342,7 @@ def supervise(idx, num_gpus):
 
 
 def main(argv=None):
+    """Parse args, spawn one supervisor thread per server, wait until stop."""
     global CONFIG
     load_dotenv()
     args = parse_args(argv)

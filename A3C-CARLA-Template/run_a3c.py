@@ -42,6 +42,7 @@ def find_latest_checkpoint(run_output_dir):
 
 
 def _read_step_file(path):
+    """Read an integer step from a sidecar file; 0 if missing or invalid."""
     try:
         with open(path) as f:
             return int(f.read().strip())
@@ -130,6 +131,7 @@ def rollback_global_network(global_network, run_output_dir, worker_idx=None):
 def _start_worker(worker_id, global_network, config, port, device,
                   run_output_dir, shutdown_event, log_queue, run_id,
                   dropped_counter):
+    """Construct and start one ``A3CWorker`` process."""
     w = A3CWorker(
         worker_id=worker_id,
         global_network=global_network,
@@ -148,6 +150,7 @@ def _start_worker(worker_id, global_network, config, port, device,
 
 def _emit_event(telemetry_queue, event_type, global_step=None,
                 worker_id=None, dropped_counter=None, **details):
+    """Enqueue a supervisor lifecycle event (start, restart, rollback, ...)."""
     details.update({'event': event_type, 'global_t': global_step})
     record = build_record('event', worker_id=worker_id, data=details)
     enqueue_telemetry(

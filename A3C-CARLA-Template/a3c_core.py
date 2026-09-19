@@ -38,6 +38,7 @@ Transition = namedtuple(
 # ---------------------------------------------------------------------------
 
 class SharedAdam(torch.optim.Adam):
+    """Adam whose optimizer state tensors live in CPU shared memory."""
     def __init__(self, params, lr=1e-3, betas=(0.9, 0.999), epsilon=1e-8,
                  weight_decay=0.0):
         super().__init__(params, lr=lr, betas=betas, eps=epsilon,
@@ -65,6 +66,7 @@ class SharedAdam(torch.optim.Adam):
 
 
 class SharedRMSprop(torch.optim.RMSprop):
+    """RMSprop whose optimizer state tensors live in CPU shared memory."""
     def __init__(self, params, lr=1e-4, alpha=0.99, epsilon=1e-5,
                  weight_decay=0.0):
         super().__init__(params, lr=lr, alpha=alpha, eps=epsilon,
@@ -105,6 +107,7 @@ def has_nan_grads(model):
 
 
 def has_nan_params(model):
+    """Return True if any parameter contains NaN."""
     for _, p in model.named_parameters():
         if torch.isnan(p.data).any().item():
             return True
@@ -115,22 +118,20 @@ def transfer_local_gradients_to_global(local_model, global_model,
                                        global_device):
     """Copy local gradients into the shared model for this process.
 
-    Parameters and optimizer state are shared. Gradient buffers are not shared:
-    each worker assigns its own cloned .grad tensors before optimizer.step().
+    Parameters and optimizer state are shared. Gradient buffers are not:
+    each worker assigns its own cloned ``.grad`` before ``optimizer.step()``.
     """
     for local_param, global_param in zip(local_model.parameters(),
                                          global_model.parameters()):
         if local_param.grad is None:
             global_param.grad = None
         else:
-            # The .grad attribute is intentionally process-local. Parameters
-            # and optimizer state share storage; sharing grad buffers would
-            # let workers overwrite each other's pending gradients.
             global_param.grad = local_param.grad.detach().to(
                 global_device, non_blocking=False).clone()
 
 
 def compute_total_gradient_norm(model):
+    """L2 norm of all parameter gradients."""
     total = 0.0
     for p in model.parameters():
         if p.grad is not None:
@@ -150,6 +151,7 @@ def clip_gradients_and_measure(model, max_norm):
 
 
 def create_shared_optimizer(params, config):
+    """Build SharedRMSprop or SharedAdam from ``config.optimizer``."""
     optimizer = getattr(config, 'optimizer', 'shared-rmsprop')
     if optimizer == 'shared-rmsprop':
         return SharedRMSprop(
@@ -168,6 +170,7 @@ def create_shared_optimizer(params, config):
 
 
 def compute_entropy_coefficient_for_step(config, global_t):
+    """Linearly anneal entropy bonus from ``beta_start`` to ``beta_end``."""
     start = float(getattr(config, 'beta_start',
                          getattr(config, 'entropy_coef', 0.0)))
     end = float(getattr(config, 'beta_end', start))
@@ -183,6 +186,7 @@ def compute_entropy_coefficient_for_step(config, global_t):
 
 
 def summarize_reward_components(component_rollout):
+    """Sum and mean each named reward term across the current rollout."""
     if not component_rollout:
         return {}
     keys = sorted({k for comp in component_rollout for k in comp.keys()})
@@ -199,6 +203,7 @@ def summarize_reward_components(component_rollout):
 # ---------------------------------------------------------------------------
 
 class GlobalNetwork:
+    """CPU-shared actor-critic, optimizer, and run-wide counters."""
     def __init__(self, config, state_shape, action_shape, critic_shape):
         self.config = config
         self.device = torch.device('cpu')
@@ -210,8 +215,7 @@ class GlobalNetwork:
         self.optimizer = create_shared_optimizer(
             self.model.parameters(), config)
 
-        # Disabled by default; useful when checking whether optimizer updates
-        # are racing in a specific run.
+        # Used only when config.hogwild_lock_updates is True.
         self.update_lock = mp.Lock()
         self.stats_lock = mp.Lock()
         self.save_lock = mp.Lock()
@@ -246,6 +250,7 @@ class GlobalNetwork:
             return self.total_updates.value
 
     def update_stats(self, worker_id, mean_reward, episode_reward):
+        """Record one episode reward; return ``(global_mean, is_new_best)``."""
         with self.stats_lock:
             is_new_best = False
             if episode_reward > self.best_reward.value:
@@ -265,6 +270,7 @@ class GlobalNetwork:
     # -- LR scheduling (linear decay from config.lr to 0) --
 
     def set_lr_for_step(self, global_t):
+        """Linearly decay learning rate from ``config.lr`` to 0."""
         if self.config.steps <= 0:
             return self.config.lr
         progress_fraction = max(
@@ -279,6 +285,7 @@ class GlobalNetwork:
         return has_nan_params(self.model)
 
     def _checkpoint_state_unlocked(self, global_t=None):
+        """Build the dict written by ``save`` / ``save_boundary_checkpoint``."""
         state = {
             'global_step': global_t if global_t is not None
                            else self.global_step.value,
@@ -297,6 +304,7 @@ class GlobalNetwork:
         return state
 
     def save(self, path, global_t=None, nan_safe=True):
+        """Write model + optimizer + counters. Skip if params contain NaN."""
         if nan_safe and self._has_nan_params():
             print('[SAVE] refusing to save - NaN in global params',
                   flush=True)
@@ -308,6 +316,7 @@ class GlobalNetwork:
 
     def save_boundary_checkpoint(self, run_output_dir, global_t,
                                  worker_id=None):
+        """Save ``checkpoint.pth`` once per ``save_frequency`` step boundary."""
         save_frequency = int(getattr(self.config, 'save_frequency', 0))
         if save_frequency <= 0:
             return False, None
@@ -373,6 +382,7 @@ class GlobalNetwork:
             return True, global_checkpoint_path
 
     def load(self, path):
+        """Restore model, optimizer, and counters from a checkpoint file."""
         state = torch.load(path, map_location=self.device)
         with self.save_lock:
             if 'model' not in state:
@@ -418,6 +428,7 @@ class GlobalNetwork:
 # ---------------------------------------------------------------------------
 
 class A3CWorker(mp.Process):
+    """One Hogwild worker: collect rollouts, update the shared model, log."""
     def __init__(self, worker_id, global_network, config, port, device,
                  run_output_dir, shutdown_event, log_queue=None, run_id='',
                  dropped_counter=None):
@@ -448,6 +459,7 @@ class A3CWorker(mp.Process):
     # -- setup --
 
     def _init_networks(self):
+        """Build the local GPU/CPU copy of SharedActorCritic and sync weights."""
         if self._initialized:
             return
         self.device = torch.device(self.device_str)
@@ -633,6 +645,7 @@ class A3CWorker(mp.Process):
     # -- checkpointing (runs from the worker on step boundaries) --
 
     def _save_checkpoint(self, global_t, training_logger):
+        """Try a boundary checkpoint and emit a log event on success."""
         ok, checkpoint_path = self.global_network.save_boundary_checkpoint(
             self.run_output_dir, global_t=global_t,
             worker_id=self.worker_id)
@@ -647,6 +660,7 @@ class A3CWorker(mp.Process):
 
     def _log_episode(self, training_logger, env, global_episode, global_t,
                      episode_total_reward, episode_step_count, duration_s):
+        """Write episode stats and save ``best_checkpoint.pth`` on a new best."""
         self.episode_rewards_history.append(episode_total_reward)
         window = min(100, len(self.episode_rewards_history))
         self.mean_reward = float(
@@ -695,6 +709,7 @@ class A3CWorker(mp.Process):
     # -- main loop --
 
     def run(self):
+        """Worker process: connect to CARLA and train until shutdown."""
         import signal
         signal.signal(signal.SIGINT, signal.SIG_IGN)
 
@@ -756,7 +771,7 @@ class A3CWorker(mp.Process):
         last_diag_wall = time.time()
         last_diag_update = 0
 
-        # restore per-worker mean reward from logs if present
+        # Restore this worker's mean reward if the shared array already has one.
         try:
             prev = self.global_network.worker_mean_rewards[self.worker_id]
             if prev != 0.0:
@@ -958,14 +973,9 @@ class A3CWorker(mp.Process):
 
                 except RuntimeError as e:
                     msg = str(e)
-                    # Two different timeouts surface as RuntimeError here:
-                    #   (a) "time-out of <N>ms while waiting for the
-                    #       simulator" - CARLA server is unreachable;
-                    #       we need a full reconnect + new CarlaEnv.
-                    #   (b) "time-out waiting for camera image" -
-                    #       image_queue.get timed out, server is fine;
-                    #       a world.tick() or two is usually enough,
-                    #       so we just reset the episode, no reconnect.
+                    # Two RuntimeError timeouts:
+                    # (a) "waiting for the simulator" — server gone, full reconnect.
+                    # (b) "time-out waiting for camera image" — skip episode, no reconnect.
                     if 'waiting for the simulator' in msg:
                         print('[W{}] CARLA server timeout: reconnecting'
                               .format(self.worker_id), flush=True)

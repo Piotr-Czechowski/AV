@@ -20,6 +20,8 @@ from carla_env import CarlaEnv
 
 
 class CarlaA3CWrapper:
+    """Gym-like adapter: normalize observations, repeat actions, shape rewards."""
+
     def __init__(self, port, scenario, camera='semantic', resX=250, resY=250,
                  action_space='discrete', mp_density=25,
                  host='localhost', map_name='Town03',
@@ -37,7 +39,7 @@ class CarlaA3CWrapper:
                  reward_target_speed_kmh=20.0,
                  reward_offroute_threshold=10.0, reward_clip=50.0,
                  verbose_env_logs=False):
-        """Initialise all reward coefficients, episode counters, and the underlying CarlaEnv connection."""
+        """Connect to CARLA and store reward / episode-saving options."""
         self.port = port
         self._scenario = scenario
         self._camera = camera
@@ -99,7 +101,7 @@ class CarlaA3CWrapper:
         self._connect_with_retries()
 
     def _connect_with_retries(self):
-        """Attempt to create a CarlaEnv up to max_connect_retries times, sleeping between failures."""
+        """Create ``CarlaEnv``, retrying on failure up to ``max_connect_retries``."""
         for attempt in range(1, self.max_connect_retries + 1):
             try:
                 self.env = CarlaEnv(
@@ -122,7 +124,7 @@ class CarlaA3CWrapper:
                 time.sleep(self.connect_retry_wait)
 
     def reconnect(self):
-        """Tear down the stale CarlaEnv, wait for the server to restart, then reconnect with retries."""
+        """Drop the stale client, wait, then connect again."""
         try:
             if self.env is not None:
                 if hasattr(self.env, 'world'):
@@ -138,7 +140,7 @@ class CarlaA3CWrapper:
         self._connect_with_retries()
 
     def is_server_alive(self):
-        """Return True iff the CARLA world object exists and responds to a snapshot request without error."""
+        """Return True if the CARLA world answers ``get_snapshot()``."""
         try:
             if self.env is None or not hasattr(self.env, 'world') \
                     or self.env.world is None:
@@ -149,7 +151,7 @@ class CarlaA3CWrapper:
             return False
 
     def _state_to_chw_float(self, state):
-        """Convert any raw observation (HWC uint8, CHW float, or tensor) to a validated [3,H,W] float32 array in [0,1]."""
+        """Normalize a camera observation to ``[3, H, W]`` float32 in ``[0, 1]``."""
         if isinstance(state, np.ndarray):
             arr = state
         elif hasattr(state, 'detach'):
@@ -181,7 +183,7 @@ class CarlaA3CWrapper:
 
     @staticmethod
     def _speed_to_float(speed):
-        """Unwrap a speed value from any tensor or array type to a plain Python float."""
+        """Unwrap a tensor or array speed to a Python float."""
         if hasattr(speed, 'detach'):
             speed = speed.detach()
         if hasattr(speed, 'cpu'):
@@ -191,7 +193,7 @@ class CarlaA3CWrapper:
         return float(speed)
 
     def _current_goal_distance(self):
-        """Query CarlaEnv for the Euclidean distance to the goal; returns None on any error so callers can handle gracefully."""
+        """Return Euclidean distance to the goal, or None if the query fails."""
         try:
             distance, _ = self.env.calculate_distance()
             return float(distance)
@@ -199,7 +201,7 @@ class CarlaA3CWrapper:
             return None
 
     def _accumulate_reward_components(self, components):
-        """Add each named reward component to the running per-episode totals used by the JSONL logger."""
+        """Add named reward terms into the per-episode totals for the JSONL logger."""
         for key, value in components.items():
             self._episode_reward_components[key] = \
                 self._episode_reward_components.get(key, 0.0) + float(value)
@@ -207,7 +209,7 @@ class CarlaA3CWrapper:
     def _shape_reward(self, legacy_reward, done, route_distance,
                       speed_kmh, distance_from_goal, collisions,
                       lane_invasions):
-        """Compute the shaped scalar reward and its named components for logging; legacy mode passes CarlaEnv's reward through unchanged."""
+        """Return ``(reward, components)``. Legacy mode forwards CarlaEnv's reward."""
         if self._reward_mode == 'legacy':
             components = {'legacy': float(legacy_reward)}
             return float(legacy_reward), components
@@ -255,7 +257,7 @@ class CarlaA3CWrapper:
         return reward, components
 
     def _should_save_this_episode(self):
-        """Return True if this episode's frames should be saved, based on the explicit set or periodic interval."""
+        """Return True if this episode should dump camera frames."""
         if self.global_episode in self._save_episodes:
             return True
         if self._save_episode_interval > 0 \
@@ -265,7 +267,7 @@ class CarlaA3CWrapper:
         return False
 
     def reset(self):
-        """Reset all per-episode statistics and CarlaEnv state; return (state_chw, speed_normalised, maneuver_id)."""
+        """Reset episode stats and the env. Returns ``(state, speed, maneuver)``."""
         self.episode += 1
         self.step_count = 0
         self._episode_total_reward = 0.0
@@ -313,7 +315,7 @@ class CarlaA3CWrapper:
         return state_np, speed_f, self._current_maneuver
 
     def _frames_dir(self):
-        """Return the canonical on-disk path for this episode's saved frames, rooted at <run_output_dir>/episodes/<episode>-<port>/ so frames stay with the rest of the run."""
+        """Return ``<run_output_dir>/episodes/<episode>-<port>/``."""
         if self._run_output_dir:
             return os.path.join(self._run_output_dir, 'episodes',
                                 '{}-{}'.format(self.global_episode, self.port))
@@ -330,7 +332,7 @@ class CarlaA3CWrapper:
         return self._save_dir_cached
 
     def _save_frame(self):
-        """Write the current camera frame to disk as JPEG, silently counting failures so IO errors never interrupt training."""
+        """Write the current camera frame as JPEG. IO errors are counted, not raised."""
         if not self._save_images:
             return
         if not hasattr(self.env, 'state_observer'):
@@ -346,7 +348,7 @@ class CarlaA3CWrapper:
             self._save_failures += 1
 
     def _update_maneuver(self):
-        """Advance the maneuver index when the vehicle exits a junction, cycling through the planned decision sequence."""
+        """Advance the planned turn index when the vehicle leaves a junction."""
         try:
             if hasattr(self.env, 'planner') and hasattr(self.env, 'vehicle'):
                 _, left_junction = self.env.planner.on_junction(
@@ -362,7 +364,7 @@ class CarlaA3CWrapper:
             pass
 
     def step(self, action):
-        """Apply one learner action and return the normalized next transition."""
+        """Apply one action (with repeat) and return the next normalized transition."""
         self.step_count += 1
         if 0 <= action < self.n_actions:
             self._action_counts[int(action)] += 1

@@ -44,6 +44,7 @@ class SharedActorCritic(nn.Module):
         self.value = nn.Linear(256, critic_shape)
 
     def forward(self, x, speed=None, maneuver=None):
+        """Return ``(policy_logits, value)`` for a CHW image batch plus speed and maneuver."""
         x = x.to(self.device, dtype=torch.float32)
         features = self.cnn(x).flatten(1)
 

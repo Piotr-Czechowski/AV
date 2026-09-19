@@ -40,6 +40,6 @@ SCENARIO = [14]
 SPAWNING_TYPE = 1
 ACTION_TYPE = 'discrete'
 
-STEP_COUNTER = 200
+STEP_COUNTER = 200  # CarlaEnv episode step cap; wrapper has a separate decision cap
 SHOW_CAM = False
 DRAW = False

@@ -1,4 +1,4 @@
-"""Smoke checks that do not need a CARLA server (safe on macOS)."""
+"""Smoke checks that do not need a CARLA server."""
 
 import os
 import sys

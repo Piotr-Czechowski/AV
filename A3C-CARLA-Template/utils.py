@@ -1,7 +1,11 @@
+"""ANSI-colored stdout helpers."""
+
 from datetime import datetime
 
 
 class ColoredPrint:
+    """Print messages in color and optionally append the last one to a log file."""
+
     def __init__(self):
         self.PINK = '\033[95m'
         self.OKBLUE = '\033[94m'
@@ -11,6 +15,7 @@ class ColoredPrint:
         self.ENDC = '\033[0m'
 
     def disable(self):
+        """Turn colors off (plain text)."""
         self.PINK = ''
         self.OKBLUE = ''
         self.OKGREEN = ''
@@ -19,6 +24,7 @@ class ColoredPrint:
         self.ENDC = ''
 
     def store(self):
+        """Append the last printed message to ``logfile.log``."""
         date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         with open('logfile.log', mode='a') as file_:
             file_.write(f"{self.msg} -- {date}")

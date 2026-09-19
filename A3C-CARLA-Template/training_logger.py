@@ -279,6 +279,7 @@ def project_system_to_wandb(record):
 
 
 def make_telemetry_stop(final_summary=None):
+    """Build the sentinel that tells the telemetry process to drain and exit."""
     return {
         TELEMETRY_CONTROL_KEY: 'stop',
         'final_summary': normalize_for_json(final_summary or {}),
@@ -286,6 +287,7 @@ def make_telemetry_stop(final_summary=None):
 
 
 def configure_wandb_metrics(wandb_run, num_workers):
+    """Pin W&B series to ``global_step`` for run-wide and per-worker metrics."""
     wandb_run.define_metric('global_step')
     for prefix in ('train', 'episode', 'global', 'system', 'health'):
         wandb_run.define_metric(
@@ -475,6 +477,7 @@ class ResourceLogger:
         self._proc = None
 
     def start(self):
+        """Start the sampler thread. No-op if psutil is missing."""
         if psutil is None:
             print('[RESOURCES] psutil unavailable; '
                   'resource logging disabled', flush=True)
@@ -486,12 +489,14 @@ class ResourceLogger:
         self._thread.start()
 
     def stop(self):
+        """Join the sampler thread."""
         self._stop_event.set()
         if self._thread is not None and self._thread.is_alive():
             self._thread.join()
         self._thread = None
 
     def _ensure_nvml(self):
+        """Lazy-init pynvml; cache False if GPU sampling is unavailable."""
         if self._nvml is not None or not self.gpu_indices:
             return self._nvml
         try:
@@ -505,6 +510,7 @@ class ResourceLogger:
         return self._nvml
 
     def _sample(self):
+        """Return one CPU/RSS sample, plus GPU stats when NVML is available."""
         data = {
             'proc_cpu_percent': round(
                 self._proc.cpu_percent(interval=None), 1),
@@ -613,6 +619,7 @@ class TrainingLogger:
                  action, value, entropy, reward, done,
                  speed_kmh=None, route_dist=None, goal_dist=None,
                  maneuver=None, **extra):
+        """Write one env step to ``steps.jsonl`` when ``--log-steps`` is on."""
         if not self.log_steps_enabled:
             return None
         data = {
@@ -639,6 +646,7 @@ class TrainingLogger:
                     min_route_dist=None, goal_dist=None,
                     collisions=None, reached_goal=False,
                     action_counts=None, port=None, **extra):
+        """Write one episode record locally and publish it to telemetry."""
         data = {
             'global_episode': global_episode,
             'global_t': global_t,
@@ -669,6 +677,7 @@ class TrainingLogger:
                    is_terminal, pi_loss, v_loss, total_loss, gradient_norm,
                    lr, advantages=None, values=None, rewards=None,
                    entropies=None, **extra):
+        """Write one optimizer-update record and publish it to telemetry."""
         import numpy as np
 
         data = {
@@ -719,6 +728,7 @@ class TrainingLogger:
         return record
 
     def log_timing(self, timing_stats, window_updates=None):
+        """Write one timing window from ``TimingAccumulator.get_stats()``."""
         data = {'window_updates': window_updates, 'ops': {}}
         for name, (avg_ms, count, total_s) in timing_stats.items():
             data['ops'][name] = {
@@ -771,6 +781,7 @@ class TrainingLogger:
             nan_count=nan_count, nan_layers=nan_layers, **kwargs)
 
     def close(self):
+        """Flush and close every open JSONL handle."""
         for handle in self._files.values():
             try:
                 handle.flush()
@@ -782,6 +793,7 @@ class TrainingLogger:
     @staticmethod
     def write_metadata(run_output_dir, args_dict, model_name, n_params,
                        n_workers, **extra):
+        """Write ``logs/metadata.json`` once at training start."""
         logs_dir = os.path.join(run_output_dir, 'logs')
         os.makedirs(logs_dir, exist_ok=True)
         metadata = {
@@ -799,6 +811,7 @@ class TrainingLogger:
 
     @staticmethod
     def read_max_episode(run_output_dir, worker_id=None):
+        """Return the highest ``global_episode`` found in episode JSONL files."""
         import glob as globmod
         max_episode = 0
         logs_dir = os.path.join(run_output_dir, 'logs')

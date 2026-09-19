@@ -15,6 +15,8 @@ from datetime import datetime
 
 
 class TimingAccumulator:
+    """Accumulate wall-clock durations by phase name, then print averages."""
+
     __slots__ = ('_totals', '_counts')
 
     def __init__(self):
@@ -25,12 +27,14 @@ class TimingAccumulator:
         return time.perf_counter()
 
     def record(self, name, t0):
+        """Add elapsed time since ``t0`` under ``name``. Returns seconds."""
         elapsed = time.perf_counter() - t0
         self._totals[name] += elapsed
         self._counts[name] += 1
         return elapsed
 
     def get_stats(self):
+        """Return ``{name: (avg_ms, count, total_s)}`` for every recorded phase."""
         stats = {}
         for name in sorted(self._totals):
             total = self._totals[name]
@@ -40,6 +44,7 @@ class TimingAccumulator:
         return stats
 
     def log_and_reset(self, prefix=''):
+        """Print average timings, then clear accumulators."""
         stats = self.get_stats()
         parts = []
         for name, (avg_ms, count, _) in stats.items():
