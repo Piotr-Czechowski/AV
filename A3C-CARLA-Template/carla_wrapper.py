@@ -22,6 +22,7 @@ from carla_env import CarlaEnv
 class CarlaA3CWrapper:
     def __init__(self, port, scenario, camera='semantic', resX=250, resY=250,
                  action_space='discrete', mp_density=25,
+                 host='localhost', map_name='Town03',
                  max_connect_retries=5, connect_retry_wait=30,
                  reconnect_wait=60, save_episodes=None,
                  save_episode_interval=0, run_id='', n_actions=10,
@@ -44,6 +45,8 @@ class CarlaA3CWrapper:
         self._resY = resY
         self._action_space = action_space
         self._mp_density = mp_density
+        self._host = host
+        self._map_name = map_name
         self.max_connect_retries = max_connect_retries
         self.connect_retry_wait = connect_retry_wait
         self.reconnect_wait = reconnect_wait
@@ -104,6 +107,7 @@ class CarlaA3CWrapper:
                     terminal_point=False, mp_density=self._mp_density,
                     port=self.port, action_space=self._action_space,
                     camera=self._camera, resX=self._resX, resY=self._resY,
+                    host=self._host, map_name=self._map_name,
                     manual_control=False,
                     verbose=self._verbose_env_logs,
                 )

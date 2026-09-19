@@ -11,8 +11,8 @@ import time
 
 import torch
 
-from new_hogwild_a3c import A3CWorker, has_nan_params
-from new_hogwild_training_logger import build_record, enqueue_telemetry
+from a3c_core import A3CWorker, has_nan_params
+from training_logger import build_record, enqueue_telemetry
 
 
 def find_latest_checkpoint(run_output_dir):

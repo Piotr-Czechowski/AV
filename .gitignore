@@ -83,6 +83,7 @@ ipython_config.py
 
 # pyenv
 .python-version
+!A3C-CARLA-Template/.python-version
 
 # pipenv
 #   According to pypa/pipenv#598, it is recommended to include Pipfile.lock in version control.
@@ -151,6 +152,9 @@ wandb/
 A3C/new_hogwild_train_paths.sh
 A3C/new_hogwild_train_paths.json
 A_to_B_GPU_34/a3c_improved_train_paths.json
+
+# Template run artifacts
+A3C-CARLA-Template/runs/
 
 # PyTorch model files
 *.pth

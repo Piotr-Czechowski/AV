@@ -13,6 +13,7 @@ import queue
 import random
 import signal
 import sys
+import tempfile
 import time
 import uuid
 from datetime import datetime
@@ -23,27 +24,56 @@ import torch
 import torch.multiprocessing as mp
 
 from rl_configuration import Actions as ac
-from new_hogwild_prepare_output_dir import prepare_output_dir
-from new_hogwild_training_logger import (
+from training_logger import (
     ResourceLogger, TrainingLogger, make_telemetry_stop,
     telemetry_process_main)
-from new_hogwild_a3c import GlobalNetwork
-from new_hogwild_run_a3c import run_with_restart, find_latest_checkpoint
+from a3c_core import GlobalNetwork
+from run_a3c import run_with_restart, find_latest_checkpoint
+import settings
 
 HAS_WANDB = importlib.util.find_spec('wandb') is not None
+
+
+def prepare_output_dir(args, user_specified_dir=None, resume=False):
+    """Create the output directory and dump the launch arguments into it.
+
+    args can be a dict or argparse.Namespace. On resume=True, the args file
+    gets a suffix so first-run files are not clobbered.
+    """
+    if user_specified_dir is not None:
+        if os.path.exists(user_specified_dir):
+            if not os.path.isdir(user_specified_dir):
+                raise RuntimeError(
+                    '{} is not a directory'.format(user_specified_dir))
+        else:
+            os.makedirs(user_specified_dir)
+        run_output_dir = user_specified_dir
+    else:
+        run_output_dir = tempfile.mkdtemp(prefix='a3c_run_')
+
+    suffix = '_resume' if resume else ''
+
+    args_dict = args if isinstance(args, dict) else vars(args)
+    with open(os.path.join(run_output_dir,
+                           'args{}.txt'.format(suffix)), 'w') as f:
+        json.dump(args_dict, f, indent=2, default=str)
+
+    return run_output_dir
 
 
 # Run shape
 DEFAULT_NUM_WORKERS = 2
 DEFAULT_WORKERS_PER_GPU = 2
 DEFAULT_WORKER_GPU_START = 0
-DEFAULT_START_PORT = 2000
-DEFAULT_PORT_STEP = 100
-DEFAULT_SCENARIO = 14
-DEFAULT_CAMERA = 'semantic'
-DEFAULT_RES = 250
+DEFAULT_START_PORT = settings.PORT
+DEFAULT_PORT_STEP = settings.PORT_STEP
+DEFAULT_SCENARIO = settings.SCENARIO[0]
+DEFAULT_CAMERA = settings.CAMERA_TYPE
+DEFAULT_RES = settings.RES
 DEFAULT_MP_DENSITY = 25
 DEFAULT_SEED = 52
+DEFAULT_CARLA_HOST = settings.CARLA_HOST
+DEFAULT_MAP_NAME = settings.MAP_NAME
 
 # Algorithm
 DEFAULT_OPTIMIZER = 'shared-rmsprop'
@@ -149,6 +179,12 @@ def build_parser():
                    default=DEFAULT_START_PORT)
     p.add_argument('--port-step', type=int,
                    default=DEFAULT_PORT_STEP)
+    p.add_argument('--carla-host', type=str,
+                   default=DEFAULT_CARLA_HOST,
+                   help='CARLA RPC host the workers connect to. '
+                        'Does not start the simulator.')
+    p.add_argument('--map-name', type=str,
+                   default=DEFAULT_MAP_NAME)
     p.add_argument('--scenario', type=int, nargs='+',
                    default=[DEFAULT_SCENARIO])
     p.add_argument('--camera', type=str, default=DEFAULT_CAMERA,
@@ -319,6 +355,10 @@ def _apply_config_defaults(args):
         args.reward_clip = DEFAULT_REWARD_CLIP
     if not hasattr(args, 'action_type'):
         args.action_type = DEFAULT_ACTION_TYPE
+    if not hasattr(args, 'carla_host'):
+        args.carla_host = DEFAULT_CARLA_HOST
+    if not hasattr(args, 'map_name'):
+        args.map_name = DEFAULT_MAP_NAME
     return args
 
 

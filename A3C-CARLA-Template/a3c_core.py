@@ -5,7 +5,7 @@ local model on its assigned device, collects a short rollout, computes a loss
 locally, copies gradients to the global model, and applies an asynchronous
 optimizer update.
 
-This module intentionally does not read argparse or run_settings.py. The entry
+This module intentionally does not read argparse or settings.py. The entry
 point passes a plain config namespace with every value workers need.
 """
 
@@ -19,14 +19,14 @@ from datetime import datetime
 
 import numpy as np
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
 import torch.multiprocessing as mp
 from torch.distributions.categorical import Categorical
 
-from new_hogwild_timing_utils import TimingAccumulator
-from new_hogwild_training_logger import ResourceLogger, TrainingLogger
-from new_hogwild_carla_wrapper import CarlaA3CWrapper
+from timing_utils import TimingAccumulator
+from training_logger import ResourceLogger, TrainingLogger
+from carla_wrapper import CarlaA3CWrapper
+from models.shared_actor_critic import SharedActorCritic
 
 
 Transition = namedtuple(
@@ -89,72 +89,6 @@ class SharedRMSprop(torch.optim.RMSprop):
                     value = state.get(key)
                     if torch.is_tensor(value) and value.device.type == 'cpu':
                         value.share_memory_()
-
-
-class SharedActorCritic(nn.Module):
-    """Batch-size-1 friendly actor-critic with one shared visual trunk."""
-
-    def __init__(self, input_shape, action_shape, critic_shape=1,
-                 device=torch.device('cpu'), num_maneuvers=3):
-        super().__init__()
-        self.device = device
-        self.num_maneuvers = num_maneuvers
-        in_channels = int(input_shape[2])
-
-        self.cnn = nn.Sequential(
-            nn.Conv2d(in_channels, 32, kernel_size=5, stride=2, padding=2),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(32, 64, kernel_size=3, stride=2, padding=1),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(64, 128, kernel_size=3, stride=2, padding=1),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(128, 256, kernel_size=3, stride=2, padding=1),
-            nn.ReLU(inplace=True),
-            nn.AdaptiveAvgPool2d((4, 4)),
-        )
-        self.speed_fc = nn.Sequential(
-            nn.Linear(1, 32),
-            nn.ReLU(inplace=True),
-        )
-        self.maneuver_fc = nn.Sequential(
-            nn.Linear(num_maneuvers, 32),
-            nn.ReLU(inplace=True),
-        )
-        self.trunk = nn.Sequential(
-            nn.Linear(256 * 4 * 4 + 32 + 32, 512),
-            nn.ReLU(inplace=True),
-            nn.Linear(512, 256),
-            nn.ReLU(inplace=True),
-        )
-        self.policy = nn.Linear(256, action_shape)
-        self.value = nn.Linear(256, critic_shape)
-
-    def forward(self, x, speed=None, maneuver=None):
-        x = x.to(self.device, dtype=torch.float32)
-        features = self.cnn(x).flatten(1)
-
-        if speed is None:
-            speed = torch.zeros((x.size(0), 1), device=self.device)
-        else:
-            speed = speed.to(self.device, dtype=torch.float32) \
-                .view(x.size(0), -1)
-            if speed.size(1) != 1:
-                speed = speed[:, :1]
-        speed_features = self.speed_fc(speed)
-
-        if maneuver is None:
-            maneuver = torch.ones((x.size(0),), dtype=torch.long,
-                                  device=self.device)
-        else:
-            maneuver = maneuver.to(self.device, dtype=torch.long).view(-1)
-        maneuver = maneuver.clamp(0, self.num_maneuvers - 1)
-        maneuver = F.one_hot(maneuver,
-                             num_classes=self.num_maneuvers).float()
-        maneuver_features = self.maneuver_fc(maneuver)
-
-        hidden = self.trunk(torch.cat(
-            [features, speed_features, maneuver_features], dim=1))
-        return self.policy(hidden), self.value(hidden)
 
 
 # ---------------------------------------------------------------------------
@@ -837,6 +771,8 @@ class A3CWorker(mp.Process):
             resY=self.config.res,
             action_space=self.config.action_type,
             mp_density=self.config.mp_density,
+            host=getattr(self.config, 'carla_host', 'localhost'),
+            map_name=getattr(self.config, 'map_name', 'Town03'),
             max_connect_retries=self.config.max_connect_retries,
             connect_retry_wait=self.config.connect_retry_wait,
             reconnect_wait=self.config.carla_timeout_wait,

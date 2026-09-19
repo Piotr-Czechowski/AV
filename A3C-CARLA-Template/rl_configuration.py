@@ -6,7 +6,10 @@ Holds the discrete action space definition and the reward function.
 import math
 from dataclasses import dataclass
 
-import run_settings
+REWARD_FROM_TP = 0
+REWARD_FROM_MP = 0
+REWARD_FROM_COL = 0
+REWARD_FROM_INV = 0
 
 
 @dataclass()
@@ -69,12 +72,12 @@ def reward_function(
 
     if len(collision_history_list) != 0 or route_distance >= 10:
         done = True
-        col_reward = run_settings.REWARD_FROM_COL
+        col_reward = REWARD_FROM_COL
     else:
         done = False
         col_reward = 0
 
-    inv_reward = invasion_counter * run_settings.REWARD_FROM_INV
+    inv_reward = invasion_counter * REWARD_FROM_INV
 
     speed_reward = -1.2 + 4 * math.sin(speed / 10)  # pik jest w okolicach 20 km/h
     if route_distance < 1.5:

@@ -1,51 +1,23 @@
-import glob
-import os
-import pdb
 import random
-#import wandb
-import sys
 import time
 import math
 import torch
-import run_settings
-import torch.multiprocessing as mp
 from utils import ColoredPrint
 from rl_configuration import Actions as ac
+from rl_configuration import reward_function, REWARD_FROM_MP, REWARD_FROM_TP
 import queue
-
-# try:
-#     sys.path.append(glob.glob(settings.CARLA_EGG_PATH % (
-#         sys.version_info.major,
-#         sys.version_info.minor,
-#         'win-amd64' if os.name == 'nt' else 'linux-x86_64'))[0])
-# except IndexError:
-#     pass
+import settings
 
 import carla
 from carla import ColorConverter as cc
 import numpy as np
-import subprocess
 import cv2
 
-from rl_configuration import reward_function
 from carla_navigation.global_route_planner import GlobalRoutePlanner
 from carla_navigation.global_route_planner_dao import GlobalRoutePlannerDAO
-from run_settings import SHOW_CAM
 from state_observer import StateObserver
 from carla_navigation.local_planner import RoadOption
 
-
-# Global settings
-how_many_steps = run_settings.STEP_COUNTER
-sleep_time = run_settings.SLEEP_BETWEEN_ACTIONS
-mp_reward = run_settings.REWARD_FROM_MP
-tp_reward = run_settings.REWARD_FROM_TP
-serv_resx = run_settings.SERV_RESX
-serv_resy = run_settings.SERV_RESY
-port = run_settings.PORT
-spawning_type = run_settings.SPAWNING_TYPE
-logging = run_settings.LOGGING
-draw = run_settings.DRAW
 
 MAX_ATTEMPTS = 10
 WAIT_TIME = 0.5  # sekundy
@@ -56,61 +28,93 @@ DECISIONS_DICT = {
     RoadOption.RIGHT: 2
 }
 
-MAP_POINTS_SC10 = [(50, 203.913498, 0.275307),
-              (100, 203.788742, 1.3),
-              (-55.387177, 0.558450, 0.0),
-              (-105.387177, -3.140184, 0.0),
-              (74, -40, 1.0),
-              (-6.5, -44, 0.0)]
+# ---------------------------------------------------------------------------
+# Town03 scenario tables. Values are the training blueprint — do not edit
+# coordinates or spawn indices. Commented tuples are unused variants.
+# ---------------------------------------------------------------------------
 
-MAP_POINTS_SC11 = [ (14,(-55.387177, 0.558450, 0.0)),
-                    (14,(-105.387177, -3.140184, 0.0)),]
-
-MAP_POINTS_SC12 = (167, 165, 18, 200, 222, 105, 106, 1, 134, 3, 100, 139, 109, 190, 146, 188, 186, 184, 174, 126, 48, 233, 0, 32, 30, 44, 191, 51, 53, 238, 237, 235, 231, 229, 228, 225, 11, 85, 45, 247, 132, 252, 42)
-
-MAP_POINTS_SC13 = [
-                (78, 76), (71, 130), (37, 161), (43,222), (204, 162) #left
-    ]
-MAP_POINTS_SC14 = [ 
-                    #(28, 154), (49, 132), (83, 225), (77, 200), (54, 235), #straigh
-                (28, 155), (49, 129), (83, 89), (77,98), (54,234) #right
-]
-MAP_POINTS_SC15 = [
-                #  (78, 76), (71, 130), (37, 161), (43,222), (204, 162) #left
-                (78, 92), (71, 131),(238, 130), (43, 89), (204, 67) #straight
+# Scenario 10: goal xyz
+MAP_POINTS_SC10 = [
+    (50, 203.913498, 0.275307),
+    (100, 203.788742, 1.3),
+    (-55.387177, 0.558450, 0.0),
+    (-105.387177, -3.140184, 0.0),
+    (74, -40, 1.0),
+    (-6.5, -44, 0.0),
 ]
 
-TESTING_SC = [(28, 154)]
-def start_carla_server(args):
-    return subprocess.Popen(f'CarlaUE4.exe ' + args, cwd=run_settings.CARLA_PATH, shell=True)
+# Scenario 11: (spawn index, goal xyz)
+MAP_POINTS_SC11 = [
+    (14, (-55.387177, 0.558450, 0.0)),
+    (14, (-105.387177, -3.140184, 0.0)),
+]
 
-def remove_pictures():
-    folder_path = 'A_to_B_GPU_34/camera_rgb_outputs'
-    if not os.path.isdir(folder_path):
-        return
-    # Iteruj przez wszystkie pliki w folderze i usuń je
-    for filename in os.listdir(folder_path):
-        file_path = os.path.join(folder_path, filename)
-        try:
-            if os.path.isfile(file_path) or os.path.islink(file_path):
-                os.unlink(file_path)  # Usunięcie pliku
-            elif os.path.isdir(file_path):
-                os.rmdir(file_path)  # Usunięcie pustego folderu (opcjonalnie)
-        except Exception as e:
-            print(f'Nie można usunąć {file_path}. Powód: {e}')
+# Scenario 12: spawn-point indices (goal is a random other spawn)
+MAP_POINTS_SC12 = (
+    167, 165, 18, 200, 222, 105, 106, 1, 134, 3, 100, 139, 109, 190,
+    146, 188, 186, 184, 174, 126, 48, 233, 0, 32, 30, 44, 191, 51, 53,
+    238, 237, 235, 231, 229, 228, 225, 11, 85, 45, 247, 132, 252, 42,
+)
+
+# Scenario 13: (spawn index, goal spawn index)
+MAP_POINTS_SC13 = [  # left
+    (78, 76),
+    (71, 130),
+    (37, 161),
+    (43, 222),
+    (204, 162),
+]
+
+# Scenario 14: (spawn index, goal spawn index)
+MAP_POINTS_SC14 = [  # right
+    # (28, 154), (49, 132), (83, 225), (77, 200), (54, 235),  # straight
+    (28, 155),
+    (49, 129),
+    (83, 89),
+    (77, 98),
+    (54, 234),
+]
+
+# Scenario 15: (spawn index, goal spawn index)
+MAP_POINTS_SC15 = [  # straight
+    # (78, 76), (71, 130), (37, 161), (43, 222), (204, 162),  # left
+    (78, 92),
+    (71, 131),
+    (238, 130),
+    (43, 89),
+    (204, 67),
+]
+
+# Scenario 16: (spawn index, goal spawn index)
+TESTING_SC = [
+    (28, 154),
+]
 
 
 class CarlaEnv:
     """
     Create Carla environment
     """
-    def __init__(self, scenario, action_space='discrete', resX=250, resY=250, camera='semantic', port=port,
-                 manual_control=False, spawn_point=False, terminal_point=False, mp_density=25,
-                 verbose=False):
-        # Run the server on 127.0.0.1/port
-        #start_carla_server(f'-windowed -carla-server -fps=60 -ResX={serv_resx} -ResY={serv_resy} -quality-level=Low '
-        #                   f'-carla-world-port={port}')
-        self.client = carla.Client("localhost", port)
+    def __init__(self, scenario, action_space='discrete', resX=250, resY=250, camera='semantic', port=None,
+                 host=None, map_name=None, manual_control=False, spawn_point=False, terminal_point=False,
+                 mp_density=25, verbose=False):
+        if port is None:
+            port = settings.PORT
+        if host is None:
+            host = settings.CARLA_HOST
+        if map_name is None:
+            map_name = settings.MAP_NAME
+
+        self.host = host
+        self.port = port
+        self.map_name = map_name
+        self.step_limit = settings.STEP_COUNTER
+        self.spawning_type = settings.SPAWNING_TYPE
+        self.draw = settings.DRAW
+        self.mp_reward = REWARD_FROM_MP
+        self.tp_reward = REWARD_FROM_TP
+
+        self.client = carla.Client(self.host, port)
         self.client.set_timeout(120.0)
         
         #for debugging
@@ -127,7 +131,7 @@ class CarlaEnv:
         else:
             self.log.warn(f"Client version: {client_ver}, Server version: {server_ver}")
 
-        self.world = self.client.load_world('Town03')
+        self.world = self.client.load_world(self.map_name)
         self._apply_sync_settings()
 
 
@@ -192,7 +196,7 @@ class CarlaEnv:
         self.step_counter = 0
 
         # Cameras
-        self.show_cam = SHOW_CAM
+        self.show_cam = settings.SHOW_CAM
         self.front_camera = None
         self.preview_camera = None
         self.preview_camera_enabled = False
@@ -463,7 +467,7 @@ class CarlaEnv:
 
         self.route = _
 
-        self._draw_optimal_route_lines(self.route, draw=draw)
+        self._draw_optimal_route_lines(self.route, draw=self.draw)
         self.car_decisions = decisions
         self.car_decisions.append(1)
         if self.verbose:
@@ -508,7 +512,8 @@ class CarlaEnv:
 
     def create_action_space(self, action_space):
         if action_space == 'discrete':
-            self.action_space = [getattr(ac, action) for action in run_settings.ACTIONS]
+            self.action_space = [
+                getattr(ac, name) for name in ac.ACTIONS_NAMES.values()]
             return self.action_space
         else:
             self.action_space = action_space
@@ -1187,7 +1192,7 @@ class CarlaEnv:
         # self.spawn_npc_vehicle(spawn_index=48)
 
         self.plan_the_route()
-        self.spawn_car(spawning_type, episode)
+        self.spawn_car(self.spawning_type, episode)
         self.set_spectator()
 
         if self.camera_type == 'rgb':
@@ -1271,12 +1276,12 @@ class CarlaEnv:
         self.speed = self.calculate_speed()
         speed_value = float(self.speed)
 
-        static_reward_from_mp = mp_reward
+        static_reward_from_mp = self.mp_reward
         mp_static_reward, self.done = self.static_reward_mp(vehicle_location, static_reward_from_mp)
                 
         # Was terminal state obtained?
         if self.done:
-            terminal_state_reward = tp_reward
+            terminal_state_reward = self.tp_reward
         else:
             terminal_state_reward = 0
 
@@ -1297,7 +1302,7 @@ class CarlaEnv:
         # Terminal state obtained or collision
         self.done = self.done or done
 
-        if self.step_counter >= how_many_steps:
+        if self.step_counter >= self.step_limit:
             self.done = True
         image = self._get_latest_camera_image(timeout=2.0)
         self.state_observer.image = image

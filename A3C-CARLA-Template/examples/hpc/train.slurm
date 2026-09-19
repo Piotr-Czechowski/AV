@@ -1,90 +1,70 @@
 #!/bin/bash
-#SBATCH --partition=plgrid-gpu-a100
+#SBATCH --partition=CHANGE_ME
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=7
 #SBATCH --mem=25G
 #SBATCH --time=20:50:00
 #SBATCH --gpus=1
-#SBATCH --account=plgdyplomanci7-gpu-a100
-#SBATCH --job-name=new-hogwild-a3c-carla
-#SBATCH --output=new-hogwild-a3c-carla-log-%J.log
-#SBATCH --error=new-hogwild-a3c-carla-log-%J.log
+#SBATCH --account=CHANGE_ME
+#SBATCH --job-name=a3c-carla
+#SBATCH --output=a3c-carla-log-%J.log
+#SBATCH --error=a3c-carla-log-%J.log
 #SBATCH --signal=SIGUSR1@90
 
-# ----- user paths ------------------------------------------------------------
-# Every user-specific path comes from one file; see
-# new_hogwild_train_paths.sh.example.  It is looked up next to the directory
-# you submit from, so submit with:
-#     cd /path/to/A3C && sbatch new_hogwild_train.slurm
-# or point CONFIG_FILE at it explicitly.  Everything it sets is exported, so
-# the trainer and the CARLA multiserver inherit it.
-CONFIG_FILE="${CONFIG_FILE:-${SLURM_SUBMIT_DIR:-$PWD}/new_hogwild_train_paths.sh}"
-if [[ ! -f "${CONFIG_FILE}" ]]; then
-    echo "ERROR: missing paths file ${CONFIG_FILE}" >&2
-    echo "       cp new_hogwild_train_paths.sh.example new_hogwild_train_paths.sh" >&2
-    exit 1
-fi
-export CONFIG_FILE
-# shellcheck disable=SC1090
-source "${CONFIG_FILE}"
+# Submit from the template root:
+#   cd /path/to/A3C-CARLA-Template && sbatch examples/hpc/train.slurm -w 1
+#
+# This recipe starts CARLA (unless --no-carla) then train_a3c.py.
+# train_a3c.py itself never launches the simulator.
 
-# Everything below has a working default derived from the checkout layout, so
-# the paths file only has to name what cannot be guessed.  Each value is
-# checked where it is used, which is where a precise error can be printed.
+# =============================================================================
+# HPC recipe: one job starts N CARLA servers, waits for ports, then trains.
+#
+# Usage:
+#   sbatch [SBATCH_FLAGS] examples/hpc/train.slurm [OPTIONS]
+#
+# Common run args:
+#   -w,  --workers NUM                A3C workers = CARLA servers             (default: 1)
+#        --workers-per-gpu NUM        learner workers per visible GPU         (default: 1)
+#        --servers-per-gpu NUM        CARLA servers per visible GPU           (default: workers-per-gpu)
+#   -s,  --scenario NUM               CARLA scenario id                       (default: 14)
+#        --save-episodes "EP1 EP2..." episodes whose frames get saved
+#   -r,  --resume DIR                 resume from previous outdir
+#        --outdir DIR                 explicit outdir override
+#        --steps NUM                  override Python global step budget
+#        --seed NUM                   RNG seed
+#        --no-wandb                   disable W&B
+#        --testing                    evaluation mode
+#        --verbose-env-logs           keep per-episode CarlaEnv stdout prints
+#        --no-carla                   skip launching CARLA (servers already up)
+#        --start-port NUM             first CARLA rpc port                    (default: 2000)
+#        --port-step NUM              port increment between servers          (default: 100)
+#        --graceful-shutdown-wait NUM seconds to let Python finish on signal  (default: 75)
+#        --                          pass remaining args directly to Python
+# =============================================================================
+
+set -uo pipefail
+
 PROJECT_DIR="${PROJECT_DIR:-${SLURM_SUBMIT_DIR:-$PWD}}"
-MULTISERVER_SCRIPT="${MULTISERVER_SCRIPT:-${PROJECT_DIR}/../carla_athena_multiserver_v3.py}"
+CONFIG_FILE="${CONFIG_FILE:-${PROJECT_DIR}/.env}"
+if [[ -f "${CONFIG_FILE}" ]]; then
+    export CONFIG_FILE
+    set -a
+    # shellcheck disable=SC1090
+    source "${CONFIG_FILE}"
+    set +a
+fi
+
+MULTISERVER_SCRIPT="${MULTISERVER_SCRIPT:-${PROJECT_DIR}/carla_multiserver_launcher.py}"
 RUNS_DIR="${RUNS_DIR:-${PROJECT_DIR}/runs}"
 VENV="${VENV:-}"
+CARLA_RUNTIME="${CARLA_RUNTIME:-apptainer}"
 CARLA_CONTAINER_IMAGE="${CARLA_CONTAINER_IMAGE:-}"
 WANDB_PROJECT="${WANDB_PROJECT:-a3c-carla}"
 WANDB_RUN_NAME="${WANDB_RUN_NAME:-}"
 WANDB_ENTITY="${WANDB_ENTITY:-}"
 
-# =============================================================================
-# new_hogwild_train.slurm -- full pipeline for the new_hogwild_* implementation.
-#
-# What it does (one job, one sbatch call):
-#   1. Parse a small set of run-shaping CLI args.
-#   2. Start N CARLA servers via carla_athena_multiserver_v3.py
-#      (one per worker, placed on GPUs via --servers-per-gpu).
-#   3. Wait until all N CARLA ports are LISTEN.
-#   4. Launch new_train_a3c_carla.py against those servers.
-#   5. Tail the training log, clean up both CARLA + training on exit.
-#
-# Usage:
-#   sbatch [SBATCH_FLAGS] new_hogwild_train.slurm [OPTIONS]
-#
-# Common run args:
-#   -w,  --workers NUM                number of A3C workers = CARLA servers   (default: 1)
-#        --workers-per-gpu NUM        learner workers per visible GPU         (default: 1)
-#        --servers-per-gpu NUM        CARLA servers per visible GPU           (default: workers-per-gpu)
-#   -s,  --scenario NUM               CARLA scenario id (space-sep for many)  (default: 14)
-#        --save-episodes "EP1 EP2..." episodes whose frames get saved to disk (default: none)
-#   -r,  --resume DIR                 resume from previous outdir             (default: fresh run)
-#        --outdir DIR                 explicit outdir override                (default: auto)
-#        --steps NUM                  override Python global step budget
-#        --seed NUM                   RNG seed                                (default: Python default)
-#        --no-wandb                   disable W&B subprocess
-#        --testing                    evaluation mode
-#        --verbose-env-logs           keep per-episode CarlaEnv stdout prints
-#        --no-carla                   skip launching CARLA (assume up already)
-#        --start-port NUM             first CARLA rpc port                    (default: 2000)
-#        --port-step NUM              port increment between servers          (default: 100)
-#        --graceful-shutdown-wait NUM seconds to let Python finish on signal  (default: 75)
-#        --                          pass remaining args directly to Python
-#
-# Stable algorithm/reward/recovery defaults live in new_hogwild_train_a3c_carla.py.
-# Rare Python overrides can be passed after "--", for example:
-#   sbatch new_hogwild_train.slurm -w 6 --workers-per-gpu 1 -- --lr 5e-5
-#
-# Example: 6 workers on 6 GPUs, fresh run
-#   sbatch --gpus=6 new_hogwild_train.slurm -w 6 --workers-per-gpu 1 --servers-per-gpu 1
-# =============================================================================
-
-set -uo pipefail
-
-# ----- defaults --------------------------------------------------------------
 NUM_WORKERS=1
 WORKERS_PER_GPU=1
 WORKER_GPU_START=0
@@ -98,13 +78,11 @@ CARLA_SERVER_START_PERIOD=30
 STEPS=""
 LOG_STEPS=""
 LOG_UPDATE_ARRAYS=""
-NO_SYSTEM_MONITOR=""
-NO_GPU_MONITOR=""
+LOG_RESOURCES=""
 VERBOSE_ENV_LOGS=""
 NO_WANDB=""
 SAVE_EPISODES=""
 TESTING=""
-
 RESUME=""
 OUTDIR_OVERRIDE=""
 SEED=""
@@ -112,7 +90,6 @@ SERVERS_PER_GPU=""
 NO_CARLA=""
 PYTHON_EXTRA_ARGS=()
 
-# ----- parse named args ------------------------------------------------------
 while [[ $# -gt 0 ]]; do
     case "$1" in
         -w|--workers) NUM_WORKERS="$2"; shift 2 ;;
@@ -143,7 +120,7 @@ while [[ $# -gt 0 ]]; do
         --) shift; PYTHON_EXTRA_ARGS+=("$@"); break ;;
 
         -h|--help)
-            sed -n '14,55p' "$0"; exit 0 ;;
+            sed -n '21,44p' "$0"; exit 0 ;;
         *)
             echo "Unknown argument: $1" >&2
             echo "Use -- before rare Python-only arguments, e.g. -- --lr 5e-5" >&2
@@ -155,18 +132,18 @@ if [ -z "${SERVERS_PER_GPU}" ]; then
     SERVERS_PER_GPU="${WORKERS_PER_GPU}"
 fi
 
-# ----- HPC environment -------------------------------------------------------
 if [ -n "${TMPDIR:-}" ] && [ -n "${SLURM_JOB_ID:-}" ]; then
     ln -sfn "$TMPDIR" "/tmp/${SLURM_JOB_ID}" || true
     export TMPDIR="/tmp/${SLURM_JOB_ID}"
 fi
 
-module load GCCcore/13.2.0 Python/3.11.5 2>/dev/null || true
-module load CUDA/12.4.0 cuDNN/9.2.1.18-CUDA-12.4.0 2>/dev/null || true
+# Site-specific modules. Uncomment and edit for your cluster.
+# module load GCCcore/13.2.0 Python/3.11.5 2>/dev/null || true
+# module load CUDA/12.4.0 cuDNN/9.2.1.18-CUDA-12.4.0 2>/dev/null || true
 
 if [ -n "${VENV}" ]; then
     if [ ! -d "${VENV}" ]; then
-        echo "ERROR: VENV=${VENV} does not exist (set in ${CONFIG_FILE})" >&2
+        echo "ERROR: VENV=${VENV} does not exist" >&2
         exit 1
     fi
     # shellcheck disable=SC1091
@@ -179,11 +156,9 @@ export OMP_NUM_THREADS=1
 export MKL_NUM_THREADS=1
 export PYTHONUNBUFFERED=1
 export PYTHONFAULTHANDLER=1
-export NCCL_DEBUG=INFO
 export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True"
 export CARLA_SERVER_START_PERIOD
 
-# ----- output dir ------------------------------------------------------------
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 if [ -n "${RESUME}" ]; then
     OUTPUT_DIR="${RESUME}"
@@ -192,15 +167,12 @@ elif [ -n "${OUTDIR_OVERRIDE}" ]; then
     OUTPUT_DIR="${OUTDIR_OVERRIDE}"
     mkdir -p "${OUTPUT_DIR}"
 else
-    OUTPUT_DIR="${RUNS_DIR}/a3c_hogwild_${NUM_WORKERS}w_${TIMESTAMP}_${SLURM_JOB_ID:-local}"
+    OUTPUT_DIR="${RUNS_DIR}/a3c_${NUM_WORKERS}w_${TIMESTAMP}_${SLURM_JOB_ID:-local}"
     mkdir -p "${OUTPUT_DIR}"
 fi
 
-# SLURM writes its own stdout next to the submit directory, because the run
-# directory does not exist yet at submit time. Link it in, so one directory
-# holds everything the run produced.
 if [ -n "${SLURM_JOB_ID:-}" ] && [ -n "${SLURM_SUBMIT_DIR:-}" ]; then
-    ln -sfn "${SLURM_SUBMIT_DIR}/new-hogwild-a3c-carla-log-${SLURM_JOB_ID}.log" \
+    ln -sfn "${SLURM_SUBMIT_DIR}/a3c-carla-log-${SLURM_JOB_ID}.log" \
         "${OUTPUT_DIR}/slurm.log" 2>/dev/null || true
 fi
 
@@ -209,7 +181,7 @@ GPU_LOG="${OUTPUT_DIR}/gpu_dmon.log"
 CARLA_LOG="${OUTPUT_DIR}/carla_servers.log"
 
 echo "==================================================================="
-echo "=== A3C CARLA training (new_hogwild_* pipeline) ==="
+echo "=== A3C CARLA training ==="
 echo "==================================================================="
 echo "  job id            : ${SLURM_JOB_ID:-local}"
 echo "  host              : $(hostname)"
@@ -217,6 +189,7 @@ echo "  visible GPUs      : ${CUDA_VISIBLE_DEVICES:-all}"
 echo "  outdir            : ${OUTPUT_DIR}"
 echo "  project dir       : ${PROJECT_DIR}"
 echo "  venv              : ${VENV}"
+echo "  carla runtime     : ${CARLA_RUNTIME}"
 echo "-------------------------------------------------------------------"
 echo "  workers           : ${NUM_WORKERS}"
 echo "  workers-per-gpu   : ${WORKERS_PER_GPU}"
@@ -225,25 +198,10 @@ echo "  server-gpu-start  : ${SERVER_GPU_START}"
 echo "  servers-per-gpu   : ${SERVERS_PER_GPU}"
 echo "  start-port        : ${START_PORT} (+${PORT_STEP} per server)"
 echo "  scenario          : ${SCENARIO}"
-echo "-------------------------------------------------------------------"
-echo "  steps override    : ${STEPS:-<python default>}"
-echo "  graceful wait     : ${GRACEFUL_SHUTDOWN_WAIT}s"
-if [ -n "${NO_WANDB}" ]; then
-    echo "  wandb             : disabled"
-else
-    echo "  wandb             : enabled"
-fi
-echo "  resume            : ${RESUME:-<fresh>}"
-if [ "${#PYTHON_EXTRA_ARGS[@]}" -gt 0 ]; then
-    printf '  python extra args :'
-    printf ' %q' "${PYTHON_EXTRA_ARGS[@]}"
-    echo ""
-fi
 echo "==================================================================="
 
 cd "${PROJECT_DIR}"
 
-# ----- process bookkeeping + cleanup -----------------------------------------
 CARLA_PID=""
 GPU_DMON_PID=""
 TRAIN_PID=""
@@ -294,7 +252,6 @@ cleanup() {
 }
 trap cleanup SIGINT SIGTERM SIGUSR1 EXIT
 
-# ----- start GPU watchdog (for post-mortem) ----------------------------------
 if command -v nvidia-smi >/dev/null 2>&1; then
     nvidia-smi dmon -s pucvmet -o DT > "${GPU_LOG}" 2>&1 &
     GPU_DMON_PID=$!
@@ -302,30 +259,38 @@ if command -v nvidia-smi >/dev/null 2>&1; then
     nvidia-smi || true
 fi
 
-# ----- start CARLA servers ---------------------------------------------------
 if [ -z "${NO_CARLA}" ]; then
-    if [ -z "${CARLA_CONTAINER_IMAGE}" ] || \
-       [ "${CARLA_CONTAINER_IMAGE}" != "${CARLA_CONTAINER_IMAGE/CHANGE_ME/}" ]; then
-        echo "ERROR: set CARLA_CONTAINER_IMAGE in ${CONFIG_FILE}" >&2
-        echo "       (or pass --no-carla if the servers are already running)" >&2
-        exit 1
+    if [ "${CARLA_RUNTIME}" != "native" ]; then
+        if [ -z "${CARLA_CONTAINER_IMAGE}" ] || \
+           [ "${CARLA_CONTAINER_IMAGE}" != "${CARLA_CONTAINER_IMAGE/CHANGE_ME/}" ]; then
+            echo "ERROR: set CARLA_CONTAINER_IMAGE in ${CONFIG_FILE:-.env}" >&2
+            echo "       (or pass --no-carla if the servers are already running)" >&2
+            exit 1
+        fi
     fi
     if [ ! -f "${MULTISERVER_SCRIPT}" ]; then
         echo "ERROR: MULTISERVER_SCRIPT=${MULTISERVER_SCRIPT} does not exist" >&2
-        echo "       set it in ${CONFIG_FILE}" >&2
         exit 1
     fi
-    echo "[SLURM] starting ${NUM_WORKERS} CARLA server(s)..."
-    nohup python -u "${MULTISERVER_SCRIPT}" \
-        --num-servers "${NUM_WORKERS}" \
-        --servers-per-gpu "${SERVERS_PER_GPU}" \
-        --server-gpu-start "${SERVER_GPU_START}" \
-        --start-port "${START_PORT}" \
-        --port-step "${PORT_STEP}" \
-        --outdir "${OUTPUT_DIR}" \
-        > "${CARLA_LOG}" 2>&1 &
+    echo "[SLURM] starting ${NUM_WORKERS} CARLA server(s) runtime=${CARLA_RUNTIME}..."
+    LAUNCHER_CMD=(python -u "${MULTISERVER_SCRIPT}"
+        --runtime "${CARLA_RUNTIME}"
+        --num-servers "${NUM_WORKERS}"
+        --servers-per-gpu "${SERVERS_PER_GPU}"
+        --server-gpu-start "${SERVER_GPU_START}"
+        --start-port "${START_PORT}"
+        --port-step "${PORT_STEP}"
+        --outdir "${OUTPUT_DIR}"
+    )
+    if [ -n "${CARLA_CONTAINER_IMAGE}" ]; then
+        LAUNCHER_CMD+=(--image "${CARLA_CONTAINER_IMAGE}")
+    fi
+    if [ -n "${CARLA_BINARY:-}" ]; then
+        LAUNCHER_CMD+=(--binary "${CARLA_BINARY}")
+    fi
+    nohup "${LAUNCHER_CMD[@]}" > "${CARLA_LOG}" 2>&1 &
     CARLA_PID=$!
-    echo "[SLURM] CARLA supervisor PID=${CARLA_PID} -> ${CARLA_LOG}"
+    echo "[SLURM] CARLA launcher PID=${CARLA_PID} -> ${CARLA_LOG}"
 
     EXPECTED_PORTS=()
     for ((i=0; i<NUM_WORKERS; i++)); do
@@ -358,8 +323,7 @@ else
     echo "[SLURM] --no-carla: skipping CARLA startup."
 fi
 
-# ----- build training command ------------------------------------------------
-TRAIN_CMD=(python -u new_hogwild_train_a3c_carla.py
+TRAIN_CMD=(python -u train_a3c.py
     --num-workers "${NUM_WORKERS}"
     --workers-per-gpu "${WORKERS_PER_GPU}"
     --worker-gpu-start "${WORKER_GPU_START}"

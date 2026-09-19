@@ -1,5 +1,4 @@
 import os
-from PIL import Image, ImageDraw, ImageFont
 import cv2
 import numpy as np
 
