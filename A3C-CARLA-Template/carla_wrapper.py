@@ -6,7 +6,6 @@ of the worker loop and exposes only:
     reset() -> (state, speed, maneuver)
     step(action) -> (next_state, next_speed, next_maneuver, reward, done, info)
     reconnect()
-    is_server_alive()
 
 It also handles observation normalization, action repeat, reward shaping,
 optional frame saving, and per-episode statistics for the JSONL logger.
@@ -79,7 +78,6 @@ class CarlaA3CWrapper:
 
         self.episode = 0
         self.step_count = 0
-        self._episode_total_reward = 0.0
         self._episode_max_speed = 0.0
         self._episode_min_route_dist = float('inf')
         self._episode_goal_dist = float('inf')
@@ -95,7 +93,6 @@ class CarlaA3CWrapper:
         # Per-episode cache so frame saving creates the directory once and
         # does not rebuild the path in every step().
         self._save_dir_cached = None
-        self._save_failures = 0
 
         self.env = None
         self._connect_with_retries()
@@ -138,17 +135,6 @@ class CarlaA3CWrapper:
             self.port, self.reconnect_wait), flush=True)
         time.sleep(self.reconnect_wait)
         self._connect_with_retries()
-
-    def is_server_alive(self):
-        """Return True if the CARLA world answers ``get_snapshot()``."""
-        try:
-            if self.env is None or not hasattr(self.env, 'world') \
-                    or self.env.world is None:
-                return False
-            self.env.world.get_snapshot()
-            return True
-        except Exception:
-            return False
 
     def _state_to_chw_float(self, state):
         """Normalize a camera observation to ``[3, H, W]`` float32 in ``[0, 1]``."""
@@ -270,7 +256,6 @@ class CarlaA3CWrapper:
         """Reset episode stats and the env. Returns ``(state, speed, maneuver)``."""
         self.episode += 1
         self.step_count = 0
-        self._episode_total_reward = 0.0
         self._episode_max_speed = 0.0
         self._episode_min_route_dist = float('inf')
         self._episode_goal_dist = float('inf')
@@ -332,7 +317,7 @@ class CarlaA3CWrapper:
         return self._save_dir_cached
 
     def _save_frame(self):
-        """Write the current camera frame as JPEG. IO errors are counted, not raised."""
+        """Write the current camera frame as JPEG. IO errors are swallowed."""
         if not self._save_images:
             return
         if not hasattr(self.env, 'state_observer'):
@@ -345,7 +330,7 @@ class CarlaA3CWrapper:
             carla_img.save_to_disk(
                 os.path.join(ep_dir, '{}.jpeg'.format(self.step_count)))
         except Exception:
-            self._save_failures += 1
+            pass
 
     def _update_maneuver(self):
         """Advance the planned turn index when the vehicle leaves a junction."""
@@ -400,7 +385,6 @@ class CarlaA3CWrapper:
                 self.step_count >= self._episode_max_decisions:
             done = True
         self._accumulate_reward_components(reward_components)
-        self._episode_total_reward += reward_f
         speed_kmh = next_speed_f * 100.0
         if speed_kmh > self._episode_max_speed:
             self._episode_max_speed = speed_kmh
