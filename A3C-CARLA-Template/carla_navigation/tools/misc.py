@@ -10,34 +10,6 @@
 
 import math
 import numpy as np
-import carla
-
-def draw_waypoints(world, waypoints, z=0.5):
-    """
-    Draw a list of waypoints at a certain height given in z.
-
-        :param world: carla.world object
-        :param waypoints: list or iterable container with the waypoints to draw
-        :param z: height in meters
-    """
-    for wpt in waypoints:
-        wpt_t = wpt.transform
-        begin = wpt_t.location + carla.Location(z=z)
-        angle = math.radians(wpt_t.rotation.yaw)
-        end = begin + carla.Location(x=math.cos(angle), y=math.sin(angle))
-        world.debug.draw_arrow(begin, end, arrow_size=0.3, life_time=1.0)
-
-
-def get_speed(vehicle):
-    """
-    Compute speed of a vehicle in Km/h.
-
-        :param vehicle: the vehicle for which speed is calculated
-        :return: speed as a float in Km/h
-    """
-    vel = vehicle.get_velocity()
-
-    return 3.6 * math.sqrt(vel.x ** 2 + vel.y ** 2 + vel.z ** 2)
 
 def is_within_distance_ahead(target_transform, current_transform, max_distance):
     """

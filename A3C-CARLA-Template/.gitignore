@@ -1,0 +1,12 @@
+.env
+runs/
+wandb/
+*.pth
+*.log
+__pycache__/
+*.py[cod]
+*.egg-info/
+.Python
+build/
+dist/
+.DS_Store

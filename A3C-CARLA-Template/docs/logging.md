@@ -4,7 +4,7 @@ Two independent destinations:
 
 - **Local JSONL** under `<run_dir>/logs/`. Complete record of the run: every
   value exactly as training produced it. This is the source of truth.
-- **Weights & Biases**, when enabled. A curated subset, forwarded one record to
+- **Weights & Biases**, when enabled (opt-in: `WANDB_API_KEY` set, `wandb` extra installed, no `--no-wandb`). A curated subset, forwarded one record to
   one point — never averaged, batched, or downsampled. Best effort: if the
   internal queue fills up, W&B loses points while local files stay complete.
 
@@ -126,7 +126,8 @@ every `--log-resources-interval` seconds (default 10).
 | `gpus[n].mem_used_gb` | `system/gpu<n>_mem_used_gb` | GPU memory in use |
 
 Every record lands in `logs/worker_<id>/resources.jsonl`; GPU samples come
-only from the main process (`worker_-1`).
+only from the main process (`worker_-1`). GPU sampling needs `pynvml`
+(`pip install -e ".[resources]"`).
 
 ## Timing values
 
@@ -154,7 +155,7 @@ local; W&B receives only a running counter, and only for the six health types.
 | `nan_gradient` | NaN gradients detected; update skipped | `health/nan_updates_total` |
 | `camera_timeout` | Camera queue timed out; episode dropped | `health/camera_timeouts_total` |
 | `crash_recovery` | CARLA server timeout; worker reconnected | — |
-| `checkpoint_save` | Periodic or best-model checkpoint written | — |
+| `checkpoint_save` | Periodic or shutdown last-checkpoint written (`checkpoint.pth` only) | — |
 | `wandb_unavailable` | W&B requested but the package is not installed | — |
 | `wandb_init_failed`, `wandb_metric_setup_failed` | W&B startup failed; run continues locally | — |
 | `final_summary` | Written last: final counters, best reward, elapsed time, `queue_drops`, `wandb_errors` | mirrored into W&B summary |

@@ -423,7 +423,6 @@ def telemetry_process_main(telemetry_queue, run_output_dir,
 
     if wandb_enabled:
         try:
-            os.environ.setdefault('WANDB_INSECURE_DISABLE_SSL', 'true')
             import wandb
             wandb_run = wandb.init(
                 config=config, **dict(wandb_init_kwargs or {}))
@@ -758,14 +757,6 @@ class TrainingLogger:
         self._publish(record, is_event=True)
         return record
 
-    def log_save(self, path, global_t, **kwargs):
-        return self.log_event(
-            'model_save', path=path, global_t=global_t, **kwargs)
-
-    def log_load(self, path, global_t, **kwargs):
-        return self.log_event(
-            'model_load', path=path, global_t=global_t, **kwargs)
-
     def log_checkpoint(self, path, global_t, **kwargs):
         return self.log_event(
             'checkpoint_save', path=path, global_t=global_t, **kwargs)
@@ -808,33 +799,3 @@ class TrainingLogger:
             json.dump(
                 normalize_for_json(metadata), handle,
                 indent=2, allow_nan=False)
-
-    @staticmethod
-    def read_max_episode(run_output_dir, worker_id=None):
-        """Return the highest ``global_episode`` found in episode JSONL files."""
-        import glob as globmod
-        max_episode = 0
-        logs_dir = os.path.join(run_output_dir, 'logs')
-        if worker_id is not None:
-            paths = [os.path.join(
-                logs_dir, 'worker_{}'.format(worker_id), 'episodes.jsonl')]
-        else:
-            paths = globmod.glob(os.path.join(
-                logs_dir, 'worker_*', 'episodes.jsonl'))
-        for path in paths:
-            if not os.path.exists(path):
-                continue
-            try:
-                with open(path) as handle:
-                    for line in handle:
-                        try:
-                            record = json.loads(line)
-                        except (TypeError, ValueError):
-                            continue
-                        episode = record.get(
-                            'global_episode', record.get('episode', 0))
-                        if episode > max_episode:
-                            max_episode = episode
-            except OSError:
-                pass
-        return max_episode

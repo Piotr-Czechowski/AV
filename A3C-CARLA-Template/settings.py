@@ -39,7 +39,8 @@ RES = 250
 SCENARIO = [14]
 SPAWNING_TYPE = 1
 ACTION_TYPE = 'discrete'
-
-STEP_COUNTER = 200  # CarlaEnv episode step cap; wrapper has a separate decision cap
+ACTION_REPEAT = 2
+EPISODE_MAX_DECISIONS = 200
+STEP_COUNTER = EPISODE_MAX_DECISIONS * ACTION_REPEAT  # env tick cap
 SHOW_CAM = False
 DRAW = False

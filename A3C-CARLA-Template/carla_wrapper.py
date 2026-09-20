@@ -16,6 +16,7 @@ import time
 import numpy as np
 
 from carla_env import CarlaEnv
+import settings
 
 
 class CarlaA3CWrapper:
@@ -27,9 +28,9 @@ class CarlaA3CWrapper:
                  max_connect_retries=5, connect_retry_wait=30,
                  reconnect_wait=60, save_episodes=None,
                  save_episode_interval=0, run_id='', n_actions=10,
-                 run_output_dir=None, action_repeat=2,
-                 episode_max_decisions=100,
-                 world_reload_interval=0, reward_mode='shaped',
+                 run_output_dir=None, action_repeat=None,
+                 episode_max_decisions=None,
+                 world_reload_interval=0, reward_mode='legacy',
                  reward_progress_coef=1.0, reward_target_speed_coef=1.0,
                  reward_route_penalty_coef=0.1, reward_time_penalty=0.01,
                  reward_goal_bonus=50.0, reward_collision_penalty=50.0,
@@ -54,6 +55,10 @@ class CarlaA3CWrapper:
         self.n_actions = n_actions
         self._run_id = run_id
         self._run_output_dir = run_output_dir
+        if action_repeat is None:
+            action_repeat = settings.ACTION_REPEAT
+        if episode_max_decisions is None:
+            episode_max_decisions = settings.EPISODE_MAX_DECISIONS
         self._action_repeat = max(1, int(action_repeat))
         self._episode_max_decisions = int(episode_max_decisions)
         self._world_reload_interval = int(world_reload_interval)
@@ -121,9 +126,13 @@ class CarlaA3CWrapper:
                 time.sleep(self.connect_retry_wait)
 
     def reconnect(self):
-        """Drop the stale client, wait, then connect again."""
+        """Destroy actors, drop the stale client, wait, then connect again."""
         try:
             if self.env is not None:
+                try:
+                    self.env.destroy_agents()
+                except Exception:
+                    pass
                 if hasattr(self.env, 'world'):
                     self.env.world = None
                 if hasattr(self.env, 'client'):

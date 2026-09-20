@@ -313,26 +313,6 @@ class GlobalRoutePlanner(object):
         self._previous_decision = decision
         return decision
 
-    def abstract_route_plan(self, origin, destination):
-        """
-        The following function generates the route plan based on
-        origin      : carla.Location object of the route's start position
-        destination : carla.Location object of the route's end position
-        return      : list of turn by turn navigation decisions as
-        agents.navigation.local_planner.RoadOption elements
-        Possible values are STRAIGHT, LEFT, RIGHT, LANEFOLLOW, VOID
-        CHANGELANELEFT, CHANGELANERIGHT
-        """
-
-        route = self._path_search(origin, destination)
-        plan = []
-
-        for i in range(len(route) - 1):
-            road_option = self._turn_decision(i, route)
-            plan.append(road_option)
-
-        return plan
-
     def _find_closest_in_list(self, current_waypoint, waypoint_list):
         min_distance = float('inf')
         closest_index = -1
@@ -489,29 +469,3 @@ class GlobalRoutePlanner(object):
 
         self._previous_waypoint = v_waypoint
         return v_waypoint.is_junction, left_junction
-    
-    def current_directions(self, vehicle, world):
-        # map = world.get_map()
-        # current_waypoint = map.get_waypoint(vehicle.get_location())
-        # next_waypoints = current_waypoint.next(2.0)
-        # current_wp_vector = current_waypoint.transform.get_forward_vector()
-        # possible_directions = []
-        # for next_waypoint in next_waypoints:
-        #     next_wp_vector = next_waypoint.transform.get_forward_vector()
-        #     current_next_wp_vector = next_waypoint.transform.location - current_waypoint.transform.location
-        #     current_next_wp_vector = current_next_wp_vector.make_unit_vector()
-
-        #     dot_product = current_wp_vector.x * next_wp_vector.x + current_wp_vector.y * next_wp_vector.y
-        #     cross_product = current_wp_vector.x * next_wp_vector.y + current_wp_vector.y * next_wp_vector.x
-
-        #     if dot_product > 0.999:  # Prawie ten sam kierunek
-        #         maneuver = RoadOption.STRAIGHT
-        #         possible_directions.append("STRAIGHT")
-        #     elif cross_product > 0:  # Skręt w lewo (współrzędne zgodne z prawą dłonią)
-        #         maneuver = RoadOption.LEFT
-        #         possible_directions.append("LEFT")
-        #     else:  # Skręt w prawo
-        #         maneuver = RoadOption.RIGHT
-        #         possible_directions.append("RIGHT")
-
-        return possible_directions

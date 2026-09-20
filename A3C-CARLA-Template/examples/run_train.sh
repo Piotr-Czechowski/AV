@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Training is the same no matter how CARLA was started.
 # Start servers in another terminal first, then from the template root:
-#   ./examples/run_train.sh -w 2 --outdir runs/demo
+#   ./examples/run_train.sh -w 1 --outdir runs/demo
 #
 # Matching ports: worker i uses START_PORT + i * PORT_STEP (2000, 2100, ...).
 set -euo pipefail

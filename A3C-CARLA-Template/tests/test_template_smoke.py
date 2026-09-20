@@ -8,9 +8,16 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
+import importlib
+import subprocess
+import tempfile
+
 from carla_multiserver_launcher import (  # noqa: E402
-    build_cmd, docker_gpu_device, graphics_adapter_for, resolve_binary)
+    build_cmd, docker_gpu_device, graphics_adapter_for, hang_warmup_allows_miss,
+    launcher_config_error, parse_args, resolve_binary)
 from rl_configuration import Actions  # noqa: E402
+from town03 import SCENARIOS  # noqa: E402
+import settings  # noqa: E402
 
 
 class ActionSpaceTests(unittest.TestCase):
@@ -40,6 +47,7 @@ class LauncherCmdTests(unittest.TestCase):
             "docker", 2100, 1, "carlasim/carla:0.9.15",
             "/home/carla/CarlaUE4.sh")
         self.assertEqual(cmd[0], "docker")
+        self.assertIn("--ipc=host", cmd)
         self.assertIn("--network", cmd)
         self.assertEqual(cmd[cmd.index("--network") + 1], "host")
         self.assertIn("--gpus", cmd)
@@ -84,6 +92,103 @@ class LauncherCmdTests(unittest.TestCase):
     def test_resolve_native_binary_under_carla_path(self):
         path = resolve_binary("CarlaUE4.sh", "/opt/CARLA_0.9.15", "native")
         self.assertEqual(path, "/opt/CARLA_0.9.15/CarlaUE4.sh")
+
+    def test_hang_warmup_skips_strikes_until_first_listen(self):
+        self.assertTrue(hang_warmup_allows_miss(False))
+        self.assertFalse(hang_warmup_allows_miss(True))
+
+    def test_port_step_must_be_at_least_two(self):
+        args = parse_args(["--runtime", "native", "--port-step", "1"])
+        error = launcher_config_error(args)
+        self.assertIsNotNone(error)
+        self.assertIn("port-step", error)
+        args_ok = parse_args(["--runtime", "native", "--port-step", "2"])
+        self.assertIsNone(launcher_config_error(args_ok))
+
+    def test_change_me_image_rejected_for_containers(self):
+        docker_args = parse_args([
+            "--runtime", "docker", "--image", "CHANGE_ME"])
+        error = launcher_config_error(docker_args)
+        self.assertIsNotNone(error)
+        self.assertIn("image", error)
+        apptainer_args = parse_args([
+            "--runtime", "apptainer", "--image", "foo.sif"])
+        self.assertIsNone(launcher_config_error(apptainer_args))
+
+
+class ScenarioCatalogTests(unittest.TestCase):
+    def test_town03_scenario_14_routes(self):
+        spec = SCENARIOS[14]
+        self.assertEqual(spec["select"], "cycle")
+        self.assertEqual(spec["routes"][0], (28, 155))
+        self.assertEqual(len(spec["routes"]), 5)
+
+    def test_missing_town04_module_raises(self):
+        with self.assertRaises(ImportError):
+            importlib.import_module("town04")
+
+    def test_episode_cap_constants(self):
+        self.assertEqual(settings.EPISODE_MAX_DECISIONS, 200)
+        self.assertEqual(settings.ACTION_REPEAT, 2)
+        self.assertEqual(
+            settings.STEP_COUNTER,
+            settings.EPISODE_MAX_DECISIONS * settings.ACTION_REPEAT)
+
+
+class CheckpointLookupTests(unittest.TestCase):
+    def test_find_latest_ignores_best_checkpoint(self):
+        try:
+            from run_a3c import find_latest_checkpoint
+        except ImportError:
+            self.skipTest("torch is not installed")
+        with tempfile.TemporaryDirectory() as tmp:
+            best = os.path.join(tmp, "best_checkpoint.pth")
+            last = os.path.join(tmp, "checkpoint.pth")
+            with open(best, "w") as handle:
+                handle.write("best")
+            with open(last, "w") as handle:
+                handle.write("last")
+            with open(os.path.join(tmp, "checkpoint_step.txt"), "w") as handle:
+                handle.write("42")
+            path, step = find_latest_checkpoint(tmp)
+            self.assertEqual(path, last)
+            self.assertEqual(step, 42)
+            self.assertNotIn("best_checkpoint", path)
+
+    def test_find_latest_empty_without_last(self):
+        try:
+            from run_a3c import find_latest_checkpoint
+        except ImportError:
+            self.skipTest("torch is not installed")
+        with tempfile.TemporaryDirectory() as tmp:
+            with open(os.path.join(tmp, "best_checkpoint.pth"), "w") as handle:
+                handle.write("best")
+            path, step = find_latest_checkpoint(tmp)
+            self.assertIsNone(path)
+            self.assertEqual(step, 0)
+
+
+class ShellSyntaxTests(unittest.TestCase):
+    def test_bash_n_example_scripts(self):
+        scripts = [
+            os.path.join(ROOT, "examples", "local", "run_servers.sh"),
+            os.path.join(ROOT, "examples", "docker", "run_servers.sh"),
+            os.path.join(ROOT, "examples", "run_train.sh"),
+            os.path.join(ROOT, "examples", "hpc", "train.slurm"),
+        ]
+        for script in scripts:
+            result = subprocess.run(
+                ["bash", "-n", script],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            self.assertEqual(
+                result.returncode, 0,
+                "{}: {}".format(script, result.stderr.decode("utf-8", "replace")))
+
+    def test_docker_wrapper_rejects_change_me(self):
+        script = os.path.join(ROOT, "examples", "docker", "run_servers.sh")
+        with open(script) as handle:
+            text = handle.read()
+        self.assertIn("CHANGE_ME", text)
 
 
 class ModelImportTests(unittest.TestCase):

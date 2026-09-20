@@ -7,6 +7,7 @@ and exposes reset/step around cameras, collisions, lane invasions, and reward.
 import random
 import time
 import math
+import importlib
 import torch
 from utils import ColoredPrint
 from rl_configuration import Actions as ac
@@ -35,67 +36,28 @@ DECISIONS_DICT = {
 }
 
 # ---------------------------------------------------------------------------
-# Spawn/goal tables keyed by scenario id. Coordinates and spawn indices are
-# map-specific; the values below match the default Town03 layout.
-# Commented tuples are unused variants — keep them inside the lists.
+# Spawn/goal tables live in ``<map_name.lower()>.py`` (default: town03.py).
 # ---------------------------------------------------------------------------
 
-# Scenario 10: goal xyz
-MAP_POINTS_SC10 = [
-    (50, 203.913498, 0.275307),
-    (100, 203.788742, 1.3),
-    (-55.387177, 0.558450, 0.0),
-    (-105.387177, -3.140184, 0.0),
-    (74, -40, 1.0),
-    (-6.5, -44, 0.0),
-]
+CAMERA_FOV = "75"
 
-# Scenario 11: (spawn index, goal xyz)
-MAP_POINTS_SC11 = [
-    (14, (-55.387177, 0.558450, 0.0)),
-    (14, (-105.387177, -3.140184, 0.0)),
-]
 
-# Scenario 12: spawn-point indices (goal is a random other spawn)
-MAP_POINTS_SC12 = (
-    167, 165, 18, 200, 222, 105, 106, 1, 134, 3, 100, 139, 109, 190,
-    146, 188, 186, 184, 174, 126, 48, 233, 0, 32, 30, 44, 191, 51, 53,
-    238, 237, 235, 231, 229, 228, 225, 11, 85, 45, 247, 132, 252, 42,
-)
-
-# Scenario 13: (spawn index, goal spawn index)
-MAP_POINTS_SC13 = [  # left
-    (78, 76),
-    (71, 130),
-    (37, 161),
-    (43, 222),
-    (204, 162),
-]
-
-# Scenario 14: (spawn index, goal spawn index)
-MAP_POINTS_SC14 = [  # right
-    # (28, 154), (49, 132), (83, 225), (77, 200), (54, 235),  # straight
-    (28, 155),
-    (49, 129),
-    (83, 89),
-    (77, 98),
-    (54, 234),
-]
-
-# Scenario 15: (spawn index, goal spawn index)
-MAP_POINTS_SC15 = [  # straight
-    # (78, 76), (71, 130), (37, 161), (43, 222), (204, 162),  # left
-    (78, 92),
-    (71, 131),
-    (238, 130),
-    (43, 89),
-    (204, 67),
-]
-
-# Scenario 16: (spawn index, goal spawn index)
-TESTING_SC = [
-    (28, 154),
-]
+def load_map_scenarios(map_name):
+    """Import ``SCENARIOS`` from ``<map_name.lower()>.py`` next to this file."""
+    module_name = str(map_name).lower()
+    try:
+        module = importlib.import_module(module_name)
+    except ImportError as error:
+        raise ValueError(
+            "No scenario file for map {!r}. Add {}.py next to carla_env.py "
+            "(copy town03.py and replace spawn/goal indices). "
+            "Import error: {}".format(map_name, module_name, error)
+        ) from error
+    scenarios = getattr(module, "SCENARIOS", None)
+    if not scenarios:
+        raise ValueError(
+            "Module {!r} has no SCENARIOS dict.".format(module_name))
+    return scenarios
 
 
 class CarlaEnv:
@@ -155,6 +117,9 @@ class CarlaEnv:
         self.tp = terminal_point
         self.middle_goals = []
         self.middle_goals_density = mp_density
+        self._map_scenarios = None
+        self._active_spec = None
+        self._route_goal = None
         self.create_scenario(self.sp, self.tp, self.middle_goals_density)
 
         # True while the planned route is inside a turn (used for middle goals).
@@ -211,217 +176,114 @@ class CarlaEnv:
         self.world.apply_settings(self.settings)
 
 
+    def _require_scenario(self):
+        if self._map_scenarios is None:
+            self._map_scenarios = load_map_scenarios(self.map_name)
+        if self.scenario not in self._map_scenarios:
+            raise ValueError(
+                "Map {!r} has no scenario id {}. Known ids: {}. "
+                "Copy town03.py to {}.py and add the scenario.".format(
+                    self.map_name, self.scenario,
+                    sorted(self._map_scenarios),
+                    str(self.map_name).lower()))
+        return self._map_scenarios[self.scenario]
+
+    def _copy_spawn(self, spawn, dy=0):
+        loc = spawn.location
+        return carla.Transform(
+            carla.Location(loc.x, loc.y + dy, loc.z), spawn.rotation)
+
+    def _pick_route(self, spec, spawn_points):
+        """Resolve spawn transform + goal from a scenario spec."""
+        select = spec.get("select", "random")
+        spawn_dy = spec.get("spawn_dy", 0)
+
+        if spec.get("goal") == "random_other_spawn":
+            indices = spec["spawn_indices"]
+            spawn_idx = indices[random.randrange(0, len(indices))]
+            goal_idx = spawn_idx
+            while goal_idx == spawn_idx:
+                goal_idx = random.randrange(0, len(spawn_points))
+            return (
+                self._copy_spawn(spawn_points[spawn_idx], spawn_dy),
+                ("spawn", goal_idx),
+                spawn_idx,
+            )
+
+        if "spawn_range" in spec:
+            lo, hi = spec["spawn_range"]
+            spawn_idx = random.randint(lo, hi)
+            goals = spec["goal_xyz_list"]
+            goal_xyz = goals[random.randrange(0, len(goals))]
+            return (
+                self._copy_spawn(spawn_points[spawn_idx], spawn_dy),
+                ("xyz", tuple(goal_xyz)),
+                spawn_idx,
+            )
+
+        routes = spec["routes"]
+        n = len(routes)
+        if select == "cycle":
+            idx = self.goal_points_index % n
+            self.goal_points_index = idx + 1
+        elif select == "single":
+            idx = 0
+        else:
+            idx = random.randrange(0, n)
+            self.goal_points_index = idx
+        spawn_key, goal = routes[idx]
+        spawn = self._copy_spawn(spawn_points[spawn_key], spawn_dy)
+        if isinstance(goal, int):
+            route_goal = ("spawn", goal)
+        else:
+            route_goal = ("xyz", tuple(goal))
+        return spawn, route_goal, spawn_key
+
     def create_scenario(self, sp, tp, mp_d):
         """Set ``spawn_point`` from explicit indices or the active scenario table."""
-
-        if sp and tp:
-            # Usage of spawn_point and terminal_point
-            self.spawn_point = self.map.get_spawn_points()[sp]
-
-        elif self.scenario in [1, 2]:
-            # Straight short line - 1
-            # Straight long line - 2
-            self.spawn_point = self.map.get_spawn_points()[3]
-
-        elif self.scenario == 3:
-            # Right turn
-            sp = self.map.get_spawn_points()[11]
-            sp.location.y -= 11
-            self.spawn_point = carla.Transform(sp.location, sp.rotation)
-
-        elif self.scenario == 4:
-            # Left turn
-            sp = self.map.get_spawn_points()[12]
-            sp.location.y -= 15
-            self.spawn_point = carla.Transform(sp.location, sp.rotation)
-
-        elif self.scenario == 5:
-            # Little straight line and right turn
-            sp = self.map.get_spawn_points()[13]
-            sp.location.y += 10
-            self.spawn_point = carla.Transform(sp.location, sp.rotation)
-
-        elif self.scenario == 6:
-            # Little straight line and left turn
-            sp = self.map.get_spawn_points()[14]
-            # sp.location.y -= 20
-            self.spawn_point = carla.Transform(sp.location, sp.rotation)
-
-        elif self.scenario in (7, 8):
-            # Long straight line and 2 right turns
-            # self.spawn_point = self.map.get_spawn_points()[57]
-            self.spawn_point = self.map.get_spawn_points()[130]
-            # self.spawn_point = carla.Transform(sp.location, sp.rotation)
-            self.goal_point = 122
-
-        elif self.scenario == 10:
-            self.spawn_points_index = random.randint(0,30)
-            sp = self.map.get_spawn_points()[self.spawn_points_index]
-            self.spawn_point = carla.Transform(sp.location, sp.rotation)
-
-        elif self.scenario == 11:
-            try:
-                self.goal_points_index = random.randint(0,len(MAP_POINTS_SC11)-1)
-                sp_number = MAP_POINTS_SC11[self.goal_points_index][0]
-                sp = self.map.get_spawn_points()[sp_number]
-                self.spawn_point = carla.Transform(sp.location, sp.rotation)
-            except TypeError:
-                print("Error while spawning")
-        elif self.scenario == 12:
-            try:
-                self.goal_points_index = random.choice(MAP_POINTS_SC12)
-                sp_number = self.goal_points_index
-                sp = self.map.get_spawn_points()[sp_number]
-                self.spawn_point = carla.Transform(sp.location, sp.rotation)
-            except TypeError:
-                print("Error while spawning")
-
-        elif self.scenario == 13:
-            try:
-                self.goal_points_index = random.randint(0,len(MAP_POINTS_SC13)-1)
-                sp_number = MAP_POINTS_SC13[self.goal_points_index][0]
-                sp = self.map.get_spawn_points()[sp_number]
-                self.spawn_point = carla.Transform(sp.location, sp.rotation)
-            except TypeError:
-                print("Error while spawning")
-        elif self.scenario == 14:
-            try:
-                if self.goal_points_index == len(MAP_POINTS_SC14)-1:
-                    self.goal_points_index = 0
-                else:
-                    self.goal_points_index = self.goal_points_index+1
-                sp_number = MAP_POINTS_SC14[self.goal_points_index][0]
-                sp = self.map.get_spawn_points()[sp_number]
-                self.spawn_point = carla.Transform(sp.location, sp.rotation)
-            except TypeError:
-                print("Error while spawning")
-
-        elif self.scenario == 15:
-            try:
-                if self.goal_points_index==len(MAP_POINTS_SC15)-1:
-                    self.goal_points_index = 0
-                else:
-                    self.goal_points_index = self.goal_points_index+1
-                sp_number = MAP_POINTS_SC15[self.goal_points_index][0]
-                sp = self.map.get_spawn_points()[sp_number]
-                self.spawn_point = carla.Transform(sp.location, sp.rotation)
-            except TypeError:
-                print("Error while spawning")
-        elif self.scenario == 16:
-            try:
-                if self.goal_points_index == len(TESTING_SC)-1:
-                    self.goal_points_index = 0
-                else:
-                    self.goal_points_index = self.goal_points_index+1
-                sp_number = TESTING_SC[self.goal_points_index][0]
-                sp = self.map.get_spawn_points()[sp_number]
-                self.spawn_point = carla.Transform(sp.location, sp.rotation)
-            except TypeError:
-                print("Error while spawning")
+        spawn_points = self.map.get_spawn_points()
+        if sp not in (None, False) and tp not in (None, False):
+            self.spawn_point = self._copy_spawn(spawn_points[sp])
+            self._route_goal = ("spawn", tp)
+            self._active_spec = None
         else:
-            self.log.err(f"Invalid params: scenario: {self.scenario} or sp: {sp}, tp:{tp},"
-                         f" mp_d:{mp_d}")
-
+            spec = self._require_scenario()
+            self._active_spec = spec
+            spawn, route_goal, spawn_key = self._pick_route(spec, spawn_points)
+            self.spawn_point = spawn
+            self._route_goal = route_goal
+            self.spawn_points_index = spawn_key
         self.spawn_point_loc = self.spawn_point.location
 
     def set_spectator(self, d=6.4):
-        """Place the spectator camera above the spawn point."""
-        # angle = 90  # cos and sin argument
-
-        # spectator_coordinates = carla.Location(self.spawn_point_loc.x,
-        #                                        self.spawn_point_loc.y,
-        #                                        self.spawn_point_loc.z)
-
-        # if self.scenario == 7:
-        #     spectator_coordinates.x -= 3
-        #     spectator_coordinates.y += 10
-        #     spectator_coordinates.z += 50
-        #     pass
-        # else:
-        #     spectator_coordinates.x += 10
-        #     spectator_coordinates.y += 10
-        #     spectator_coordinates.z += 50
-
-        # a = math.radians(angle)
-        # location = carla.Location(d * math.cos(a), d * math.sin(a), 2.0) + spectator_coordinates
-
-        # self.spectator = self.world.get_spectator()
-        # """
-        # yaw - rotating your vision in 2D (left <-, right ->)  
-        # pitch - looking more to the sky or the road 
-        # roll - leaning your vision (e.g. from | to ->)
-        # """
-        # self.spectator.set_transform(carla.Transform(location, carla.Rotation(yaw=-60, pitch=-60, roll=0)))
-
-        # return self.spectator
-        spectator_coordinates = self.spawn_point.location
-        location = spectator_coordinates
-        location.z = location.z + 40
+        """Place the spectator camera above the spawn point (copy Location)."""
+        loc = self.spawn_point.location
+        location = carla.Location(loc.x, loc.y, loc.z + 40)
         self.spectator = self.world.get_spectator()
-        self.spectator.set_transform(carla.Transform(location, carla.Rotation(yaw=0, pitch=-70, roll=0)))
+        self.spectator.set_transform(
+            carla.Transform(location, carla.Rotation(yaw=0, pitch=-70, roll=0)))
         return self.spectator
 
     def plan_the_route(self):
         """Trace spawn-to-goal, drop duplicate waypoints, extract turn maneuvers."""
-        # Plan a route to the destination
-        way_points = self.map.generate_waypoints(1.0)
         dao = GlobalRoutePlannerDAO(self.map, 1.0)
         self.planner = GlobalRoutePlanner(dao)
         self.planner.setup()
 
-        if self.scenario == 1:
-            self.goal_location_loc = carla.Location(x=50, y=203.913498, z=0.275307)
-            self.goal_location_trans = carla.Transform(self.goal_location_loc)
-
-        elif self.scenario == 2:
-            self.goal_location_loc = carla.Location(x=100, y=203.788742, z=1.3)
-            self.goal_location_trans = carla.Transform(self.goal_location_loc)
-
-        elif self.scenario in [3, 5]:
-            self.goal_location_loc = carla.Location(x=-55.387177, y=0.558450, z=0.0)
-            self.goal_location_trans = carla.Transform(self.goal_location_loc)
-
-        elif self.scenario in [4, 6]:
-            self.goal_location_loc = carla.Location(x=-105.387177, y=-3.140184, z=0.0)
-            self.goal_location_trans = carla.Transform(self.goal_location_loc)
-        elif self.scenario == 8:
-            self.goal_location_loc = carla.Location(x=74, y=-40, z=1.0)
-            self.goal_location_trans = carla.Transform(self.goal_location_loc)
-        elif self.scenario == 10:
-            self.goal_points_index = random.randint(0,len(MAP_POINTS_SC10)-1)
-            x, y, z = MAP_POINTS_SC10[self.goal_points_index]
+        if self._route_goal is None:
+            raise ValueError(
+                "No route selected for map {!r} scenario {}".format(
+                    self.map_name, self.scenario))
+        kind, payload = self._route_goal
+        if kind == "xyz":
+            x, y, z = payload
             self.goal_location_loc = carla.Location(x=x, y=y, z=z)
             self.goal_location_trans = carla.Transform(self.goal_location_loc)
-        elif self.scenario == 11:
-            x, y, z = MAP_POINTS_SC11[self.goal_points_index][1]
-            self.goal_location_loc = carla.Location(x=x, y=y, z=z)
-            self.goal_location_trans = carla.Transform(self.goal_location_loc)
-        elif self.scenario == 12:
-            spawn_points = self.world.get_map().get_spawn_points()
-            valid_spawn_points = [sp for i, sp in enumerate(spawn_points) if i != self.goal_points_index]
-            self.goal_location_trans = random.choice(valid_spawn_points)
-            self.goal_location_loc = self.goal_location_trans.location
-        elif self.scenario == 13:
-            sp_number = MAP_POINTS_SC13[self.goal_points_index][1]
-            self.goal_location_trans = self.map.get_spawn_points()[sp_number]
-            self.goal_location_loc = self.goal_location_trans.location
-        elif self.scenario == 14:
-            sp_number = MAP_POINTS_SC14[self.goal_points_index][1]
-            self.goal_location_trans = self.map.get_spawn_points()[sp_number]
-            self.goal_location_loc = self.goal_location_trans.location
-        elif self.scenario == 15:
-            sp_number = MAP_POINTS_SC15[self.goal_points_index][1]
-            self.goal_location_trans = self.map.get_spawn_points()[sp_number]
-            self.goal_location_loc = self.goal_location_trans.location
-        elif self.scenario == 16:
-            sp_number = TESTING_SC[self.goal_points_index][1]
-            self.goal_location_trans = self.map.get_spawn_points()[sp_number]
+        elif kind == "spawn":
+            self.goal_location_trans = self.map.get_spawn_points()[payload]
             self.goal_location_loc = self.goal_location_trans.location
         else:
-            # self.goal_location_loc = way_points[self.goal_point].transform.location
-            # self.goal_location_trans = way_points[self.goal_point].transform
-            self.goal_location_loc = carla.Location(x=-6.5, y=-44, z=0.0)
-            self.goal_location_trans = carla.Transform(self.goal_location_loc)
+            raise ValueError("Unknown route goal kind {!r}".format(kind))
 
         self.route = self.planner.trace_route(self.spawn_point_loc, self.goal_location_loc)
 
@@ -502,7 +364,7 @@ class CarlaEnv:
         rgb_cam_bp = self.blueprint_library.find("sensor.camera.rgb")
         rgb_cam_bp.set_attribute("image_size_x", f"{self.resX}")
         rgb_cam_bp.set_attribute("image_size_y", f"{self.resY}")
-        rgb_cam_bp.set_attribute("fov", f"60")
+        rgb_cam_bp.set_attribute("fov", CAMERA_FOV)
 
         rgb_cam = self.world.spawn_actor(rgb_cam_bp, self.transform, attach_to=self.vehicle)
         self.actor_list.append(rgb_cam)
@@ -537,7 +399,7 @@ class CarlaEnv:
         # semantic_cam_bp = carla.sensor.Camera('MyCamera', PostProcessing='SemanticSegmentation')
         semantic_cam_bp.set_attribute('image_size_x', f'{self.resX}')
         semantic_cam_bp.set_attribute('image_size_y', f'{self.resY}')
-        semantic_cam_bp.set_attribute('fov', '75')
+        semantic_cam_bp.set_attribute('fov', CAMERA_FOV)
 
         # new_location = carla.Location(self.transform.location.x, 
         #                             self.transform.location.y, 
@@ -707,26 +569,30 @@ class CarlaEnv:
 
         self.middle_points(add_middle_goals)
         self.stat_reward_mp = []
-
-        if self.scenario == 3:
-            self.middle_goals[0] = carla.Transform(carla.Location(x=-70.599335, y=1.434147, z=0.0))
-
-        if self.scenario == 4:
-            self.middle_goals[0] = carla.Transform(carla.Location(x=-91.646820, y=-2.737971, z=0.0))
-            self.middle_goals[1] = carla.Transform(carla.Location(x=-83.688499, y=0.805027, z=0.0))
-            self.middle_goals.append(self.middle_goals[2])
-            self.middle_goals[2] = carla.Transform(carla.Location(x=-99.680237, y=-3.129901, z=0.0))
-
-        if self.scenario == 5:
-            self.middle_goals.insert(1, carla.Transform(carla.Location(x=-70.599335, y=1.434147, z=0.0)))
-
-        if self.scenario == 6:
-            self.middle_goals[1] = carla.Transform(carla.Location(x=-83.688499, y=0.805027, z=0.0))
+        self._apply_middle_patches()
 
         # Draw middle points
         for middle_goal in self.middle_goals:
             # Counter 0 means this middle goal has not yet paid its reward.
             self.stat_reward_mp.append([middle_goal.location, 0])
+
+    def _apply_middle_patches(self):
+        """Apply optional spawn-table patches to ``middle_goals``."""
+        spec = self._active_spec or {}
+        for patch in spec.get("middle_patches") or []:
+            op = patch[0]
+            if op == "set":
+                _, index, xyz = patch
+                self.middle_goals[index] = carla.Transform(
+                    carla.Location(x=xyz[0], y=xyz[1], z=xyz[2]))
+            elif op == "insert":
+                _, index, xyz = patch
+                self.middle_goals.insert(
+                    index, carla.Transform(
+                        carla.Location(x=xyz[0], y=xyz[1], z=xyz[2])))
+            elif op == "append_copy":
+                _, index = patch
+                self.middle_goals.append(self.middle_goals[index])
 
     def spawn_npc_vehicle(self, spawn_index=50):
         """Spawn an autopilot vehicle at ``spawn_index``."""
@@ -870,7 +736,9 @@ class CarlaEnv:
                              (self.goal_location_loc.y - vehicle_location.y) ** 2 +
                              (self.goal_location_loc.z - vehicle_location.z) ** 2)
 
-        self.world.debug.draw_string(vehicle_location, "X", life_time=100, persistent_lines=True)
+        if self.draw:
+            self.world.debug.draw_string(
+                vehicle_location, "X", life_time=100, persistent_lines=True)
         return distance, vehicle_location
 
     def calculate_speed(self):
@@ -948,9 +816,12 @@ class CarlaEnv:
         self.map = self.world.get_map()
         
         spawn_points = self.world.get_map().get_spawn_points()
-        for i, spawn_point in enumerate(spawn_points):
-            location = spawn_point.location
-            self.world.debug.draw_string(location, str(i), draw_shadow=False, color=carla.Color(r=0, g=255, b=0), life_time=120.0)
+        if self.draw:
+            for i, spawn_point in enumerate(spawn_points):
+                location = spawn_point.location
+                self.world.debug.draw_string(
+                    location, str(i), draw_shadow=False,
+                    color=carla.Color(r=0, g=255, b=0), life_time=120.0)
         
         self._apply_sync_settings()
 

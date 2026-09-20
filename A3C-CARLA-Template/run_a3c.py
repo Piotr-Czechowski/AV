@@ -5,13 +5,10 @@ bursts, and rolls the global network back to the last non-NaN checkpoint
 when that happens.
 """
 
-import glob
 import os
 import time
 
-import torch
-
-from a3c_core import A3CWorker, has_nan_params
+from a3c_core import A3CWorker, has_nan_params, torch_load_checkpoint
 from training_logger import build_record, enqueue_telemetry
 
 
@@ -48,6 +45,17 @@ def _read_step_file(path):
             return int(f.read().strip())
     except (OSError, ValueError):
         return 0
+
+
+def _any_worker_active(workers, restart_counts, config):
+    """True if some worker is alive or still allowed to restart."""
+    max_restarts = int(config.max_restarts_per_worker)
+    for i in range(config.num_workers):
+        if workers[i].is_alive():
+            return True
+        if restart_counts[i] < max_restarts:
+            return True
+    return False
 
 
 def rollback_global_network(global_network, run_output_dir, worker_idx=None):
@@ -91,7 +99,7 @@ def rollback_global_network(global_network, run_output_dir, worker_idx=None):
     candidates.sort(key=lambda x: x[0], reverse=True)
     for step, path in candidates:
         try:
-            state = torch.load(path, map_location=global_network.device)
+            state = torch_load_checkpoint(path, global_network.device)
         except Exception as e:
             print('[ROLLBACK] {} unreadable: {}'.format(path, e), flush=True)
             continue
@@ -218,14 +226,6 @@ def run_with_restart(global_network, config, run_output_dir, shutdown_event,
                     dropped_counter=dropped_counter,
                     restart_count=restart_counts[i])
 
-                # Remove local core dumps so repeated CARLA crashes do not
-                # fill the job directory.
-                for core_file in glob.glob('core.*'):
-                    try:
-                        os.remove(core_file)
-                    except Exception:
-                        pass
-
                 if restart_counts[i] >= config.max_restarts_per_worker:
                     print('[RESTART] W{} exceeded max restarts ({}), '
                           'giving up'.format(
@@ -236,6 +236,11 @@ def run_with_restart(global_network, config, run_output_dir, shutdown_event,
                         global_step=current_step,
                         dropped_counter=dropped_counter,
                         restart_count=restart_counts[i])
+                    if not _any_worker_active(
+                            workers, restart_counts, config):
+                        print('[RESTART] all workers given up; stopping',
+                              flush=True)
+                        shutdown_event.set()
                     continue
 
                 if rapid_crash_count[i] >= config.rapid_crash_threshold:

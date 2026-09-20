@@ -7,10 +7,10 @@
 #    (example: carlasim/carla:0.9.15)
 #
 # 2. Terminal A — servers:
-#      ./examples/docker/run_servers.sh -w 2 --outdir runs/demo
+#      ./examples/docker/run_servers.sh -w 1 --outdir runs/demo
 #
 # 3. Terminal B — training (same -w / ports / outdir):
-#      ./examples/run_train.sh -w 2 --outdir runs/demo
+#      ./examples/run_train.sh -w 1 --outdir runs/demo
 #
 # Docker Desktop on macOS does not share host networking the same way.
 # Use Linux (or a VM) for this recipe.
@@ -47,7 +47,8 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-if [[ -z "${CARLA_CONTAINER_IMAGE:-}" ]]; then
+if [[ -z "${CARLA_CONTAINER_IMAGE:-}" ]] || \
+   [[ "${CARLA_CONTAINER_IMAGE}" == *CHANGE_ME* ]]; then
     echo "ERROR: set CARLA_CONTAINER_IMAGE in .env (docker image tag)" >&2
     exit 1
 fi

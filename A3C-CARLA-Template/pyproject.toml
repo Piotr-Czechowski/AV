@@ -1,7 +1,13 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "a3c-carla-template"
 version = "0.1.0"
 description = "Plug-and-play Hogwild A3C training template for CARLA"
+readme = "README.md"
+license = { file = "LICENSE" }
 requires-python = ">=3.10,<3.12"
 dependencies = [
     "carla==0.9.15",
@@ -13,4 +19,22 @@ dependencies = [
 
 [project.optional-dependencies]
 wandb = ["wandb"]
-resources = ["psutil"]
+resources = ["psutil", "pynvml"]
+
+[tool.setuptools]
+py-modules = [
+    "a3c_core",
+    "carla_env",
+    "carla_wrapper",
+    "carla_multiserver_launcher",
+    "rl_configuration",
+    "run_a3c",
+    "settings",
+    "state_observer",
+    "timing_utils",
+    "train_a3c",
+    "training_logger",
+    "utils",
+    "town03",
+]
+packages = ["carla_navigation", "carla_navigation.tools"]

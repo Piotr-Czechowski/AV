@@ -8,7 +8,7 @@ One supervisor thread per server:
 
 Spawn backends (--runtime):
   * apptainer — ``apptainer exec --nv IMAGE BINARY ...``
-  * docker    — ``docker run --rm --network host --gpus device=N IMAGE ...``
+  * docker    — ``docker run --rm --network host --ipc=host --gpus device=N IMAGE ...``
   * native    — host ``CarlaUE4.sh`` / binary
 
 This script does not start training. ``train_a3c.py`` connects to ports that
@@ -28,7 +28,7 @@ import sys
 import threading
 from time import time
 
-from settings import load_dotenv
+from settings import load_dotenv, PORT, PORT_STEP
 
 
 CHECK_INTERVAL = 30.0
@@ -55,15 +55,15 @@ def parse_args(argv=None):
         default=os.environ.get("CARLA_RUNTIME", "native"),
     )
     parser.add_argument("--num-servers", type=int, default=1)
-    parser.add_argument("--servers-per-gpu", type=int, default=2)
+    parser.add_argument("--servers-per-gpu", type=int, default=1)
     parser.add_argument(
         "--server-gpu-start",
         type=int,
         default=0,
         help="First visible CUDA index to place servers on (0-based).",
     )
-    parser.add_argument("--start-port", type=int, default=2000)
-    parser.add_argument("--port-step", type=int, default=100)
+    parser.add_argument("--start-port", type=int, default=PORT)
+    parser.add_argument("--port-step", type=int, default=PORT_STEP)
     parser.add_argument("--outdir", type=str, default=".")
     parser.add_argument(
         "--image",
@@ -81,6 +81,27 @@ def parse_args(argv=None):
         help="Host directory containing the native CARLA binary.",
     )
     return parser.parse_args(argv)
+
+
+def hang_warmup_allows_miss(ever_listened):
+    """True while the server has never opened RPC; do not count hang strikes."""
+    return not bool(ever_listened)
+
+
+def launcher_config_error(args):
+    """Return a fatal config message, or None if the launcher may start."""
+    if args.port_step < 2:
+        return (
+            "ERROR: --port-step must be >= 2 "
+            "(RPC uses port and port+1 for streaming)"
+        )
+    if args.runtime in ("apptainer", "docker"):
+        if not args.image or "CHANGE_ME" in args.image:
+            return (
+                "ERROR: set --image or CARLA_CONTAINER_IMAGE for runtime={}"
+                .format(args.runtime)
+            )
+    return None
 
 
 def resolve_binary(binary, carla_path, runtime):
@@ -161,7 +182,7 @@ def build_cmd(runtime, port, cuda_index, image, binary, extra_args=None):
                 "CARLA_CONTAINER_IMAGE / --image is required for docker")
         return (
             [
-                "docker", "run", "--rm", "--network", "host",
+                "docker", "run", "--rm", "--network", "host", "--ipc=host",
                 "--gpus", "device={}".format(docker_gpu_device(cuda_index)),
                 "--entrypoint", binary,
                 image,
@@ -196,7 +217,9 @@ def num_visible_gpus():
     """Count GPUs from ``CUDA_VISIBLE_DEVICES`` or ``nvidia-smi -L``."""
     cvd = os.environ.get("CUDA_VISIBLE_DEVICES", "").strip()
     if cvd:
-        return max(1, len(cvd.split(",")))
+        ids = [item.strip() for item in cvd.split(",") if item.strip() != ""]
+        if ids:
+            return max(1, len(ids))
     try:
         result = subprocess.run(
             ["nvidia-smi", "-L"],
@@ -211,8 +234,26 @@ def num_visible_gpus():
         return 1
 
 
+def _ss_listening(port):
+    """Return True/False if ``ss`` can probe, or None if ``ss`` is missing."""
+    try:
+        result = subprocess.run(
+            ["ss", "-ltn", "sport", "=", ":{}".format(port)],
+            capture_output=True,
+            text=True,
+            timeout=LSOF_TIMEOUT,
+            check=False,
+        )
+    except Exception:
+        return None
+    if result.returncode != 0:
+        return False
+    needle = ":{}".format(port)
+    return needle in (result.stdout or "")
+
+
 def port_listening(port):
-    """Return True if TCP ``port`` is LISTEN. Assume yes if ``lsof`` fails."""
+    """Return True if TCP ``port`` is LISTEN. Fail closed if probes fail."""
     try:
         result = subprocess.run(
             ["lsof", "-nP", "-iTCP:{}".format(port), "-sTCP:LISTEN"],
@@ -221,13 +262,21 @@ def port_listening(port):
             timeout=LSOF_TIMEOUT,
             check=False,
         )
+        if result.returncode == 0:
+            return True
+        if result.returncode == 1:
+            return False
+        LOG.warning(
+            "port %d: lsof rc=%d; trying ss", port, result.returncode)
     except Exception as exc:
-        LOG.warning("port %d: lsof check failed (%s); assuming listening", port, exc)
-        return True
-    if result.returncode not in (0, 1):
-        LOG.warning("port %d: lsof rc=%d; assuming listening", port, result.returncode)
-        return True
-    return result.returncode == 0
+        LOG.warning("port %d: lsof check failed (%s); trying ss", port, exc)
+
+    ss_state = _ss_listening(port)
+    if ss_state is not None:
+        return ss_state
+    LOG.warning(
+        "port %d: lsof/ss unavailable; assuming not listening", port)
+    return False
 
 
 def terminate(proc, grace=5.0):
@@ -294,6 +343,7 @@ def supervise(idx, num_gpus):
             LOG.info("server %d: running (pid %d)", idx, proc.pid)
 
             hang_strikes = 0
+            ever_listened = False
             next_check = time() + CHECK_INTERVAL
             while not STOP.is_set():
                 returncode = proc.poll()
@@ -312,6 +362,13 @@ def supervise(idx, num_gpus):
                     next_check = time() + CHECK_INTERVAL
                     if port_listening(port):
                         hang_strikes = 0
+                        ever_listened = True
+                    elif hang_warmup_allows_miss(ever_listened):
+                        LOG.info(
+                            "server %d: waiting for first LISTEN on port %d",
+                            idx,
+                            port,
+                        )
                     else:
                         hang_strikes += 1
                         if hang_strikes >= HANG_STRIKES:
@@ -347,12 +404,9 @@ def main(argv=None):
     load_dotenv()
     args = parse_args(argv)
     args.binary = resolve_binary(args.binary, args.carla_path, args.runtime)
-    if args.runtime in ("apptainer", "docker"):
-        if not args.image or "CHANGE_ME" in args.image:
-            sys.exit(
-                "ERROR: set --image or CARLA_CONTAINER_IMAGE for runtime={}".format(
-                    args.runtime)
-            )
+    config_error = launcher_config_error(args)
+    if config_error:
+        sys.exit(config_error)
     if args.runtime == "native" and not os.path.isfile(args.binary):
         sys.exit(
             "ERROR: native CARLA binary not found: {}. "

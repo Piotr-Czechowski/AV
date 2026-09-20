@@ -33,6 +33,21 @@ Transition = namedtuple(
     "Transition", ["value_s", "log_prob_a", "entropy", "action"])
 
 
+def atomic_torch_save(state, path):
+    """Write ``path`` via a temp file in the same directory, then replace."""
+    tmp_path = path + '.tmp'
+    torch.save(state, tmp_path)
+    os.replace(tmp_path, path)
+
+
+def torch_load_checkpoint(path, map_location):
+    """Load a checkpoint; ``weights_only=False`` for optimizer + counters."""
+    try:
+        return torch.load(path, map_location=map_location, weights_only=False)
+    except TypeError:
+        return torch.load(path, map_location=map_location)
+
+
 # ---------------------------------------------------------------------------
 # Shared optimizers with CPU state for Hogwild workers
 # ---------------------------------------------------------------------------
@@ -311,8 +326,24 @@ class GlobalNetwork:
             return False
         with self.save_lock:
             state = self._checkpoint_state_unlocked(global_t=global_t)
-            torch.save(state, path)
+            atomic_torch_save(state, path)
             return True
+
+    def save_last_checkpoint(self, run_output_dir, global_t=None):
+        """Write canonical ``checkpoint.pth`` + step sidecar. One-writer safe."""
+        if global_t is None:
+            global_t = self.global_step.value
+        path = os.path.join(run_output_dir, 'checkpoint.pth')
+        if not self.save(path, global_t=global_t):
+            return False
+        try:
+            with open(os.path.join(run_output_dir, 'checkpoint_step.txt'),
+                      'w') as f:
+                f.write(str(int(global_t)))
+        except OSError as e:
+            print('[SAVE] failed to write checkpoint_step.txt: {}'.format(e),
+                  flush=True)
+        return True
 
     def save_boundary_checkpoint(self, run_output_dir, global_t,
                                  worker_id=None):
@@ -335,7 +366,7 @@ class GlobalNetwork:
             state = self._checkpoint_state_unlocked(global_t=global_t)
             global_checkpoint_path = os.path.join(
                 run_output_dir, 'checkpoint.pth')
-            torch.save(state, global_checkpoint_path)
+            atomic_torch_save(state, global_checkpoint_path)
             with open(os.path.join(run_output_dir,
                                    'checkpoint_step.txt'), 'w') as f:
                 f.write(str(global_t))
@@ -346,7 +377,7 @@ class GlobalNetwork:
                     run_output_dir, 'checkpoints',
                     'worker_{}'.format(worker_id))
                 os.makedirs(worker_output_dir, exist_ok=True)
-                torch.save(state, os.path.join(
+                atomic_torch_save(state, os.path.join(
                     worker_output_dir, 'checkpoint.pth'))
                 with open(os.path.join(worker_output_dir,
                                        'checkpoint_step.txt'), 'w') as f:
@@ -383,7 +414,7 @@ class GlobalNetwork:
 
     def load(self, path):
         """Restore model, optimizer, and counters from a checkpoint file."""
-        state = torch.load(path, map_location=self.device)
+        state = torch_load_checkpoint(path, map_location=self.device)
         with self.save_lock:
             if 'model' not in state:
                 raise ValueError(
@@ -660,7 +691,7 @@ class A3CWorker(mp.Process):
 
     def _log_episode(self, training_logger, env, global_episode, global_t,
                      episode_total_reward, episode_step_count, duration_s):
-        """Write episode stats and save ``best_checkpoint.pth`` on a new best."""
+        """Write episode stats. Does not write a separate best-model file."""
         self.episode_rewards_history.append(episode_total_reward)
         window = min(100, len(self.episode_rewards_history))
         self.mean_reward = float(
@@ -694,15 +725,10 @@ class A3CWorker(mp.Process):
         )
 
         if is_new_best:
-            print('[BEST] W{} new best reward {:.2f} at Ep{}'.format(
-                self.worker_id, episode_total_reward, global_episode),
-                flush=True)
-            best_path = os.path.join(
-                self.run_output_dir, 'best_checkpoint.pth')
-            if self.global_network.save(best_path, global_t=global_t):
-                training_logger.log_checkpoint(
-                    path=best_path, global_t=global_t,
-                    checkpoint_kind='best')
+            print('[BEST] W{} new best reward {:.2f} at Ep{} '
+                  '(logged only; last checkpoint is checkpoint.pth)'.format(
+                      self.worker_id, episode_total_reward, global_episode),
+                  flush=True)
 
         return record
 
@@ -1017,6 +1043,10 @@ class A3CWorker(mp.Process):
                 pass
             try:
                 if env and env.env:
+                    try:
+                        env.env.destroy_agents()
+                    except Exception:
+                        pass
                     env.env.world = None
                     env.env.client = None
             except Exception:

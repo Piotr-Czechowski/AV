@@ -14,6 +14,8 @@
 
 # Submit from the template root:
 #   cd /path/to/A3C-CARLA-Template && sbatch examples/hpc/train.slurm -w 1
+# Two workers need matching GPU/CPU/RAM, e.g.:
+#   sbatch --gpus=2 --cpus-per-task=16 --mem=50G examples/hpc/train.slurm -w 2
 #
 # This recipe starts CARLA (unless --no-carla) then train_a3c.py.
 # train_a3c.py itself never launches the simulator.
@@ -70,8 +72,8 @@ WORKERS_PER_GPU=1
 WORKER_GPU_START=0
 SERVER_GPU_START=0
 SCENARIO=14
-START_PORT=2000
-PORT_STEP=100
+START_PORT="${CARLA_START_PORT:-2000}"
+PORT_STEP="${CARLA_PORT_STEP:-100}"
 GRACEFUL_SHUTDOWN_WAIT=75
 CARLA_SERVER_START_PERIOD=30
 
@@ -208,7 +210,7 @@ TRAIN_PID=""
 TAIL_PID=""
 
 cleanup() {
-    local code=$?
+    local code="${1:-$?}"
     trap - SIGINT SIGTERM SIGUSR1 EXIT
     echo ""
     echo "[CLEANUP] exit code=${code}; stopping child processes..."
@@ -246,11 +248,31 @@ cleanup() {
             kill -KILL "${pid}" 2>/dev/null || true
         fi
     done
-    pkill -TERM -f CarlaUE4 2>/dev/null || true
     echo "[CLEANUP] done."
     exit "${code}"
 }
-trap cleanup SIGINT SIGTERM SIGUSR1 EXIT
+
+on_preempt() {
+    trap - SIGUSR1
+    echo ""
+    echo "[SLURM] SIGUSR1: forwarding to training for last checkpoint"
+    local train_pid="${TRAIN_PID:-}"
+    local code=1
+    if [ -n "${train_pid}" ] && ps -p "${train_pid}" > /dev/null 2>&1; then
+        kill -USR1 "${train_pid}" 2>/dev/null || kill -TERM "${train_pid}" 2>/dev/null || true
+        local waited=0
+        while [ "${waited}" -lt "${GRACEFUL_SHUTDOWN_WAIT}" ] && \
+              ps -p "${train_pid}" > /dev/null 2>&1; do
+            sleep 1
+            waited=$((waited + 1))
+        done
+        wait "${train_pid}" 2>/dev/null
+        code=$?
+    fi
+    cleanup "${code}"
+}
+trap cleanup SIGINT SIGTERM EXIT
+trap on_preempt SIGUSR1
 
 if command -v nvidia-smi >/dev/null 2>&1; then
     nvidia-smi dmon -s pucvmet -o DT > "${GPU_LOG}" 2>&1 &
@@ -288,6 +310,9 @@ if [ -z "${NO_CARLA}" ]; then
     if [ -n "${CARLA_BINARY:-}" ]; then
         LAUNCHER_CMD+=(--binary "${CARLA_BINARY}")
     fi
+    if [ -n "${CARLA_PATH:-}" ]; then
+        LAUNCHER_CMD+=(--carla-path "${CARLA_PATH}")
+    fi
     nohup "${LAUNCHER_CMD[@]}" > "${CARLA_LOG}" 2>&1 &
     CARLA_PID=$!
     echo "[SLURM] CARLA launcher PID=${CARLA_PID} -> ${CARLA_LOG}"
@@ -301,6 +326,12 @@ if [ -z "${NO_CARLA}" ]; then
     retries=60
     delay=10
     for ((r=1; r<=retries; r++)); do
+        if [ -n "${CARLA_PID}" ] && ! ps -p "${CARLA_PID}" > /dev/null 2>&1; then
+            echo "[SLURM] CARLA launcher died while waiting for ports." >&2
+            echo "[SLURM] last 80 lines of ${CARLA_LOG}:" >&2
+            tail -n 80 "${CARLA_LOG}" >&2 || true
+            exit 1
+        fi
         all_ok=true
         for port in "${EXPECTED_PORTS[@]}"; do
             if ! lsof -nP -iTCP:"${port}" -sTCP:LISTEN >/dev/null 2>&1; then

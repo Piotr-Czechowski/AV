@@ -5,10 +5,10 @@
 #    (the folder that contains CarlaUE4.sh).
 #
 # 2. Terminal A — servers:
-#      ./examples/local/run_servers.sh -w 2 --outdir runs/demo
+#      ./examples/local/run_servers.sh -w 1 --outdir runs/demo
 #
 # 3. Terminal B — training (same -w / ports / outdir):
-#      ./examples/run_train.sh -w 2 --outdir runs/demo
+#      ./examples/run_train.sh -w 1 --outdir runs/demo
 #
 # Ctrl+C in terminal A stops the supervisor and the CARLA processes.
 set -euo pipefail

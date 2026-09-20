@@ -62,8 +62,8 @@ def prepare_output_dir(args, user_specified_dir=None, resume=False):
 
 
 # Run shape
-DEFAULT_NUM_WORKERS = 2
-DEFAULT_WORKERS_PER_GPU = 2
+DEFAULT_NUM_WORKERS = 1
+DEFAULT_WORKERS_PER_GPU = 1
 DEFAULT_WORKER_GPU_START = 0
 DEFAULT_START_PORT = settings.PORT
 DEFAULT_PORT_STEP = settings.PORT_STEP
@@ -138,8 +138,8 @@ DEFAULT_OUTDIR = None
 DEFAULT_RESUME = None
 
 # CARLA step/reset behavior
-DEFAULT_ACTION_REPEAT = 2
-DEFAULT_EPISODE_MAX_DECISIONS = 100
+DEFAULT_ACTION_REPEAT = settings.ACTION_REPEAT
+DEFAULT_EPISODE_MAX_DECISIONS = settings.EPISODE_MAX_DECISIONS
 DEFAULT_WORLD_RELOAD_INTERVAL = 0
 DEFAULT_REWARD_MODE = 'legacy'  # or 'shaped'
 
@@ -498,7 +498,9 @@ def main():
         torch.cuda.manual_seed_all(args.seed)
 
     args.n_actions = len(ac.ACTIONS_NAMES)
-    args.wandb_enabled = bool(HAS_WANDB and not args.no_wandb)
+    wandb_api_key = os.environ.get('WANDB_API_KEY', '').strip()
+    args.wandb_enabled = bool(
+        HAS_WANDB and not args.no_wandb and wandb_api_key)
     args.worker_gpus = _assign_worker_gpus(
         args.num_workers, args.workers_per_gpu, args.worker_gpu_start)
 
@@ -605,10 +607,13 @@ def main():
             resumed=bool(args.resume),
             worker_gpus=args.worker_gpus,
             wandb_enabled=args.wandb_enabled)
-        if not args.no_wandb and not HAS_WANDB:
+        if not args.no_wandb and not args.wandb_enabled:
+            reason = 'package not installed' if not HAS_WANDB else (
+                'WANDB_API_KEY is empty')
             events.log_event(
                 'wandb_unavailable',
-                global_t=global_network.global_step.value)
+                global_t=global_network.global_step.value,
+                error=reason)
 
         if args.log_resources:
             resource_logger = ResourceLogger(
@@ -662,6 +667,12 @@ def main():
         _write_resume_state(
             run_output_dir, config, global_network, cumulative,
             session_elapsed, session_start_ts, session_end_ts)
+        if global_network.save_last_checkpoint(
+                run_output_dir, global_t=final_steps):
+            print('[SAVE] last checkpoint at step {}'.format(final_steps),
+                  flush=True)
+        else:
+            print('[SAVE] skipped last checkpoint (NaN or I/O)', flush=True)
 
         events.log_event(
             'training_end',
