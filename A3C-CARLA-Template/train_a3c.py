@@ -1,8 +1,8 @@
-"""A3C multi-GPU CARLA training entry point.
+"""A3C CARLA training entry point.
 
 The CLI exposes run-shaping arguments. Stable algorithm, reward, and recovery
-defaults live as uppercase module-level variables below so normal SLURM
-launches do not need to pass a long list of constant values.
+defaults live as uppercase module-level variables below so typical launches
+do not need to pass a long list of constant values.
 """
 
 import argparse
@@ -13,6 +13,7 @@ import queue
 import random
 import signal
 import sys
+import tempfile
 import time
 import uuid
 from datetime import datetime
@@ -22,29 +23,57 @@ import numpy as np
 import torch
 import torch.multiprocessing as mp
 
-from ACTIONS import ACTIONS as ac
-from new_hogwild_prepare_output_dir import prepare_output_dir
-from new_hogwild_training_logger import (
-    TrainingLogger, enqueue_telemetry, make_telemetry_stop,
+from rl_configuration import Actions as ac
+from training_logger import (
+    ResourceLogger, TrainingLogger, make_telemetry_stop,
     telemetry_process_main)
-from new_hogwild_system_monitor import RunMonitor
-from new_hogwild_a3c import GlobalNetwork
-from new_hogwild_run_a3c import run_with_restart, find_latest_checkpoint
+from a3c_core import GlobalNetwork
+from run_a3c import run_with_restart, find_latest_checkpoint
+import settings
 
 HAS_WANDB = importlib.util.find_spec('wandb') is not None
 
 
+def prepare_output_dir(args, user_specified_dir=None, resume=False):
+    """Create the output directory and dump the launch arguments into it.
+
+    args can be a dict or argparse.Namespace. On resume=True, the args file
+    gets a suffix so first-run files are not clobbered.
+    """
+    if user_specified_dir is not None:
+        if os.path.exists(user_specified_dir):
+            if not os.path.isdir(user_specified_dir):
+                raise RuntimeError(
+                    '{} is not a directory'.format(user_specified_dir))
+        else:
+            os.makedirs(user_specified_dir)
+        run_output_dir = user_specified_dir
+    else:
+        run_output_dir = tempfile.mkdtemp(prefix='a3c_run_')
+
+    suffix = '_resume' if resume else ''
+
+    args_dict = args if isinstance(args, dict) else vars(args)
+    with open(os.path.join(run_output_dir,
+                           'args{}.txt'.format(suffix)), 'w') as f:
+        json.dump(args_dict, f, indent=2, default=str)
+
+    return run_output_dir
+
+
 # Run shape
-DEFAULT_NUM_WORKERS = 2
-DEFAULT_WORKERS_PER_GPU = 2
+DEFAULT_NUM_WORKERS = 1
+DEFAULT_WORKERS_PER_GPU = 1
 DEFAULT_WORKER_GPU_START = 0
-DEFAULT_START_PORT = 2000
-DEFAULT_PORT_STEP = 100
-DEFAULT_SCENARIO = 14
-DEFAULT_CAMERA = 'semantic'
-DEFAULT_RES = 250
+DEFAULT_START_PORT = settings.PORT
+DEFAULT_PORT_STEP = settings.PORT_STEP
+DEFAULT_SCENARIO = settings.SCENARIO[0]
+DEFAULT_CAMERA = settings.CAMERA_TYPE
+DEFAULT_RES = settings.RES
 DEFAULT_MP_DENSITY = 25
 DEFAULT_SEED = 52
+DEFAULT_CARLA_HOST = settings.CARLA_HOST
+DEFAULT_MAP_NAME = settings.MAP_NAME
 
 # Algorithm
 DEFAULT_OPTIMIZER = 'shared-rmsprop'
@@ -88,9 +117,8 @@ DEFAULT_LOG_STEPS = False
 DEFAULT_LOG_UPDATE_ARRAYS = False
 DEFAULT_DIAG_LOG_INTERVAL = 100
 DEFAULT_DIAG_LOG_WALL_S = 60.0
-DEFAULT_MONITOR_INTERVAL = 10.0
-DEFAULT_NO_SYSTEM_MONITOR = False
-DEFAULT_NO_GPU_MONITOR = False
+DEFAULT_LOG_RESOURCES = False
+DEFAULT_LOG_RESOURCES_INTERVAL = 10.0
 DEFAULT_VERBOSE_ENV_LOGS = False
 DEFAULT_WANDB_PROJECT = 'a3c-carla'
 DEFAULT_WANDB_RUN_NAME = None
@@ -110,10 +138,10 @@ DEFAULT_OUTDIR = None
 DEFAULT_RESUME = None
 
 # CARLA step/reset behavior
-DEFAULT_ACTION_REPEAT = 2
-DEFAULT_EPISODE_MAX_DECISIONS = 100
+DEFAULT_ACTION_REPEAT = settings.ACTION_REPEAT
+DEFAULT_EPISODE_MAX_DECISIONS = settings.EPISODE_MAX_DECISIONS
 DEFAULT_WORLD_RELOAD_INTERVAL = 0
-DEFAULT_REWARD_MODE = 'legacy'#'shaped'
+DEFAULT_REWARD_MODE = 'legacy'  # or 'shaped'
 
 # Reward shaping / reward potential modificators
 DEFAULT_REWARD_PROGRESS_COEF = 1.0
@@ -137,10 +165,11 @@ DEFAULT_ACTION_TYPE = 'discrete'
 # ---------------------------------------------------------------------------
 
 def build_parser():
+    """Build the training CLI. Defaults live in the ``DEFAULT_*`` constants."""
     p = argparse.ArgumentParser(
-        description='A3C multi-GPU training for CARLA autonomous driving')
+        description='A3C training for CARLA autonomous driving')
 
-    # Run shape: these are the values normally changed from SLURM.
+    # Run shape: workers, ports, map, scenario, camera.
     p.add_argument('--num-workers', type=int,
                    default=DEFAULT_NUM_WORKERS)
     p.add_argument('--workers-per-gpu', type=int,
@@ -151,6 +180,12 @@ def build_parser():
                    default=DEFAULT_START_PORT)
     p.add_argument('--port-step', type=int,
                    default=DEFAULT_PORT_STEP)
+    p.add_argument('--carla-host', type=str,
+                   default=DEFAULT_CARLA_HOST,
+                   help='CARLA RPC host the workers connect to. '
+                        'Does not start the simulator.')
+    p.add_argument('--map-name', type=str,
+                   default=DEFAULT_MAP_NAME)
     p.add_argument('--scenario', type=int, nargs='+',
                    default=[DEFAULT_SCENARIO])
     p.add_argument('--camera', type=str, default=DEFAULT_CAMERA,
@@ -238,12 +273,10 @@ def build_parser():
                    default=DEFAULT_DIAG_LOG_INTERVAL)
     p.add_argument('--diag-log-wall-s', type=float,
                    default=DEFAULT_DIAG_LOG_WALL_S)
-    p.add_argument('--monitor-interval', type=float,
-                   default=DEFAULT_MONITOR_INTERVAL)
-    p.add_argument('--no-system-monitor', action='store_true',
-                   default=DEFAULT_NO_SYSTEM_MONITOR)
-    p.add_argument('--no-gpu-monitor', action='store_true',
-                   default=DEFAULT_NO_GPU_MONITOR)
+    p.add_argument('--log-resources', action='store_true',
+                   default=DEFAULT_LOG_RESOURCES)
+    p.add_argument('--log-resources-interval', type=float,
+                   default=DEFAULT_LOG_RESOURCES_INTERVAL)
     p.add_argument('--verbose-env-logs', action='store_true',
                    default=DEFAULT_VERBOSE_ENV_LOGS)
     p.add_argument('--wandb-project', type=str,
@@ -259,8 +292,7 @@ def build_parser():
     p.add_argument('--save-episode-interval', type=int,
                    default=DEFAULT_SAVE_EPISODE_INTERVAL)
 
-    # CARLA stepping and reset behavior. Reward coefficients are fixed globals
-    # in uppercase constants; only legacy-vs-shaped mode remains a run option.
+    # CARLA stepping and reset. Reward coefficients stay in uppercase constants.
     p.add_argument('--action-repeat', type=int,
                    default=DEFAULT_ACTION_REPEAT)
     p.add_argument('--episode-max-decisions', type=int,
@@ -275,6 +307,7 @@ def build_parser():
 
 
 def _config_to_dict(config):
+    """Flatten argparse.Namespace / SimpleNamespace to a plain dict."""
     if isinstance(config, dict):
         return config
     if hasattr(config, '__dict__'):
@@ -284,8 +317,7 @@ def _config_to_dict(config):
 
 
 def _apply_config_defaults(args):
-    # Internal defaults below are kept out of the normal CLI because they are
-    # rarely changed and define the current CARLA A3C setup.
+    """Fill fields kept off the CLI (optimizer internals, reward coeffs)."""
     if not hasattr(args, 'mp_density'):
         args.mp_density = DEFAULT_MP_DENSITY
     if not hasattr(args, 'rmsprop_alpha'):
@@ -323,6 +355,10 @@ def _apply_config_defaults(args):
         args.reward_clip = DEFAULT_REWARD_CLIP
     if not hasattr(args, 'action_type'):
         args.action_type = DEFAULT_ACTION_TYPE
+    if not hasattr(args, 'carla_host'):
+        args.carla_host = DEFAULT_CARLA_HOST
+    if not hasattr(args, 'map_name'):
+        args.map_name = DEFAULT_MAP_NAME
     return args
 
 
@@ -331,6 +367,7 @@ def _timestamp():
 
 
 def _read_resume_state(run_output_dir):
+    """Load ``resume_state.json``, falling back to ``training_end`` in events."""
     state = {}
     state_path = os.path.join(run_output_dir, 'resume_state.json')
     try:
@@ -364,6 +401,7 @@ def _read_resume_state(run_output_dir):
 def _write_resume_state(run_output_dir, config, global_network,
                         elapsed_training_s, last_session_elapsed_s,
                         session_start_ts, session_end_ts):
+    """Atomically write counters and elapsed time for the next ``--resume``."""
     state = {
         'global_step': global_network.global_step.value,
         'global_episode': global_network.global_episode.value,
@@ -387,6 +425,7 @@ def _write_resume_state(run_output_dir, config, global_network,
 
 
 def _install_signal_handlers(shutdown_event):
+    """Set the shutdown event on SIGTERM / SIGUSR1 / SIGINT."""
     def _handle_signal(signum, _frame):
         try:
             name = signal.Signals(signum).name
@@ -404,6 +443,7 @@ def _install_signal_handlers(shutdown_event):
 
 def _stop_telemetry_process(log_queue, telemetry_process,
                             final_summary=None):
+    """Send the stop sentinel and join the telemetry process."""
     try:
         log_queue.put(
             make_telemetry_stop(final_summary or {}), timeout=10)
@@ -418,6 +458,7 @@ def _stop_telemetry_process(log_queue, telemetry_process,
 
 
 def _assign_worker_gpus(num_workers, workers_per_gpu, worker_gpu_start):
+    """Map workers to ``cuda:N`` strings, repeating the pattern if needed."""
     n_gpus = torch.cuda.device_count()
     if workers_per_gpu <= 0 or n_gpus == 0:
         return ['cpu'] * num_workers
@@ -439,6 +480,7 @@ def _assign_worker_gpus(num_workers, workers_per_gpu, worker_gpu_start):
 
 
 def main():
+    """Parse CLI, start telemetry + workers, write resume state on exit."""
     args = _apply_config_defaults(build_parser().parse_args())
 
     if args.entropy_coef is not None:
@@ -456,7 +498,9 @@ def main():
         torch.cuda.manual_seed_all(args.seed)
 
     args.n_actions = len(ac.ACTIONS_NAMES)
-    args.wandb_enabled = bool(HAS_WANDB and not args.no_wandb)
+    wandb_api_key = os.environ.get('WANDB_API_KEY', '').strip()
+    args.wandb_enabled = bool(
+        HAS_WANDB and not args.no_wandb and wandb_api_key)
     args.worker_gpus = _assign_worker_gpus(
         args.num_workers, args.workers_per_gpu, args.worker_gpu_start)
 
@@ -550,11 +594,12 @@ def main():
     telemetry_process.start()
 
     events = None
-    run_monitor = None
+    resource_logger = None
     try:
         events = TrainingLogger(
             run_output_dir, worker_id=-1, telemetry_queue=log_queue,
-            dropped_counter=telemetry_counters['queue_drops'])
+            dropped_counter=telemetry_counters['queue_drops'],
+            publish_metrics=args.wandb_enabled)
         events.log_event(
             'training_start',
             global_t=global_network.global_step.value,
@@ -562,29 +607,27 @@ def main():
             resumed=bool(args.resume),
             worker_gpus=args.worker_gpus,
             wandb_enabled=args.wandb_enabled)
-        if not args.no_wandb and not HAS_WANDB:
+        if not args.no_wandb and not args.wandb_enabled:
+            reason = 'package not installed' if not HAS_WANDB else (
+                'WANDB_API_KEY is empty')
             events.log_event(
                 'wandb_unavailable',
-                global_t=global_network.global_step.value)
+                global_t=global_network.global_step.value,
+                error=reason)
 
-        if not args.no_system_monitor:
-            telemetry_callback = None
-            if args.wandb_enabled:
-                telemetry_callback = lambda record: enqueue_telemetry(
-                    log_queue, record,
-                    dropped_counter=telemetry_counters['queue_drops'])
-            run_monitor = RunMonitor(
-                run_output_dir, interval=args.monitor_interval,
-                track_carla=True, track_gpu=not args.no_gpu_monitor,
+        if args.log_resources:
+            resource_logger = ResourceLogger(
+                events,
+                interval=args.log_resources_interval,
+                gpu_indices=list(range(torch.cuda.device_count())),
                 global_step_getter=lambda:
-                    global_network.global_step.value,
-                telemetry_callback=telemetry_callback)
-            run_monitor.start()
+                    global_network.global_step.value)
+            resource_logger.start()
     except BaseException:
         shutdown_event.set()
         try:
-            if run_monitor is not None:
-                run_monitor.stop()
+            if resource_logger is not None:
+                resource_logger.stop()
         finally:
             _stop_telemetry_process(log_queue, telemetry_process)
             if events is not None:
@@ -613,8 +656,8 @@ def main():
         shutdown_event.set()
     finally:
         shutdown_event.set()
-        if run_monitor is not None:
-            run_monitor.stop()
+        if resource_logger is not None:
+            resource_logger.stop()
 
         session_elapsed = time.time() - start_time
         cumulative = session_elapsed + elapsed_offset
@@ -624,6 +667,12 @@ def main():
         _write_resume_state(
             run_output_dir, config, global_network, cumulative,
             session_elapsed, session_start_ts, session_end_ts)
+        if global_network.save_last_checkpoint(
+                run_output_dir, global_t=final_steps):
+            print('[SAVE] last checkpoint at step {}'.format(final_steps),
+                  flush=True)
+        else:
+            print('[SAVE] skipped last checkpoint (NaN or I/O)', flush=True)
 
         events.log_event(
             'training_end',

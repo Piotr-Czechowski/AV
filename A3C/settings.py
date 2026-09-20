@@ -1,3 +1,5 @@
+import os
+
 import torch
 SHOULD_USE_CUDA = 'cuda' if torch.cuda.is_available() else 'cpu'
 
@@ -64,6 +66,8 @@ REWARD_FROM_INV = 0  # Static reward from a line invasion
 ACTIONS = ['forward', 'forward_left', 'forward_right', 'brake', 'brake_left', 'brake_right', 'forward_slight_left','forward_slight_right','brake_slight_left','brake_slight_right',]
 # ACTION_IND:  0            1               2             3          4              5                 6                    7                       8                    9
 
-CARLA_PATH = r''  # provide your carla exec path
-CARLA_EGG_PATH = r''  # Provide your carla egg path
+# Both come from new_hogwild_train_paths.sh; they stay empty unless you start
+# CARLA by hand instead of through MULTISERVER_SCRIPT.
+CARLA_PATH = os.environ.get('CARLA_PATH', '')
+CARLA_EGG_PATH = os.environ.get('CARLA_EGG_PATH', '')
 

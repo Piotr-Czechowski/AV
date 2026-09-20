@@ -18,13 +18,24 @@ alters what training produced.
 
 Telemetry is best effort.  A full queue costs W&B points, never local
 records and never training throughput.
+
+``ResourceLogger`` runs only in runs launched with ``--log-resources``:
+one daemon thread per process samples its own CPU/RAM usage, and the
+main process additionally samples every visible GPU, into ``system``
+records that travel the same two paths.
 """
 
 import json
 import math
 import os
 import queue as queue_module
+import threading
 from datetime import datetime
+
+try:
+    import psutil
+except ImportError:
+    psutil = None
 
 
 RECORD_KINDS = frozenset(
@@ -214,10 +225,7 @@ _UPDATE_METRICS = {
     'entropy_coef': 'train/entropy_coef',
 }
 
-_SYSTEM_METRICS = (
-    'cpu_percent_mean', 'cpu_percent_max', 'mem_percent',
-    'mem_available_gb', 'swap_used_gb',
-)
+_SYSTEM_METRICS = ('proc_cpu_percent', 'proc_rss_gb')
 
 
 def project_update_to_wandb(record):
@@ -247,16 +255,19 @@ def project_update_to_wandb(record):
 def project_system_to_wandb(record):
     """Project one resource sample onto W&B metrics, values untouched.
 
-    Only node-level CPU/memory/GPU numbers travel.  Process listings,
-    CARLA server details, and PIDs stay in the local ``system.jsonl``.
+    The main process reports its own CPU/RSS plus one sample per
+    visible GPU under ``system/*``.  Workers, which own no GPU view,
+    report their process numbers under ``worker_<id>/system/*``.
     """
     payload = {}
     _put_metric(payload, 'global_step', record.get('global_t'))
-    section = record.get('system')
-    if isinstance(section, dict):
-        for name in _SYSTEM_METRICS:
-            _put_metric(
-                payload, 'system/{}'.format(name), section.get(name))
+    worker_id = record.get('worker')
+    prefix = ''
+    if worker_id is not None and int(worker_id) >= 0:
+        prefix = 'worker_{}/'.format(worker_id)
+    for name in _SYSTEM_METRICS:
+        _put_metric(
+            payload, prefix + 'system/{}'.format(name), record.get(name))
     for gpu in record.get('gpus') or ():
         if not isinstance(gpu, dict) or \
                 not isinstance(gpu.get('index'), int):
@@ -268,6 +279,7 @@ def project_system_to_wandb(record):
 
 
 def make_telemetry_stop(final_summary=None):
+    """Build the sentinel that tells the telemetry process to drain and exit."""
     return {
         TELEMETRY_CONTROL_KEY: 'stop',
         'final_summary': normalize_for_json(final_summary or {}),
@@ -275,6 +287,7 @@ def make_telemetry_stop(final_summary=None):
 
 
 def configure_wandb_metrics(wandb_run, num_workers):
+    """Pin W&B series to ``global_step`` for run-wide and per-worker metrics."""
     wandb_run.define_metric('global_step')
     for prefix in ('train', 'episode', 'global', 'system', 'health'):
         wandb_run.define_metric(
@@ -410,7 +423,6 @@ def telemetry_process_main(telemetry_queue, run_output_dir,
 
     if wandb_enabled:
         try:
-            os.environ.setdefault('WANDB_INSECURE_DISABLE_SSL', 'true')
             import wandb
             wandb_run = wandb.init(
                 config=config, **dict(wandb_init_kwargs or {}))
@@ -438,6 +450,105 @@ def telemetry_process_main(telemetry_queue, run_output_dir,
                     _shared_counter(shared_counters, 'wandb_errors'))
                 print('[TELEMETRY] wandb.finish failed: {}'.format(error),
                       flush=True)
+
+
+class ResourceLogger:
+    """Minimal resource sampler for ``--log-resources`` runs.
+
+    One daemon thread per process samples the host process's own CPU
+    usage and RSS.  The main process, the only one with a node-wide
+    view, additionally samples every visible GPU through pynvml.
+    Each sample becomes one ``system`` record handed to the
+    ``TrainingLogger``, so it lands in the local ``resources.jsonl``
+    and reaches W&B through the ordinary telemetry path.  Sampling
+    errors are swallowed: monitoring must never disturb training.
+    """
+
+    def __init__(self, logger, interval=10.0, gpu_indices=None,
+                 global_step_getter=None):
+        self.logger = logger
+        self.interval = interval
+        self.gpu_indices = list(gpu_indices or ())
+        self.global_step_getter = global_step_getter
+        self._stop_event = threading.Event()
+        self._thread = None
+        self._nvml = None
+        self._proc = None
+
+    def start(self):
+        """Start the sampler thread. No-op if psutil is missing."""
+        if psutil is None:
+            print('[RESOURCES] psutil unavailable; '
+                  'resource logging disabled', flush=True)
+            return
+        self._proc = psutil.Process(os.getpid())
+        self._proc.cpu_percent(interval=None)
+        self._thread = threading.Thread(
+            target=self._loop, daemon=True, name='ResourceLogger')
+        self._thread.start()
+
+    def stop(self):
+        """Join the sampler thread."""
+        self._stop_event.set()
+        if self._thread is not None and self._thread.is_alive():
+            self._thread.join()
+        self._thread = None
+
+    def _ensure_nvml(self):
+        """Lazy-init pynvml; cache False if GPU sampling is unavailable."""
+        if self._nvml is not None or not self.gpu_indices:
+            return self._nvml
+        try:
+            import pynvml
+            pynvml.nvmlInit()
+            self._nvml = pynvml
+        except Exception:
+            self._nvml = False
+            print('[RESOURCES] pynvml unavailable; '
+                  'GPU sampling disabled', flush=True)
+        return self._nvml
+
+    def _sample(self):
+        """Return one CPU/RSS sample, plus GPU stats when NVML is available."""
+        data = {
+            'proc_cpu_percent': round(
+                self._proc.cpu_percent(interval=None), 1),
+            'proc_rss_gb': round(
+                self._proc.memory_info().rss / 1e9, 3),
+        }
+        pynvml = self._ensure_nvml()
+        if pynvml:
+            gpus = []
+            for index in self.gpu_indices:
+                try:
+                    handle = pynvml.nvmlDeviceGetHandleByIndex(index)
+                    util = pynvml.nvmlDeviceGetUtilizationRates(handle)
+                    mem = pynvml.nvmlDeviceGetMemoryInfo(handle)
+                    gpus.append({
+                        'index': index,
+                        'util_percent': int(util.gpu),
+                        'mem_used_gb': round(mem.used / 1e9, 3),
+                    })
+                except Exception:
+                    pass
+            data['gpus'] = gpus
+        return data
+
+    def _loop(self):
+        while not self._stop_event.is_set():
+            try:
+                data = self._sample()
+                if self.global_step_getter is not None:
+                    try:
+                        data['global_t'] = self.global_step_getter()
+                    except (AttributeError, TypeError, ValueError,
+                            RuntimeError):
+                        pass
+                self.logger.log_resources(data)
+            except Exception:
+                pass
+            if self._stop_event.wait(timeout=self.interval):
+                break
 
 
 class TrainingLogger:
@@ -507,6 +618,7 @@ class TrainingLogger:
                  action, value, entropy, reward, done,
                  speed_kmh=None, route_dist=None, goal_dist=None,
                  maneuver=None, **extra):
+        """Write one env step to ``steps.jsonl`` when ``--log-steps`` is on."""
         if not self.log_steps_enabled:
             return None
         data = {
@@ -533,6 +645,7 @@ class TrainingLogger:
                     min_route_dist=None, goal_dist=None,
                     collisions=None, reached_goal=False,
                     action_counts=None, port=None, **extra):
+        """Write one episode record locally and publish it to telemetry."""
         data = {
             'global_episode': global_episode,
             'global_t': global_t,
@@ -563,6 +676,7 @@ class TrainingLogger:
                    is_terminal, pi_loss, v_loss, total_loss, gradient_norm,
                    lr, advantages=None, values=None, rewards=None,
                    entropies=None, **extra):
+        """Write one optimizer-update record and publish it to telemetry."""
         import numpy as np
 
         data = {
@@ -613,6 +727,7 @@ class TrainingLogger:
         return record
 
     def log_timing(self, timing_stats, window_updates=None):
+        """Write one timing window from ``TimingAccumulator.get_stats()``."""
         data = {'window_updates': window_updates, 'ops': {}}
         for name, (avg_ms, count, total_s) in timing_stats.items():
             data['ops'][name] = {
@@ -622,6 +737,13 @@ class TrainingLogger:
             }
         return self._write(
             'timing.jsonl', self._record('timing', data))
+
+    def log_resources(self, data):
+        """Write one resource sample, then hand it to telemetry."""
+        record = self._write(
+            'resources.jsonl', self._record('system', data))
+        self._publish(record)
+        return record
 
     def log_event(self, event_type, **kwargs):
         """Emit a lifecycle/health event.
@@ -634,14 +756,6 @@ class TrainingLogger:
         record = self._record('event', data)
         self._publish(record, is_event=True)
         return record
-
-    def log_save(self, path, global_t, **kwargs):
-        return self.log_event(
-            'model_save', path=path, global_t=global_t, **kwargs)
-
-    def log_load(self, path, global_t, **kwargs):
-        return self.log_event(
-            'model_load', path=path, global_t=global_t, **kwargs)
 
     def log_checkpoint(self, path, global_t, **kwargs):
         return self.log_event(
@@ -658,6 +772,7 @@ class TrainingLogger:
             nan_count=nan_count, nan_layers=nan_layers, **kwargs)
 
     def close(self):
+        """Flush and close every open JSONL handle."""
         for handle in self._files.values():
             try:
                 handle.flush()
@@ -669,6 +784,7 @@ class TrainingLogger:
     @staticmethod
     def write_metadata(run_output_dir, args_dict, model_name, n_params,
                        n_workers, **extra):
+        """Write ``logs/metadata.json`` once at training start."""
         logs_dir = os.path.join(run_output_dir, 'logs')
         os.makedirs(logs_dir, exist_ok=True)
         metadata = {
@@ -683,32 +799,3 @@ class TrainingLogger:
             json.dump(
                 normalize_for_json(metadata), handle,
                 indent=2, allow_nan=False)
-
-    @staticmethod
-    def read_max_episode(run_output_dir, worker_id=None):
-        import glob as globmod
-        max_episode = 0
-        logs_dir = os.path.join(run_output_dir, 'logs')
-        if worker_id is not None:
-            paths = [os.path.join(
-                logs_dir, 'worker_{}'.format(worker_id), 'episodes.jsonl')]
-        else:
-            paths = globmod.glob(os.path.join(
-                logs_dir, 'worker_*', 'episodes.jsonl'))
-        for path in paths:
-            if not os.path.exists(path):
-                continue
-            try:
-                with open(path) as handle:
-                    for line in handle:
-                        try:
-                            record = json.loads(line)
-                        except (TypeError, ValueError):
-                            continue
-                        episode = record.get(
-                            'global_episode', record.get('episode', 0))
-                        if episode > max_episode:
-                            max_episode = episode
-            except OSError:
-                pass
-        return max_episode

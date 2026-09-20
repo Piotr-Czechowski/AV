@@ -19,19 +19,33 @@ from datetime import datetime
 
 import numpy as np
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
 import torch.multiprocessing as mp
 from torch.distributions.categorical import Categorical
 
-from new_hogwild_timing_utils import TimingAccumulator
-from new_hogwild_training_logger import TrainingLogger
-from new_hogwild_system_monitor import WorkerMonitor
-from new_hogwild_carla_wrapper import CarlaA3CWrapper
+from timing_utils import TimingAccumulator
+from training_logger import ResourceLogger, TrainingLogger
+from carla_wrapper import CarlaA3CWrapper
+from models.shared_actor_critic import SharedActorCritic
 
 
 Transition = namedtuple(
     "Transition", ["value_s", "log_prob_a", "entropy", "action"])
+
+
+def atomic_torch_save(state, path):
+    """Write ``path`` via a temp file in the same directory, then replace."""
+    tmp_path = path + '.tmp'
+    torch.save(state, tmp_path)
+    os.replace(tmp_path, path)
+
+
+def torch_load_checkpoint(path, map_location):
+    """Load a checkpoint; ``weights_only=False`` for optimizer + counters."""
+    try:
+        return torch.load(path, map_location=map_location, weights_only=False)
+    except TypeError:
+        return torch.load(path, map_location=map_location)
 
 
 # ---------------------------------------------------------------------------
@@ -39,6 +53,7 @@ Transition = namedtuple(
 # ---------------------------------------------------------------------------
 
 class SharedAdam(torch.optim.Adam):
+    """Adam whose optimizer state tensors live in CPU shared memory."""
     def __init__(self, params, lr=1e-3, betas=(0.9, 0.999), epsilon=1e-8,
                  weight_decay=0.0):
         super().__init__(params, lr=lr, betas=betas, eps=epsilon,
@@ -66,6 +81,7 @@ class SharedAdam(torch.optim.Adam):
 
 
 class SharedRMSprop(torch.optim.RMSprop):
+    """RMSprop whose optimizer state tensors live in CPU shared memory."""
     def __init__(self, params, lr=1e-4, alpha=0.99, epsilon=1e-5,
                  weight_decay=0.0):
         super().__init__(params, lr=lr, alpha=alpha, eps=epsilon,
@@ -92,72 +108,6 @@ class SharedRMSprop(torch.optim.RMSprop):
                         value.share_memory_()
 
 
-class SharedActorCritic(nn.Module):
-    """Batch-size-1 friendly actor-critic with one shared visual trunk."""
-
-    def __init__(self, input_shape, action_shape, critic_shape=1,
-                 device=torch.device('cpu'), num_maneuvers=3):
-        super().__init__()
-        self.device = device
-        self.num_maneuvers = num_maneuvers
-        in_channels = int(input_shape[2])
-
-        self.cnn = nn.Sequential(
-            nn.Conv2d(in_channels, 32, kernel_size=5, stride=2, padding=2),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(32, 64, kernel_size=3, stride=2, padding=1),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(64, 128, kernel_size=3, stride=2, padding=1),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(128, 256, kernel_size=3, stride=2, padding=1),
-            nn.ReLU(inplace=True),
-            nn.AdaptiveAvgPool2d((4, 4)),
-        )
-        self.speed_fc = nn.Sequential(
-            nn.Linear(1, 32),
-            nn.ReLU(inplace=True),
-        )
-        self.maneuver_fc = nn.Sequential(
-            nn.Linear(num_maneuvers, 32),
-            nn.ReLU(inplace=True),
-        )
-        self.trunk = nn.Sequential(
-            nn.Linear(256 * 4 * 4 + 32 + 32, 512),
-            nn.ReLU(inplace=True),
-            nn.Linear(512, 256),
-            nn.ReLU(inplace=True),
-        )
-        self.policy = nn.Linear(256, action_shape)
-        self.value = nn.Linear(256, critic_shape)
-
-    def forward(self, x, speed=None, maneuver=None):
-        x = x.to(self.device, dtype=torch.float32)
-        features = self.cnn(x).flatten(1)
-
-        if speed is None:
-            speed = torch.zeros((x.size(0), 1), device=self.device)
-        else:
-            speed = speed.to(self.device, dtype=torch.float32) \
-                .view(x.size(0), -1)
-            if speed.size(1) != 1:
-                speed = speed[:, :1]
-        speed_features = self.speed_fc(speed)
-
-        if maneuver is None:
-            maneuver = torch.ones((x.size(0),), dtype=torch.long,
-                                  device=self.device)
-        else:
-            maneuver = maneuver.to(self.device, dtype=torch.long).view(-1)
-        maneuver = maneuver.clamp(0, self.num_maneuvers - 1)
-        maneuver = F.one_hot(maneuver,
-                             num_classes=self.num_maneuvers).float()
-        maneuver_features = self.maneuver_fc(maneuver)
-
-        hidden = self.trunk(torch.cat(
-            [features, speed_features, maneuver_features], dim=1))
-        return self.policy(hidden), self.value(hidden)
-
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -172,6 +122,7 @@ def has_nan_grads(model):
 
 
 def has_nan_params(model):
+    """Return True if any parameter contains NaN."""
     for _, p in model.named_parameters():
         if torch.isnan(p.data).any().item():
             return True
@@ -182,22 +133,20 @@ def transfer_local_gradients_to_global(local_model, global_model,
                                        global_device):
     """Copy local gradients into the shared model for this process.
 
-    Parameters and optimizer state are shared. Gradient buffers are not shared:
-    each worker assigns its own cloned .grad tensors before optimizer.step().
+    Parameters and optimizer state are shared. Gradient buffers are not:
+    each worker assigns its own cloned ``.grad`` before ``optimizer.step()``.
     """
     for local_param, global_param in zip(local_model.parameters(),
                                          global_model.parameters()):
         if local_param.grad is None:
             global_param.grad = None
         else:
-            # The .grad attribute is intentionally process-local. Parameters
-            # and optimizer state share storage; sharing grad buffers would
-            # let workers overwrite each other's pending gradients.
             global_param.grad = local_param.grad.detach().to(
                 global_device, non_blocking=False).clone()
 
 
 def compute_total_gradient_norm(model):
+    """L2 norm of all parameter gradients."""
     total = 0.0
     for p in model.parameters():
         if p.grad is not None:
@@ -216,11 +165,8 @@ def clip_gradients_and_measure(model, max_norm):
     return pre_clip, post_clip, bool(max_norm > 0 and pre_clip > max_norm)
 
 
-def system_monitor_enabled(config):
-    return not bool(getattr(config, 'no_system_monitor', False))
-
-
 def create_shared_optimizer(params, config):
+    """Build SharedRMSprop or SharedAdam from ``config.optimizer``."""
     optimizer = getattr(config, 'optimizer', 'shared-rmsprop')
     if optimizer == 'shared-rmsprop':
         return SharedRMSprop(
@@ -239,6 +185,7 @@ def create_shared_optimizer(params, config):
 
 
 def compute_entropy_coefficient_for_step(config, global_t):
+    """Linearly anneal entropy bonus from ``beta_start`` to ``beta_end``."""
     start = float(getattr(config, 'beta_start',
                          getattr(config, 'entropy_coef', 0.0)))
     end = float(getattr(config, 'beta_end', start))
@@ -254,6 +201,7 @@ def compute_entropy_coefficient_for_step(config, global_t):
 
 
 def summarize_reward_components(component_rollout):
+    """Sum and mean each named reward term across the current rollout."""
     if not component_rollout:
         return {}
     keys = sorted({k for comp in component_rollout for k in comp.keys()})
@@ -270,6 +218,7 @@ def summarize_reward_components(component_rollout):
 # ---------------------------------------------------------------------------
 
 class GlobalNetwork:
+    """CPU-shared actor-critic, optimizer, and run-wide counters."""
     def __init__(self, config, state_shape, action_shape, critic_shape):
         self.config = config
         self.device = torch.device('cpu')
@@ -281,8 +230,7 @@ class GlobalNetwork:
         self.optimizer = create_shared_optimizer(
             self.model.parameters(), config)
 
-        # Disabled by default; useful when checking whether optimizer updates
-        # are racing in a specific run.
+        # Used only when config.hogwild_lock_updates is True.
         self.update_lock = mp.Lock()
         self.stats_lock = mp.Lock()
         self.save_lock = mp.Lock()
@@ -317,6 +265,7 @@ class GlobalNetwork:
             return self.total_updates.value
 
     def update_stats(self, worker_id, mean_reward, episode_reward):
+        """Record one episode reward; return ``(global_mean, is_new_best)``."""
         with self.stats_lock:
             is_new_best = False
             if episode_reward > self.best_reward.value:
@@ -336,6 +285,7 @@ class GlobalNetwork:
     # -- LR scheduling (linear decay from config.lr to 0) --
 
     def set_lr_for_step(self, global_t):
+        """Linearly decay learning rate from ``config.lr`` to 0."""
         if self.config.steps <= 0:
             return self.config.lr
         progress_fraction = max(
@@ -350,6 +300,7 @@ class GlobalNetwork:
         return has_nan_params(self.model)
 
     def _checkpoint_state_unlocked(self, global_t=None):
+        """Build the dict written by ``save`` / ``save_boundary_checkpoint``."""
         state = {
             'global_step': global_t if global_t is not None
                            else self.global_step.value,
@@ -368,17 +319,35 @@ class GlobalNetwork:
         return state
 
     def save(self, path, global_t=None, nan_safe=True):
+        """Write model + optimizer + counters. Skip if params contain NaN."""
         if nan_safe and self._has_nan_params():
             print('[SAVE] refusing to save - NaN in global params',
                   flush=True)
             return False
         with self.save_lock:
             state = self._checkpoint_state_unlocked(global_t=global_t)
-            torch.save(state, path)
+            atomic_torch_save(state, path)
             return True
+
+    def save_last_checkpoint(self, run_output_dir, global_t=None):
+        """Write canonical ``checkpoint.pth`` + step sidecar. One-writer safe."""
+        if global_t is None:
+            global_t = self.global_step.value
+        path = os.path.join(run_output_dir, 'checkpoint.pth')
+        if not self.save(path, global_t=global_t):
+            return False
+        try:
+            with open(os.path.join(run_output_dir, 'checkpoint_step.txt'),
+                      'w') as f:
+                f.write(str(int(global_t)))
+        except OSError as e:
+            print('[SAVE] failed to write checkpoint_step.txt: {}'.format(e),
+                  flush=True)
+        return True
 
     def save_boundary_checkpoint(self, run_output_dir, global_t,
                                  worker_id=None):
+        """Save ``checkpoint.pth`` once per ``save_frequency`` step boundary."""
         save_frequency = int(getattr(self.config, 'save_frequency', 0))
         if save_frequency <= 0:
             return False, None
@@ -397,7 +366,7 @@ class GlobalNetwork:
             state = self._checkpoint_state_unlocked(global_t=global_t)
             global_checkpoint_path = os.path.join(
                 run_output_dir, 'checkpoint.pth')
-            torch.save(state, global_checkpoint_path)
+            atomic_torch_save(state, global_checkpoint_path)
             with open(os.path.join(run_output_dir,
                                    'checkpoint_step.txt'), 'w') as f:
                 f.write(str(global_t))
@@ -408,7 +377,7 @@ class GlobalNetwork:
                     run_output_dir, 'checkpoints',
                     'worker_{}'.format(worker_id))
                 os.makedirs(worker_output_dir, exist_ok=True)
-                torch.save(state, os.path.join(
+                atomic_torch_save(state, os.path.join(
                     worker_output_dir, 'checkpoint.pth'))
                 with open(os.path.join(worker_output_dir,
                                        'checkpoint_step.txt'), 'w') as f:
@@ -444,7 +413,8 @@ class GlobalNetwork:
             return True, global_checkpoint_path
 
     def load(self, path):
-        state = torch.load(path, map_location=self.device)
+        """Restore model, optimizer, and counters from a checkpoint file."""
+        state = torch_load_checkpoint(path, map_location=self.device)
         with self.save_lock:
             if 'model' not in state:
                 raise ValueError(
@@ -489,6 +459,7 @@ class GlobalNetwork:
 # ---------------------------------------------------------------------------
 
 class A3CWorker(mp.Process):
+    """One Hogwild worker: collect rollouts, update the shared model, log."""
     def __init__(self, worker_id, global_network, config, port, device,
                  run_output_dir, shutdown_event, log_queue=None, run_id='',
                  dropped_counter=None):
@@ -519,6 +490,7 @@ class A3CWorker(mp.Process):
     # -- setup --
 
     def _init_networks(self):
+        """Build the local GPU/CPU copy of SharedActorCritic and sync weights."""
         if self._initialized:
             return
         self.device = torch.device(self.device_str)
@@ -704,6 +676,7 @@ class A3CWorker(mp.Process):
     # -- checkpointing (runs from the worker on step boundaries) --
 
     def _save_checkpoint(self, global_t, training_logger):
+        """Try a boundary checkpoint and emit a log event on success."""
         ok, checkpoint_path = self.global_network.save_boundary_checkpoint(
             self.run_output_dir, global_t=global_t,
             worker_id=self.worker_id)
@@ -718,6 +691,7 @@ class A3CWorker(mp.Process):
 
     def _log_episode(self, training_logger, env, global_episode, global_t,
                      episode_total_reward, episode_step_count, duration_s):
+        """Write episode stats. Does not write a separate best-model file."""
         self.episode_rewards_history.append(episode_total_reward)
         window = min(100, len(self.episode_rewards_history))
         self.mean_reward = float(
@@ -751,21 +725,17 @@ class A3CWorker(mp.Process):
         )
 
         if is_new_best:
-            print('[BEST] W{} new best reward {:.2f} at Ep{}'.format(
-                self.worker_id, episode_total_reward, global_episode),
-                flush=True)
-            best_path = os.path.join(
-                self.run_output_dir, 'best_checkpoint.pth')
-            if self.global_network.save(best_path, global_t=global_t):
-                training_logger.log_checkpoint(
-                    path=best_path, global_t=global_t,
-                    checkpoint_kind='best')
+            print('[BEST] W{} new best reward {:.2f} at Ep{} '
+                  '(logged only; last checkpoint is checkpoint.pth)'.format(
+                      self.worker_id, episode_total_reward, global_episode),
+                  flush=True)
 
         return record
 
     # -- main loop --
 
     def run(self):
+        """Worker process: connect to CARLA and train until shutdown."""
         import signal
         signal.signal(signal.SIGINT, signal.SIG_IGN)
 
@@ -813,18 +783,21 @@ class A3CWorker(mp.Process):
             publish_metrics=getattr(
                 self.config, 'wandb_enabled', False))
 
-        worker_monitor = None
-        if system_monitor_enabled(self.config):
-            worker_monitor = WorkerMonitor(
-                self.run_output_dir, self.worker_id,
-                interval=self.config.monitor_interval)
-            worker_monitor.start()
+        resource_logger = None
+        if getattr(self.config, 'log_resources', False):
+            resource_logger = ResourceLogger(
+                training_logger,
+                interval=getattr(
+                    self.config, 'log_resources_interval', 10.0),
+                global_step_getter=lambda:
+                    self.global_network.global_step.value)
+            resource_logger.start()
 
         timer = TimingAccumulator()
         last_diag_wall = time.time()
         last_diag_update = 0
 
-        # restore per-worker mean reward from logs if present
+        # Restore this worker's mean reward if the shared array already has one.
         try:
             prev = self.global_network.worker_mean_rewards[self.worker_id]
             if prev != 0.0:
@@ -839,6 +812,8 @@ class A3CWorker(mp.Process):
             resY=self.config.res,
             action_space=self.config.action_type,
             mp_density=self.config.mp_density,
+            host=getattr(self.config, 'carla_host', 'localhost'),
+            map_name=getattr(self.config, 'map_name', 'Town03'),
             max_connect_retries=self.config.max_connect_retries,
             connect_retry_wait=self.config.connect_retry_wait,
             reconnect_wait=self.config.carla_timeout_wait,
@@ -1024,14 +999,9 @@ class A3CWorker(mp.Process):
 
                 except RuntimeError as e:
                     msg = str(e)
-                    # Two different timeouts surface as RuntimeError here:
-                    #   (a) "time-out of <N>ms while waiting for the
-                    #       simulator" - CARLA server is unreachable;
-                    #       we need a full reconnect + new CarlaEnv.
-                    #   (b) "time-out waiting for camera image" -
-                    #       image_queue.get timed out, server is fine;
-                    #       a world.tick() or two is usually enough,
-                    #       so we just reset the episode, no reconnect.
+                    # Two RuntimeError timeouts:
+                    # (a) "waiting for the simulator" — server gone, full reconnect.
+                    # (b) "time-out waiting for camera image" — skip episode, no reconnect.
                     if 'waiting for the simulator' in msg:
                         print('[W{}] CARLA server timeout: reconnecting'
                               .format(self.worker_id), flush=True)
@@ -1062,9 +1032,9 @@ class A3CWorker(mp.Process):
                 error=str(e))
             raise
         finally:
-            if worker_monitor is not None:
+            if resource_logger is not None:
                 try:
-                    worker_monitor.stop()
+                    resource_logger.stop()
                 except Exception:
                     pass
             try:
@@ -1073,6 +1043,10 @@ class A3CWorker(mp.Process):
                 pass
             try:
                 if env and env.env:
+                    try:
+                        env.env.destroy_agents()
+                    except Exception:
+                        pass
                     env.env.world = None
                     env.env.client = None
             except Exception:

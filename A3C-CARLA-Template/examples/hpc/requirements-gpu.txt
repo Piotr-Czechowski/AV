@@ -1,0 +1,6 @@
+# Cluster venv after installing a CUDA build of torch:
+#   pip install -r examples/hpc/requirements-gpu.txt
+carla==0.9.15
+numpy
+opencv-python
+networkx
