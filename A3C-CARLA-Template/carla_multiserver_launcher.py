@@ -3,16 +3,15 @@
 One supervisor thread per server:
   * starts the process on the assigned GPU / RPC port,
   * restarts it when the process exits (crash),
-  * kills and restarts it when the process is alive but its RPC port
-    stopped listening (hung server).
+  * kills and restarts it when the process is alive but the simulator
+    stopped answering RPC calls (hung server).
 
 Spawn backends (--runtime):
   * apptainer — ``apptainer exec --nv IMAGE BINARY ...``
-  * docker    — ``docker run --rm --network host --ipc=host --gpus device=N IMAGE ...``
-  * native    — host ``CarlaUE4.sh`` / binary
+  * docker    — ``docker run --rm --name NAME --network host --ipc=host --gpus device=N IMAGE ...``
 
-This script does not start training. ``train_a3c.py`` connects to ports that
-are already listening.
+This script does not start training. The pipeline scripts in ``examples/``
+start it next to ``train_a3c.py``, which waits for the servers itself.
 
 All start/crash/restart/stop events go to ``<outdir>/server_logs/servers.log``
 and to stdout. Raw CARLA output of server i is kept in
@@ -20,23 +19,34 @@ and to stdout. Raw CARLA output of server i is kept in
 """
 
 import argparse
+import getpass
 import logging
 import os
 import signal
+import socket
 import subprocess
 import sys
 import threading
 from time import time
 
-from settings import load_dotenv, PORT, PORT_STEP
+from settings import load_dotenv, CARLA_HOST, PORT, PORT_STEP
 
 
 CHECK_INTERVAL = 30.0
 HANG_STRIKES = 3
 RESTART_DELAY = 5.0
-LSOF_TIMEOUT = 5.0
-CARLA_FLAGS = ["-RenderOffScreen", "-nosound", "--carla-server"]
+RPC_TIMEOUT = 5.0  # one probe call; keep it short
+# One server uses its RPC port, RPC+1 (streaming), and RPC+2 (secondary).
+PORTS_PER_SERVER = 3
+# CARLA command-line flags. Add your own here, e.g. "-quality-level=Low".
+CARLA_FLAGS = ["-RenderOffScreen", "-nosound"]
 DEFAULT_BINARY = "/home/carla/CarlaUE4.sh"
+# Apptainer: Unreal -graphicsadapter = visible CUDA index + this offset.
+# 1 is right on the cluster this template comes from; yours can differ.
+# Check with nvidia-smi that each CarlaUE4 runs on the GPU you expect.
+APPTAINER_ADAPTER_OFFSET = 1
+# Docker containers are named <prefix>-<user>-<rpc port>.
+DOCKER_NAME_PREFIX = "a3c-carla"
 
 LOG = logging.getLogger("carla_servers")
 LOG_DIR = ""
@@ -51,8 +61,8 @@ def parse_args(argv=None):
         description="Start and supervise CARLA servers for A3C workers")
     parser.add_argument(
         "--runtime",
-        choices=("apptainer", "docker", "native"),
-        default=os.environ.get("CARLA_RUNTIME", "native"),
+        choices=("apptainer", "docker"),
+        required=True,
     )
     parser.add_argument("--num-servers", type=int, default=1)
     parser.add_argument("--servers-per-gpu", type=int, default=1)
@@ -68,52 +78,89 @@ def parse_args(argv=None):
     parser.add_argument(
         "--image",
         default=os.environ.get("CARLA_CONTAINER_IMAGE", ""),
-        help="Container image (.sif or docker tag). Required for apptainer/docker.",
+        help="Container image (.sif or docker tag).",
     )
     parser.add_argument(
         "--binary",
         default=os.environ.get("CARLA_BINARY", "") or DEFAULT_BINARY,
-        help="CARLA entrypoint inside the image or on the host.",
-    )
-    parser.add_argument(
-        "--carla-path",
-        default=os.environ.get("CARLA_PATH", ""),
-        help="Host directory containing the native CARLA binary.",
+        help="CARLA entrypoint inside the image.",
     )
     return parser.parse_args(argv)
 
 
-def hang_warmup_allows_miss(ever_listened):
-    """True while the server has never opened RPC; do not count hang strikes."""
-    return not bool(ever_listened)
+def hang_warmup_allows_miss(ever_alive):
+    """True while the simulator has never answered; do not count hang strikes."""
+    return not bool(ever_alive)
 
 
 def launcher_config_error(args):
     """Return a fatal config message, or None if the launcher may start."""
-    if args.port_step < 2:
+    if args.port_step < PORTS_PER_SERVER:
         return (
-            "ERROR: --port-step must be >= 2 "
-            "(RPC uses port and port+1 for streaming)"
+            "ERROR: --port-step must be >= {} "
+            "(a server uses its RPC port and the next two)"
+            .format(PORTS_PER_SERVER)
         )
-    if args.runtime in ("apptainer", "docker"):
-        if not args.image or "CHANGE_ME" in args.image:
-            return (
-                "ERROR: set --image or CARLA_CONTAINER_IMAGE for runtime={}"
-                .format(args.runtime)
-            )
+    if not args.image or "CHANGE_ME" in args.image:
+        return (
+            "ERROR: set --image or CARLA_CONTAINER_IMAGE for runtime={}"
+            .format(args.runtime)
+        )
     return None
 
 
-def resolve_binary(binary, carla_path, runtime):
-    """Resolve the CARLA binary path; for native, join it with ``CARLA_PATH``."""
-    binary = binary or DEFAULT_BINARY
-    if runtime == "native" and carla_path:
-        if not os.path.isabs(binary):
-            return os.path.join(carla_path, binary)
-        candidate = os.path.join(carla_path, os.path.basename(binary))
-        if os.path.isfile(candidate):
-            return candidate
-    return binary
+def port_is_free(port):
+    """True when nothing on this host listens on TCP ``port``."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        # Ignore connections in TIME_WAIT from an earlier run.
+        probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            probe.bind(("", port))
+        except OSError:
+            return False
+    return True
+
+
+def busy_ports(start_port, port_step, num_servers):
+    """Ports of the server grid (RPC, +1, +2 per server) that are taken."""
+    return [
+        start_port + idx * port_step + offset
+        for idx in range(num_servers)
+        for offset in range(PORTS_PER_SERVER)
+        if not port_is_free(start_port + idx * port_step + offset)
+    ]
+
+
+def _rpc_client(port):
+    import carla
+    client = carla.Client(CARLA_HOST, port)
+    client.set_timeout(RPC_TIMEOUT)
+    return client
+
+
+def carla_rpc_up(port):
+    """True when the RPC server answers. Use for readiness.
+
+    ``get_server_version`` is answered by the RPC thread pool even when the
+    game thread hangs, so it cannot detect a hung simulator.
+    """
+    try:
+        _rpc_client(port).get_server_version()
+        return True
+    except RuntimeError:
+        return False
+
+
+def carla_sim_alive(port):
+    """True when the simulator answers. Use for the health check.
+
+    ``get_world`` needs the game thread, so a hung simulator fails it.
+    """
+    try:
+        _rpc_client(port).get_world()
+        return True
+    except RuntimeError:
+        return False
 
 
 def cuda_index_for(server_idx, num_gpus, servers_per_gpu, gpu_start):
@@ -145,18 +192,31 @@ def docker_gpu_device(cuda_index):
     return str(cuda_index)
 
 
+def docker_container_name(port):
+    """Container name of the server on ``port``: unique per host and user."""
+    return "{}-{}-{}".format(DOCKER_NAME_PREFIX, getpass.getuser(), port)
+
+
+def remove_container(name):
+    """``docker rm -f``: stop this server's container or clear a leftover.
+
+    Killing the ``docker run`` client leaves the container running, and a
+    killed launcher cannot clean up. The next start removes it by name.
+    """
+    subprocess.run(
+        ["docker", "rm", "-f", name],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+
+
 def graphics_adapter_for(runtime, cuda_index):
     """Unreal -graphicsadapter index for this spawn backend.
 
-    Apptainer keeps the historical 1-based adapter used on HPC.
     Docker exposes a single GPU inside the container, so adapter 0.
-    Native uses the 0-based visible CUDA index.
+    Apptainer: see APPTAINER_ADAPTER_OFFSET.
     """
     if runtime == "docker":
         return 0
-    if runtime == "apptainer":
-        return int(cuda_index) + 1
-    return int(cuda_index)
+    return int(cuda_index) + APPTAINER_ADAPTER_OFFSET
 
 
 def build_cmd(runtime, port, cuda_index, image, binary, extra_args=None):
@@ -182,7 +242,9 @@ def build_cmd(runtime, port, cuda_index, image, binary, extra_args=None):
                 "CARLA_CONTAINER_IMAGE / --image is required for docker")
         return (
             [
-                "docker", "run", "--rm", "--network", "host", "--ipc=host",
+                "docker", "run", "--rm",
+                "--name", docker_container_name(port),
+                "--network", "host", "--ipc=host",
                 "--gpus", "device={}".format(docker_gpu_device(cuda_index)),
                 "--entrypoint", binary,
                 image,
@@ -191,8 +253,6 @@ def build_cmd(runtime, port, cuda_index, image, binary, extra_args=None):
             + [rpc, adapter]
             + extra_args
         )
-    if runtime == "native":
-        return [binary] + CARLA_FLAGS + [rpc, adapter] + extra_args
     raise ValueError("unsupported runtime: {}".format(runtime))
 
 
@@ -234,53 +294,13 @@ def num_visible_gpus():
         return 1
 
 
-def _ss_listening(port):
-    """Return True/False if ``ss`` can probe, or None if ``ss`` is missing."""
-    try:
-        result = subprocess.run(
-            ["ss", "-ltn", "sport", "=", ":{}".format(port)],
-            capture_output=True,
-            text=True,
-            timeout=LSOF_TIMEOUT,
-            check=False,
-        )
-    except Exception:
-        return None
-    if result.returncode != 0:
-        return False
-    needle = ":{}".format(port)
-    return needle in (result.stdout or "")
+def terminate(proc, container=None, grace=5.0):
+    """SIGTERM the whole process group (start_new_session -> pgid == pid).
 
-
-def port_listening(port):
-    """Return True if TCP ``port`` is LISTEN. Fail closed if probes fail."""
-    try:
-        result = subprocess.run(
-            ["lsof", "-nP", "-iTCP:{}".format(port), "-sTCP:LISTEN"],
-            capture_output=True,
-            text=True,
-            timeout=LSOF_TIMEOUT,
-            check=False,
-        )
-        if result.returncode == 0:
-            return True
-        if result.returncode == 1:
-            return False
-        LOG.warning(
-            "port %d: lsof rc=%d; trying ss", port, result.returncode)
-    except Exception as exc:
-        LOG.warning("port %d: lsof check failed (%s); trying ss", port, exc)
-
-    ss_state = _ss_listening(port)
-    if ss_state is not None:
-        return ss_state
-    LOG.warning(
-        "port %d: lsof/ss unavailable; assuming not listening", port)
-    return False
-
-
-def terminate(proc, grace=5.0):
-    """SIGTERM the whole process group (start_new_session -> pgid == pid)."""
+    Docker: remove the container first; killing the client leaves it running.
+    """
+    if container:
+        remove_container(container)
     if proc.poll() is not None:
         return
     try:
@@ -301,12 +321,14 @@ def terminate(proc, grace=5.0):
 
 
 def supervise(idx, num_gpus):
-    """Start one CARLA process and restart it on crash or hung RPC port."""
+    """Start one CARLA process and restart it on crash or hung simulator."""
     port = CONFIG.start_port + idx * CONFIG.port_step
     cuda_index = cuda_index_for(
         idx, num_gpus, CONFIG.servers_per_gpu, CONFIG.server_gpu_start)
     cmd = build_cmd(
         CONFIG.runtime, port, cuda_index, CONFIG.image, CONFIG.binary)
+    container = docker_container_name(port) \
+        if CONFIG.runtime == "docker" else None
     server_log_path = os.path.join(LOG_DIR, "carla_server_{}.log".format(idx))
 
     restarts = 0
@@ -321,6 +343,8 @@ def supervise(idx, num_gpus):
                 CONFIG.runtime,
                 restarts,
             )
+            if container:
+                remove_container(container)
             try:
                 with open(server_log_path, "ab") as server_log:
                     proc = subprocess.Popen(
@@ -343,7 +367,7 @@ def supervise(idx, num_gpus):
             LOG.info("server %d: running (pid %d)", idx, proc.pid)
 
             hang_strikes = 0
-            ever_listened = False
+            ever_alive = False
             next_check = time() + CHECK_INTERVAL
             while not STOP.is_set():
                 returncode = proc.poll()
@@ -360,12 +384,12 @@ def supervise(idx, num_gpus):
                     break
                 if time() >= next_check:
                     next_check = time() + CHECK_INTERVAL
-                    if port_listening(port):
+                    if carla_sim_alive(port):
                         hang_strikes = 0
-                        ever_listened = True
-                    elif hang_warmup_allows_miss(ever_listened):
+                        ever_alive = True
+                    elif hang_warmup_allows_miss(ever_alive):
                         LOG.info(
-                            "server %d: waiting for first LISTEN on port %d",
+                            "server %d: waiting for the simulator on port %d",
                             idx,
                             port,
                         )
@@ -374,17 +398,17 @@ def supervise(idx, num_gpus):
                         if hang_strikes >= HANG_STRIKES:
                             restarts += 1
                             LOG.warning(
-                                "server %d: alive but port %d not listening for %.0fs; killing as hung (restart #%d)",
+                                "server %d: alive but the simulator on port %d did not answer for %.0fs; killing as hung (restart #%d)",
                                 idx,
                                 port,
                                 HANG_STRIKES * CHECK_INTERVAL,
                                 restarts,
                             )
-                            terminate(proc)
+                            terminate(proc, container)
                             STOP.wait(RESTART_DELAY)
                             break
                         LOG.info(
-                            "server %d: port %d not listening yet (check %d/%d)",
+                            "server %d: simulator on port %d did not answer (check %d/%d)",
                             idx,
                             port,
                             hang_strikes,
@@ -392,8 +416,8 @@ def supervise(idx, num_gpus):
                         )
                 STOP.wait(1.0)
     finally:
-        if proc is not None and proc.poll() is None:
-            terminate(proc)
+        if proc is not None and (container or proc.poll() is None):
+            terminate(proc, container)
             LOG.info("server %d: stopped", idx)
         SERVER_PROCS.pop(idx, None)
 
@@ -403,18 +427,29 @@ def main(argv=None):
     global CONFIG
     load_dotenv()
     args = parse_args(argv)
-    args.binary = resolve_binary(args.binary, args.carla_path, args.runtime)
     config_error = launcher_config_error(args)
     if config_error:
         sys.exit(config_error)
-    if args.runtime == "native" and not os.path.isfile(args.binary):
+    try:
+        import carla  # noqa: F401  the health check needs it
+    except ImportError as error:
         sys.exit(
-            "ERROR: native CARLA binary not found: {}. "
-            "Set CARLA_PATH or --binary / CARLA_BINARY.".format(args.binary)
-        )
+            "ERROR: cannot import carla ({}). Run the launcher with the "
+            "same Python environment as training.".format(error))
     CONFIG = args
 
     setup_logging(args.outdir)
+    if args.runtime == "docker":
+        # Containers left by a killed launcher still hold the ports.
+        for idx in range(args.num_servers):
+            remove_container(docker_container_name(
+                args.start_port + idx * args.port_step))
+    busy = busy_ports(args.start_port, args.port_step, args.num_servers)
+    if busy:
+        LOG.error(
+            "port(s) %s already in use, probably by another job on this "
+            "node. Pass a different --start-port.", busy)
+        sys.exit(1)
     num_gpus = num_visible_gpus()
     LOG.info(
         "starting %d CARLA server(s) runtime=%s on %d GPU(s) "
@@ -428,8 +463,7 @@ def main(argv=None):
         args.port_step,
     )
     LOG.info("binary: %s", args.binary)
-    if args.image:
-        LOG.info("image: %s", args.image)
+    LOG.info("image: %s", args.image)
     LOG.info("log directory: %s", LOG_DIR)
 
     threads = []

@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "Plug-and-play Hogwild A3C training template for CARLA"
 readme = "README.md"
 license = { file = "LICENSE" }
-requires-python = ">=3.10,<3.12"
+requires-python = ">=3.10,<3.11"
 dependencies = [
     "carla==0.9.15",
     "numpy",
@@ -27,6 +27,8 @@ py-modules = [
     "carla_env",
     "carla_wrapper",
     "carla_multiserver_launcher",
+    "evaluation",
+    "model",
     "rl_configuration",
     "run_a3c",
     "settings",
@@ -34,7 +36,6 @@ py-modules = [
     "timing_utils",
     "train_a3c",
     "training_logger",
-    "utils",
     "town03",
 ]
 packages = ["carla_navigation", "carla_navigation.tools"]

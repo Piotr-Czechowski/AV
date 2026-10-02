@@ -6,7 +6,8 @@ locally, copies gradients to the global model, and applies an asynchronous
 optimizer update.
 
 This module intentionally does not read argparse or settings.py. The entry
-point passes a plain config namespace with every value workers need.
+point passes a plain config namespace with every value workers need. Every
+field is required: a missing one is an AttributeError, not a second default.
 """
 
 import contextlib
@@ -26,11 +27,17 @@ from torch.distributions.categorical import Categorical
 from timing_utils import TimingAccumulator
 from training_logger import ResourceLogger, TrainingLogger
 from carla_wrapper import CarlaA3CWrapper
-from models.shared_actor_critic import SharedActorCritic
+from model import build_model
 
 
 Transition = namedtuple(
     "Transition", ["value_s", "log_prob_a", "entropy", "action"])
+
+
+def obs_to_tensors(obs, device):
+    """Add a batch dimension of 1 to every observation key; move to ``device``."""
+    return {key: torch.as_tensor(value).unsqueeze(0).to(device)
+            for key, value in obs.items()}
 
 
 def atomic_torch_save(state, path):
@@ -167,30 +174,28 @@ def clip_gradients_and_measure(model, max_norm):
 
 def create_shared_optimizer(params, config):
     """Build SharedRMSprop or SharedAdam from ``config.optimizer``."""
-    optimizer = getattr(config, 'optimizer', 'shared-rmsprop')
+    optimizer = config.optimizer
     if optimizer == 'shared-rmsprop':
         return SharedRMSprop(
             params, lr=config.lr,
-            alpha=getattr(config, 'rmsprop_alpha', 0.99),
-            epsilon=getattr(config, 'rmsprop_eps', 1e-5),
+            alpha=config.rmsprop_alpha,
+            epsilon=config.rmsprop_eps,
             weight_decay=config.weight_decay)
     if optimizer == 'shared-adam':
         return SharedAdam(
             params, lr=config.lr,
-            betas=(getattr(config, 'adam_beta1', 0.9),
-                   getattr(config, 'adam_beta2', 0.999)),
-            epsilon=getattr(config, 'adam_eps', 1e-8),
+            betas=(config.adam_beta1, config.adam_beta2),
+            epsilon=config.adam_eps,
             weight_decay=config.weight_decay)
     raise ValueError('unsupported optimizer: {}'.format(optimizer))
 
 
 def compute_entropy_coefficient_for_step(config, global_t):
     """Linearly anneal entropy bonus from ``beta_start`` to ``beta_end``."""
-    start = float(getattr(config, 'beta_start',
-                         getattr(config, 'entropy_coef', 0.0)))
-    end = float(getattr(config, 'beta_end', start))
-    steps = int(getattr(config, 'steps', 0))
-    progress_fraction = float(getattr(config, 'beta_anneal_frac', 0.0))
+    start = float(config.beta_start)
+    end = float(config.beta_end)
+    steps = int(config.steps)
+    progress_fraction = float(config.beta_anneal_frac)
     entropy_annealing_steps = max(1, int(steps * progress_fraction)) \
         if steps > 0 and progress_fraction > 0 else 1
     if steps <= 0 or progress_fraction <= 0:
@@ -219,13 +224,12 @@ def summarize_reward_components(component_rollout):
 
 class GlobalNetwork:
     """CPU-shared actor-critic, optimizer, and run-wide counters."""
-    def __init__(self, config, state_shape, action_shape, critic_shape):
+    def __init__(self, config):
         self.config = config
         self.device = torch.device('cpu')
 
-        self.model = SharedActorCritic(
-            state_shape, action_shape, critic_shape,
-            self.device).to(self.device)
+        self.model = build_model(
+            config.obs_spec, config.n_actions, self.device)
         self.model.share_memory()
         self.optimizer = create_shared_optimizer(
             self.model.parameters(), config)
@@ -348,7 +352,7 @@ class GlobalNetwork:
     def save_boundary_checkpoint(self, run_output_dir, global_t,
                                  worker_id=None):
         """Save ``checkpoint.pth`` once per ``save_frequency`` step boundary."""
-        save_frequency = int(getattr(self.config, 'save_frequency', 0))
+        save_frequency = int(self.config.save_frequency)
         if save_frequency <= 0:
             return False, None
         boundary = int(global_t) // save_frequency
@@ -371,7 +375,7 @@ class GlobalNetwork:
                                    'checkpoint_step.txt'), 'w') as f:
                 f.write(str(global_t))
 
-            if getattr(self.config, 'save_worker_checkpoints', False) and \
+            if self.config.save_worker_checkpoints and \
                     worker_id is not None:
                 worker_output_dir = os.path.join(
                     run_output_dir, 'checkpoints',
@@ -436,8 +440,7 @@ class GlobalNetwork:
             self.last_checkpoint_boundary.value = int(
                 state.get('last_checkpoint_boundary',
                           self.global_step.value //
-                          max(1, int(getattr(self.config,
-                                             'save_frequency', 1)))))
+                          max(1, int(self.config.save_frequency))))
             self.best_reward.value = float(
                 state.get('best_reward', -float('inf')))
             self.global_mean_reward.value = float(
@@ -452,6 +455,15 @@ class GlobalNetwork:
                 self._reward_buf_size, int(state.get('recent_reward_count', 0)))
             self.recent_reward_index.value = int(
                 state.get('recent_reward_index', 0))
+
+    def load_weights(self, path):
+        """Load only the model weights (``--init-from``); counters stay fresh."""
+        state = torch_load_checkpoint(path, map_location=self.device)
+        if 'model' not in state:
+            raise ValueError(
+                "checkpoint at {} is missing the 'model' key".format(path))
+        with self.save_lock:
+            self.model.load_state_dict(state['model'])
 
 
 # ---------------------------------------------------------------------------
@@ -490,17 +502,12 @@ class A3CWorker(mp.Process):
     # -- setup --
 
     def _init_networks(self):
-        """Build the local GPU/CPU copy of SharedActorCritic and sync weights."""
+        """Build the local GPU/CPU copy of the model and sync weights."""
         if self._initialized:
             return
         self.device = torch.device(self.device_str)
-        state_shape = [self.config.res, self.config.res, 3]
-        critic_shape = 1
-        action_shape = self.config.n_actions
-
-        self.model = SharedActorCritic(
-            state_shape, action_shape, critic_shape,
-            self.device).to(self.device)
+        self.model = build_model(
+            self.config.obs_spec, self.config.n_actions, self.device)
         self.sync_with_global()
         self._initialized = True
 
@@ -522,32 +529,26 @@ class A3CWorker(mp.Process):
 
     # -- action --
 
-    def get_action(self, obs, speed, maneuver, testing=False):
-        """Sample or choose an action and store policy terms for training."""
-        logits, value = self.model(obs, speed, maneuver)
+    def get_action(self, obs):
+        """Sample an action and store policy terms for training."""
+        logits, value = self.model(obs)
         action_distribution = Categorical(logits=logits)
-
-        if testing:
-            action = action_distribution.probs.argmax(dim=-1)
-        else:
-            action = action_distribution.sample()
+        action = action_distribution.sample()
 
         log_prob = action_distribution.log_prob(action)
         entropy = action_distribution.entropy()
         action_np = action.cpu().numpy().squeeze(0)
 
-        if not testing:
-            self.trajectory.append(Transition(
-                value_s=value, log_prob_a=log_prob, entropy=entropy,
-                action=int(action_np)))
+        self.trajectory.append(Transition(
+            value_s=value, log_prob_a=log_prob, entropy=entropy,
+            action=int(action_np)))
 
         return int(action_np), float(value.detach().cpu().item()), \
                float(entropy.detach().cpu().item())
 
     # -- loss and update --
 
-    def compute_and_apply_gradients(self, final_state_tensor, done,
-                                    final_speed_tensor, maneuver_tensor,
+    def compute_and_apply_gradients(self, final_obs, done,
                                     training_logger, timer, global_t):
         """Turn the current rollout into one global optimizer update."""
         if not self.trajectory:
@@ -559,8 +560,7 @@ class A3CWorker(mp.Process):
             if done:
                 discounted_return = torch.zeros(1, 1, device=self.device)
             else:
-                _, discounted_return = self.model(
-                    final_state_tensor, final_speed_tensor, maneuver_tensor)
+                _, discounted_return = self.model(final_obs)
 
         returns = []
         rewards_scaled = []
@@ -587,7 +587,7 @@ class A3CWorker(mp.Process):
 
         advantages_tensor = returns_tensor - values_tensor.detach()
         policy_advantages = advantages_tensor
-        if getattr(self.config, 'normalize_advantages', True) and \
+        if self.config.normalize_advantages and \
                 policy_advantages.numel() > 1:
             advantages_mean = policy_advantages.mean()
             advantages_std = policy_advantages.std(unbiased=False)
@@ -699,29 +699,17 @@ class A3CWorker(mp.Process):
         global_mean, is_new_best = self.global_network.update_stats(
             self.worker_id, self.mean_reward, episode_total_reward)
 
-        action_counts = env._action_counts.tolist() \
-            if hasattr(env, '_action_counts') else None
-
         record = training_logger.log_episode(
             global_episode=global_episode,
             global_t=global_t,
             total_reward=episode_total_reward,
             steps=episode_step_count,
             duration_s=duration_s,
-            max_speed_kmh=getattr(env, '_episode_max_speed', None),
-            min_route_dist=getattr(env, '_episode_min_route_dist', None),
-            goal_dist=getattr(env, '_episode_goal_dist', None),
-            reached_goal=getattr(env, '_episode_reached_goal', False),
-            action_counts=action_counts,
-            collisions=len(env.env.collision_history_list)
-                       if hasattr(env, 'env') and
-                       hasattr(env.env, 'collision_history_list') else None,
-            port=env.port,
             local_mean_reward=self.mean_reward,
             global_mean_reward=global_mean,
             best_reward=self.global_network.best_reward.value,
             is_new_best=is_new_best,
-            reward_components=getattr(env, '_episode_reward_components', None),
+            **env.episode_stats()
         )
 
         if is_new_best:
@@ -736,8 +724,10 @@ class A3CWorker(mp.Process):
 
     def run(self):
         """Worker process: connect to CARLA and train until shutdown."""
+        # The main process coordinates shutdown through shutdown_event.
         import signal
-        signal.signal(signal.SIGINT, signal.SIG_IGN)
+        for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGUSR1):
+            signal.signal(signum, signal.SIG_IGN)
 
         os.environ.setdefault('OMP_NUM_THREADS', '1')
         os.environ.setdefault('MKL_NUM_THREADS', '1')
@@ -757,7 +747,7 @@ class A3CWorker(mp.Process):
         except Exception:
             pass
 
-        seed = int(getattr(self.config, 'seed', 0)) + self.worker_id * 1009
+        seed = int(self.config.seed) + self.worker_id * 1009
         random.seed(seed)
         np.random.seed(seed)
         torch.manual_seed(seed)
@@ -780,15 +770,13 @@ class A3CWorker(mp.Process):
             log_update_arrays=self.config.log_update_arrays,
             telemetry_queue=self.log_queue,
             dropped_counter=self.dropped_counter,
-            publish_metrics=getattr(
-                self.config, 'wandb_enabled', False))
+            publish_metrics=self.config.wandb_enabled)
 
         resource_logger = None
-        if getattr(self.config, 'log_resources', False):
+        if self.config.log_resources:
             resource_logger = ResourceLogger(
                 training_logger,
-                interval=getattr(
-                    self.config, 'log_resources_interval', 10.0),
+                interval=self.config.log_resources_interval,
                 global_step_getter=lambda:
                     self.global_network.global_step.value)
             resource_logger.start()
@@ -807,38 +795,8 @@ class A3CWorker(mp.Process):
             pass
 
         env = CarlaA3CWrapper(
-            port=self.port, scenario=self.config.scenario,
-            camera=self.config.camera, resX=self.config.res,
-            resY=self.config.res,
-            action_space=self.config.action_type,
-            mp_density=self.config.mp_density,
-            host=getattr(self.config, 'carla_host', 'localhost'),
-            map_name=getattr(self.config, 'map_name', 'Town03'),
-            max_connect_retries=self.config.max_connect_retries,
-            connect_retry_wait=self.config.connect_retry_wait,
-            reconnect_wait=self.config.carla_timeout_wait,
-            save_episodes=self.config.save_episodes,
-            save_episode_interval=self.config.save_episode_interval,
-            run_id=self.run_id, n_actions=self.config.n_actions,
-            run_output_dir=self.run_output_dir,
-            action_repeat=self.config.action_repeat,
-            episode_max_decisions=self.config.episode_max_decisions,
-            world_reload_interval=self.config.world_reload_interval,
-            reward_mode=self.config.reward_mode,
-            reward_progress_coef=self.config.reward_progress_coef,
-            reward_target_speed_coef=self.config.reward_target_speed_coef,
-            reward_route_penalty_coef=self.config.reward_route_penalty_coef,
-            reward_time_penalty=self.config.reward_time_penalty,
-            reward_goal_bonus=self.config.reward_goal_bonus,
-            reward_collision_penalty=self.config.reward_collision_penalty,
-            reward_offroute_penalty=self.config.reward_offroute_penalty,
-            reward_lane_invasion_penalty=
-            self.config.reward_lane_invasion_penalty,
-            reward_target_speed_kmh=self.config.reward_target_speed_kmh,
-            reward_offroute_threshold=self.config.reward_offroute_threshold,
-            reward_clip=self.config.reward_clip,
-            verbose_env_logs=getattr(self.config, 'verbose_env_logs', False),
-        )
+            port=self.port, config=self.config, run_id=self.run_id,
+            run_output_dir=self.run_output_dir)
 
         try:
             while not self.shutdown_event.is_set():
@@ -854,7 +812,7 @@ class A3CWorker(mp.Process):
                     timer.record('sync', phase_start_time)
 
                     phase_start_time = timer.start()
-                    state, speed, maneuver = env.reset()
+                    obs = env.reset()
                     timer.record('env_reset', phase_start_time)
 
                     done = False
@@ -875,23 +833,15 @@ class A3CWorker(mp.Process):
                         steps_since_last_update += 1
                         self.total_steps += 1
 
-                        state_tensor = torch.from_numpy(state).float() \
-                            .unsqueeze(0).to(self.device)
-                        speed_tensor = torch.tensor(
-                            [[speed]], dtype=torch.float32,
-                            device=self.device)
-                        maneuver_tensor = torch.tensor(
-                            [maneuver], device=self.device)
+                        obs_tensors = obs_to_tensors(obs, self.device)
 
                         phase_start_time = timer.start()
                         action, value_f, entropy_f = self.get_action(
-                            state_tensor, speed_tensor, maneuver_tensor,
-                            testing=self.config.testing)
+                            obs_tensors)
                         timer.record('forward', phase_start_time)
 
                         phase_start_time = timer.start()
-                        next_state, next_speed, next_maneuver, \
-                            reward, done, info = env.step(action)
+                        next_obs, reward, done, info = env.step(action)
                         timer.record('env_step', phase_start_time)
 
                         self.rewards.append(reward)
@@ -913,27 +863,16 @@ class A3CWorker(mp.Process):
                                 speed_kmh=info.get('speed_kmh'),
                                 route_dist=info.get('route_distance'),
                                 goal_dist=info.get('distance_from_goal'),
-                                maneuver=maneuver,
+                                maneuver=int(obs['maneuver']),
                                 reward_components=info.get(
                                     'reward_components'),
                             )
 
-                        if not self.config.testing and \
-                                (steps_since_last_update >=
-                                 self.config.rollout_length or done):
-                            next_state_tensor = torch.from_numpy(
-                                next_state).float().unsqueeze(0).to(
-                                    self.device)
-                            next_speed_tensor = torch.tensor(
-                                [[next_speed]], dtype=torch.float32,
-                                device=self.device)
-                            next_maneuver_tensor = torch.tensor(
-                                [next_maneuver], device=self.device)
-
+                        if steps_since_last_update >= \
+                                self.config.rollout_length or done:
                             self.compute_and_apply_gradients(
-                                next_state_tensor, done, next_speed_tensor,
-                                next_maneuver_tensor, training_logger,
-                                timer, global_t)
+                                obs_to_tensors(next_obs, self.device), done,
+                                training_logger, timer, global_t)
 
                             if not done and self.local_updates % \
                                     self.config.sync_every_n_updates == 0:
@@ -961,9 +900,7 @@ class A3CWorker(mp.Process):
                                     last_diag_update = update_number
                             steps_since_last_update = 0
 
-                        state = next_state
-                        speed = next_speed
-                        maneuver = next_maneuver
+                        obs = next_obs
 
                         if self.config.save_frequency > 0 and \
                                 global_t % self.config.save_frequency == 0:

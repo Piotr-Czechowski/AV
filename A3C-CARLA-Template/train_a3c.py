@@ -12,8 +12,6 @@ import os
 import queue
 import random
 import signal
-import sys
-import tempfile
 import time
 import uuid
 from datetime import datetime
@@ -23,40 +21,53 @@ import numpy as np
 import torch
 import torch.multiprocessing as mp
 
-from rl_configuration import Actions as ac
+from rl_configuration import (
+    N_ACTIONS, OFFROUTE_THRESHOLD_M, observation_spec)
 from training_logger import (
     ResourceLogger, TrainingLogger, make_telemetry_stop,
     telemetry_process_main)
 from a3c_core import GlobalNetwork
+from carla_multiserver_launcher import carla_rpc_up
 from run_a3c import run_with_restart, find_latest_checkpoint
 import settings
 
 HAS_WANDB = importlib.util.find_spec('wandb') is not None
 
+# Files and directories that mark a directory as holding a training run.
+RUN_ARTIFACTS = ('checkpoint.pth', 'checkpoints', 'logs', 'resume_state.json')
 
-def prepare_output_dir(args, user_specified_dir=None, resume=False):
-    """Create the output directory and dump the launch arguments into it.
 
-    args can be a dict or argparse.Namespace. On resume=True, the args file
-    gets a suffix so first-run files are not clobbered.
+def prepare_output_dir(args):
+    """Choose and create the run directory; dump the launch arguments.
+
+    A new run refuses a directory that already holds a run, so it cannot
+    overwrite a trained checkpoint. ``--resume DIR`` continues in ``DIR``
+    and needs a checkpoint there. On resume the args file gets a suffix so
+    first-run files are not clobbered.
     """
-    if user_specified_dir is not None:
-        if os.path.exists(user_specified_dir):
-            if not os.path.isdir(user_specified_dir):
-                raise RuntimeError(
-                    '{} is not a directory'.format(user_specified_dir))
-        else:
-            os.makedirs(user_specified_dir)
-        run_output_dir = user_specified_dir
+    if args.resume:
+        run_output_dir = args.resume
+        if find_latest_checkpoint(run_output_dir)[0] is None:
+            raise SystemExit(
+                'ERROR: --resume {}: no checkpoint in this directory'.format(
+                    run_output_dir))
     else:
-        run_output_dir = tempfile.mkdtemp(prefix='a3c_run_')
+        run_output_dir = args.outdir or os.path.join(
+            'runs', 'a3c_{}w_{}'.format(
+                args.num_workers, datetime.now().strftime('%Y%m%d_%H%M%S')))
+        found = [name for name in RUN_ARTIFACTS
+                 if os.path.exists(os.path.join(run_output_dir, name))]
+        if found:
+            raise SystemExit(
+                'ERROR: {} already holds a training run ({}). Choose another '
+                '--outdir or delete it. Use --resume to continue it.'.format(
+                    run_output_dir, ', '.join(found)))
+        os.makedirs(run_output_dir, exist_ok=True)
 
-    suffix = '_resume' if resume else ''
-
-    args_dict = args if isinstance(args, dict) else vars(args)
+    suffix = '_resume' if args.resume else ''
     with open(os.path.join(run_output_dir,
                            'args{}.txt'.format(suffix)), 'w') as f:
-        json.dump(args_dict, f, indent=2, default=str)
+        json.dump(vars(args), f, indent=2, default=str)
 
     return run_output_dir
 
@@ -67,12 +78,11 @@ DEFAULT_WORKERS_PER_GPU = 1
 DEFAULT_WORKER_GPU_START = 0
 DEFAULT_START_PORT = settings.PORT
 DEFAULT_PORT_STEP = settings.PORT_STEP
-DEFAULT_SCENARIO = settings.SCENARIO[0]
+DEFAULT_SCENARIO = settings.SCENARIO
 DEFAULT_CAMERA = settings.CAMERA_TYPE
 DEFAULT_RES = settings.RES
 DEFAULT_MP_DENSITY = 25
 DEFAULT_SEED = 52
-DEFAULT_CARLA_HOST = settings.CARLA_HOST
 DEFAULT_MAP_NAME = settings.MAP_NAME
 
 # Algorithm
@@ -92,7 +102,6 @@ DEFAULT_STEPS = 10_000_000
 DEFAULT_SYNC_EVERY_N_UPDATES = 1
 DEFAULT_HOGWILD_LOCK_UPDATES = False
 DEFAULT_GC_INTERVAL = 10
-DEFAULT_TESTING = False
 
 # Optimizer internals
 DEFAULT_RMSPROP_ALPHA = 0.99
@@ -111,6 +120,8 @@ DEFAULT_RAPID_CRASH_THRESHOLD = 3
 DEFAULT_RAPID_CRASH_WINDOW_STEPS = 100
 DEFAULT_MAX_CONNECT_RETRIES = 5
 DEFAULT_CONNECT_RETRY_WAIT = 30.0
+# Wait this long for the CARLA servers before the workers start.
+SERVER_READY_TIMEOUT_S = 600.0
 
 # Logging and monitoring
 DEFAULT_LOG_STEPS = False
@@ -120,9 +131,10 @@ DEFAULT_DIAG_LOG_WALL_S = 60.0
 DEFAULT_LOG_RESOURCES = False
 DEFAULT_LOG_RESOURCES_INTERVAL = 10.0
 DEFAULT_VERBOSE_ENV_LOGS = False
-DEFAULT_WANDB_PROJECT = 'a3c-carla'
-DEFAULT_WANDB_RUN_NAME = None
-DEFAULT_WANDB_ENTITY = None
+# W&B names come from the environment (`.env`) unless the CLI overrides them.
+DEFAULT_WANDB_PROJECT = os.environ.get('WANDB_PROJECT') or 'a3c-carla'
+DEFAULT_WANDB_RUN_NAME = os.environ.get('WANDB_RUN_NAME') or None
+DEFAULT_WANDB_ENTITY = os.environ.get('WANDB_ENTITY') or None
 DEFAULT_NO_WANDB = False
 # Telemetry buffer between the training processes and the single process
 # that owns events.jsonl and W&B.  Large enough that a slow consumer costs
@@ -134,8 +146,9 @@ DEFAULT_SAVE_EPISODE_INTERVAL = 0
 # Checkpointing
 DEFAULT_SAVE_FREQUENCY = 100000
 DEFAULT_SAVE_WORKER_CHECKPOINTS = False
-DEFAULT_OUTDIR = None
+DEFAULT_OUTDIR = None  # None means runs/a3c_<N>w_<date>
 DEFAULT_RESUME = None
+DEFAULT_INIT_FROM = None
 
 # CARLA step/reset behavior
 DEFAULT_ACTION_REPEAT = settings.ACTION_REPEAT
@@ -153,11 +166,8 @@ DEFAULT_REWARD_COLLISION_PENALTY = 50.0
 DEFAULT_REWARD_OFFROUTE_PENALTY = 25.0
 DEFAULT_REWARD_LANE_INVASION_PENALTY = 5.0
 DEFAULT_REWARD_TARGET_SPEED_KMH = 20.0
-DEFAULT_REWARD_OFFROUTE_THRESHOLD = 10.0
+DEFAULT_REWARD_OFFROUTE_THRESHOLD = OFFROUTE_THRESHOLD_M
 DEFAULT_REWARD_CLIP = 50.0
-
-# Fixed implementation choices
-DEFAULT_ACTION_TYPE = 'discrete'
 
 
 # ---------------------------------------------------------------------------
@@ -180,14 +190,10 @@ def build_parser():
                    default=DEFAULT_START_PORT)
     p.add_argument('--port-step', type=int,
                    default=DEFAULT_PORT_STEP)
-    p.add_argument('--carla-host', type=str,
-                   default=DEFAULT_CARLA_HOST,
-                   help='CARLA RPC host the workers connect to. '
-                        'Does not start the simulator.')
     p.add_argument('--map-name', type=str,
                    default=DEFAULT_MAP_NAME)
     p.add_argument('--scenario', type=int, nargs='+',
-                   default=[DEFAULT_SCENARIO])
+                   default=DEFAULT_SCENARIO)
     p.add_argument('--camera', type=str, default=DEFAULT_CAMERA,
                    choices=['rgb', 'semantic'])
     p.add_argument('--res', type=int, default=DEFAULT_RES)
@@ -233,8 +239,6 @@ def build_parser():
                    default=DEFAULT_HOGWILD_LOCK_UPDATES)
     p.add_argument('--gc-interval', type=int,
                    default=DEFAULT_GC_INTERVAL)
-    p.add_argument('--testing', action='store_true',
-                   default=DEFAULT_TESTING)
 
     # Checkpointing / resume.
     p.add_argument('--save-frequency', type=int,
@@ -242,7 +246,12 @@ def build_parser():
     p.add_argument('--save-worker-checkpoints', action='store_true',
                    default=DEFAULT_SAVE_WORKER_CHECKPOINTS)
     p.add_argument('--outdir', type=str, default=DEFAULT_OUTDIR)
-    p.add_argument('--resume', type=str, default=DEFAULT_RESUME)
+    start = p.add_mutually_exclusive_group()
+    start.add_argument('--resume', type=str, default=DEFAULT_RESUME,
+                       help='Continue the run in this directory.')
+    start.add_argument('--init-from', type=str, default=DEFAULT_INIT_FROM,
+                       help='New run from the model weights in this '
+                            'checkpoint.pth. Counters and W&B run are new.')
 
     # Recovery / supervisor.
     p.add_argument('--carla-timeout-wait', type=float,
@@ -353,12 +362,6 @@ def _apply_config_defaults(args):
         args.reward_offroute_threshold = DEFAULT_REWARD_OFFROUTE_THRESHOLD
     if not hasattr(args, 'reward_clip'):
         args.reward_clip = DEFAULT_REWARD_CLIP
-    if not hasattr(args, 'action_type'):
-        args.action_type = DEFAULT_ACTION_TYPE
-    if not hasattr(args, 'carla_host'):
-        args.carla_host = DEFAULT_CARLA_HOST
-    if not hasattr(args, 'map_name'):
-        args.map_name = DEFAULT_MAP_NAME
     return args
 
 
@@ -441,6 +444,22 @@ def _install_signal_handlers(shutdown_event):
             signal.signal(sig, _handle_signal)
 
 
+def wait_for_carla_servers(ports, shutdown_event):
+    """Wait until every CARLA server answers RPC. False if shutdown came first."""
+    deadline = time.time() + SERVER_READY_TIMEOUT_S
+    for port in ports:
+        while not carla_rpc_up(port):
+            if shutdown_event.is_set():
+                return False
+            if time.time() >= deadline:
+                raise RuntimeError(
+                    'CARLA server on port {} did not answer within {:.0f}s; '
+                    'see carla_servers.log in the run directory'.format(
+                        port, SERVER_READY_TIMEOUT_S))
+            time.sleep(1.0)
+    return not shutdown_event.is_set()
+
+
 def _stop_telemetry_process(log_queue, telemetry_process,
                             final_summary=None):
     """Send the stop sentinel and join the telemetry process."""
@@ -452,8 +471,10 @@ def _stop_telemetry_process(log_queue, telemetry_process,
 
     telemetry_process.join(timeout=30)
     if telemetry_process.is_alive():
+        # The telemetry process ignores SIGTERM, so terminate() would not
+        # stop it.
         print('[TELEMETRY] drain timeout; terminating process', flush=True)
-        telemetry_process.terminate()
+        telemetry_process.kill()
         telemetry_process.join(timeout=5)
 
 
@@ -497,16 +518,18 @@ def main():
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(args.seed)
 
-    args.n_actions = len(ac.ACTIONS_NAMES)
+    args.n_actions = N_ACTIONS
+    args.obs_spec = observation_spec(args)
     wandb_api_key = os.environ.get('WANDB_API_KEY', '').strip()
     args.wandb_enabled = bool(
         HAS_WANDB and not args.no_wandb and wandb_api_key)
     args.worker_gpus = _assign_worker_gpus(
         args.num_workers, args.workers_per_gpu, args.worker_gpu_start)
 
-    user_run_output_dir = args.resume or args.outdir
-    run_output_dir = prepare_output_dir(
-        args, user_run_output_dir, resume=bool(args.resume))
+    if args.init_from and not os.path.isfile(args.init_from):
+        raise SystemExit(
+            'ERROR: --init-from {}: no such file'.format(args.init_from))
+    run_output_dir = prepare_output_dir(args)
     print('[RUN] outdir: {}'.format(run_output_dir), flush=True)
 
     config = SimpleNamespace(**vars(args))
@@ -519,18 +542,19 @@ def main():
         'wandb_errors': mp.Value('l', 0),
     }
 
-    global_network = GlobalNetwork(
-        config, state_shape=[args.res, args.res, 3],
-        action_shape=args.n_actions, critic_shape=1)
+    global_network = GlobalNetwork(config)
 
     elapsed_offset = 0.0
+    if args.init_from:
+        print('[INIT] model weights from {}'.format(args.init_from),
+              flush=True)
+        global_network.load_weights(args.init_from)
     if args.resume:
         checkpoint_path, checkpoint_step_number = find_latest_checkpoint(
             args.resume)
-        if checkpoint_path:
-            print('[RESUME] loading {} (step {})'.format(
-                checkpoint_path, checkpoint_step_number), flush=True)
-            global_network.load(checkpoint_path)
+        print('[RESUME] loading {} (step {})'.format(
+            checkpoint_path, checkpoint_step_number), flush=True)
+        global_network.load(checkpoint_path)
 
         resume_state = _read_resume_state(run_output_dir)
         if resume_state:
@@ -550,7 +574,7 @@ def main():
         p.numel() for p in global_network.model.parameters())
     TrainingLogger.write_metadata(
         run_output_dir, _config_to_dict(config),
-        model_name='SharedActorCritic',
+        model_name=type(global_network.model).__name__,
         n_params=n_params_model,
         n_workers=args.num_workers,
         model_params=n_params_model)
@@ -640,15 +664,22 @@ def main():
         raise
 
     start_steps = global_network.global_step.value
+    start_updates = global_network.total_updates.value
     session_start_ts = _timestamp()
     start_time = time.time()
     restart_counts = {i: 0 for i in range(args.num_workers)}
     failure = None
     try:
-        restart_counts = run_with_restart(
-            global_network, config, run_output_dir, shutdown_event,
-            log_queue=log_queue, run_id=run_id,
-            dropped_counter=telemetry_counters['queue_drops'])
+        ports = [args.start_port + args.port_step * i
+                 for i in range(args.num_workers)]
+        if wait_for_carla_servers(ports, shutdown_event):
+            # Training time counts from the moment the servers are ready.
+            session_start_ts = _timestamp()
+            start_time = time.time()
+            restart_counts = run_with_restart(
+                global_network, config, run_output_dir, shutdown_event,
+                log_queue=log_queue, run_id=run_id,
+                dropped_counter=telemetry_counters['queue_drops'])
     except KeyboardInterrupt:
         shutdown_event.set()
     except BaseException as error:
@@ -664,15 +695,21 @@ def main():
         final_steps = global_network.global_step.value
         session_steps = max(0, final_steps - start_steps)
         session_end_ts = _timestamp()
-        _write_resume_state(
-            run_output_dir, config, global_network, cumulative,
-            session_elapsed, session_start_ts, session_end_ts)
-        if global_network.save_last_checkpoint(
-                run_output_dir, global_t=final_steps):
-            print('[SAVE] last checkpoint at step {}'.format(final_steps),
+        if global_network.total_updates.value == start_updates:
+            # Nothing was learned in this session: keep the old checkpoint.
+            print('[SAVE] no update in this session; checkpoint untouched',
                   flush=True)
         else:
-            print('[SAVE] skipped last checkpoint (NaN or I/O)', flush=True)
+            _write_resume_state(
+                run_output_dir, config, global_network, cumulative,
+                session_elapsed, session_start_ts, session_end_ts)
+            if global_network.save_last_checkpoint(
+                    run_output_dir, global_t=final_steps):
+                print('[SAVE] last checkpoint at step {}'.format(final_steps),
+                      flush=True)
+            else:
+                print('[SAVE] skipped last checkpoint (NaN or I/O)',
+                      flush=True)
 
         events.log_event(
             'training_end',

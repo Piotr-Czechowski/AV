@@ -29,6 +29,7 @@ import json
 import math
 import os
 import queue as queue_module
+import signal
 import threading
 from datetime import datetime
 
@@ -409,7 +410,13 @@ def telemetry_process_main(telemetry_queue, run_output_dir,
     which keeps the SDK out of every training process.  A failed
     ``wandb.init`` degrades to local-only logging and is recorded as an
     event rather than raised.
+
+    The process ignores SIGINT, SIGTERM, and SIGUSR1: the main process stops
+    it with the queue sentinel.
     """
+    for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGUSR1):
+        signal.signal(signum, signal.SIG_IGN)
+
     wandb_run = None
     startup_events = []
     config = dict(wandb_config or {})

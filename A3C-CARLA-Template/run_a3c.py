@@ -257,8 +257,7 @@ def run_with_restart(global_network, config, run_output_dir, shutdown_event,
                         rapid_crash_count[i] = 0
 
                 base_wait = float(config.carla_server_start_period)
-                max_wait = float(getattr(config, 'carla_restart_backoff_max',
-                                         max(base_wait, 300.0)))
+                max_wait = float(config.carla_restart_backoff_max)
                 wait_time = min(max_wait, base_wait * (
                     2 ** max(0, restart_counts[i] - 1)))
                 print('[RESTART] W{} waiting {:.1f}s before relaunch'.format(
@@ -280,7 +279,8 @@ def run_with_restart(global_network, config, run_output_dir, shutdown_event,
         if w.is_alive():
             w.join(timeout=10)
         if w.is_alive():
-            w.terminate()
+            # Workers ignore SIGTERM, so terminate() would not stop them.
+            w.kill()
             w.join(timeout=5)
 
     return restart_counts

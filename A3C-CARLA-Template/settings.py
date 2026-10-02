@@ -2,7 +2,8 @@
 
 Machine paths, container images, and secrets live in `.env`.
 Algorithm hyperparameters live on the `train_a3c.py` CLI.
-Action space and reward terms live in `rl_configuration.py`.
+The agent interface (observations, actions) and the env reward live in
+`rl_configuration.py`.
 """
 
 import os
@@ -29,18 +30,17 @@ def load_dotenv(path=None):
 
 load_dotenv()
 
-CARLA_HOST = os.environ.get('CARLA_HOST', 'localhost')
+# Both pipelines run the CARLA servers on the machine that trains.
+CARLA_HOST = 'localhost'
 PORT = int(os.environ.get('CARLA_START_PORT', '2000'))
-PORT_STEP = int(os.environ.get('CARLA_PORT_STEP', '100'))
+# One server uses three ports: RPC, streaming (RPC+1), secondary (RPC+2).
+PORT_STEP = int(os.environ.get('CARLA_PORT_STEP', '5'))
 
 MAP_NAME = os.environ.get('CARLA_MAP', 'Town03')
 CAMERA_TYPE = 'semantic'
 RES = 250
 SCENARIO = [14]
-SPAWNING_TYPE = 1
-ACTION_TYPE = 'discrete'
-ACTION_REPEAT = 2
-EPISODE_MAX_DECISIONS = 200
-STEP_COUNTER = EPISODE_MAX_DECISIONS * ACTION_REPEAT  # env tick cap
+ACTION_REPEAT = 2  # world ticks per agent decision
+EPISODE_MAX_DECISIONS = 200  # episode length limit; 0 turns it off
 SHOW_CAM = False
 DRAW = False

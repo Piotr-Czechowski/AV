@@ -9,8 +9,7 @@ import time
 import math
 import importlib
 import torch
-from utils import ColoredPrint
-from rl_configuration import Actions as ac
+from rl_configuration import ACTIONS
 from rl_configuration import reward_function, REWARD_FROM_MP, REWARD_FROM_TP
 import queue
 import settings
@@ -29,6 +28,17 @@ from carla_navigation.local_planner import RoadOption
 MAX_ATTEMPTS = 10
 WAIT_TIME = 0.5  # seconds
 
+FIXED_DELTA_SECONDS = 0.1
+CLIENT_TIMEOUT_S = 120.0  # RPC timeout; long enough for load_world
+EGO_BLUEPRINT = 'model3'
+# Camera mount on the ego vehicle: slightly forward, eye height, pitched down.
+CAMERA_X = 0.3
+CAMERA_Z = 2.5
+CAMERA_PITCH = -10
+CAMERA_FOV = "75"
+CAMERA_TIMEOUT_S = 2.0  # wait for one camera frame after a tick
+GOAL_RADIUS_M = 3.0  # a middle goal or the final goal counts as reached
+
 DECISIONS_DICT = {
     RoadOption.LEFT: 0,
     RoadOption.STRAIGHT: 1,
@@ -38,8 +48,6 @@ DECISIONS_DICT = {
 # ---------------------------------------------------------------------------
 # Spawn/goal tables live in ``<map_name.lower()>.py`` (default: town03.py).
 # ---------------------------------------------------------------------------
-
-CAMERA_FOV = "75"
 
 
 def load_map_scenarios(map_name):
@@ -63,39 +71,35 @@ def load_map_scenarios(map_name):
 class CarlaEnv:
     """Synchronous CARLA client for one worker."""
 
-    def __init__(self, scenario, action_space='discrete', resX=250, resY=250, camera='semantic', port=None,
-                 host=None, map_name=None, manual_control=False, spawn_point=False, terminal_point=False,
+    def __init__(self, scenario, resX=250, resY=250, camera='semantic', port=None,
+                 map_name=None, manual_control=False, spawn_point=False, terminal_point=False,
                  mp_density=25, verbose=False):
         if port is None:
             port = settings.PORT
-        if host is None:
-            host = settings.CARLA_HOST
         if map_name is None:
             map_name = settings.MAP_NAME
 
-        self.host = host
+        self.host = settings.CARLA_HOST
         self.port = port
         self.map_name = map_name
-        self.step_limit = settings.STEP_COUNTER
-        self.spawning_type = settings.SPAWNING_TYPE
         self.draw = settings.DRAW
         self.mp_reward = REWARD_FROM_MP
         self.tp_reward = REWARD_FROM_TP
 
         self.client = carla.Client(self.host, port)
-        self.client.set_timeout(120.0)
+        self.client.set_timeout(CLIENT_TIMEOUT_S)
 
-        self.log = ColoredPrint()
         self.verbose = bool(verbose)
 
-        # Warn if the Python API and the running server disagree.
+        # The Python API and the running server must be the same version.
         client_ver = self.client.get_client_version()
         server_ver = self.client.get_server_version()
 
-        if client_ver == server_ver:
-            self.log.success(f"Client version: {client_ver}, Server version: {server_ver}")
-        else:
-            self.log.warn(f"Client version: {client_ver}, Server version: {server_ver}")
+        if client_ver != server_ver:
+            raise RuntimeError(
+                f"CARLA version mismatch: client {client_ver}, server {server_ver}. "
+                "Use a server image that matches the carla package in pyproject.toml.")
+        print(f"Client version: {client_ver}, Server version: {server_ver}")
 
         self.world = self.client.load_world(self.map_name)
         self._apply_sync_settings()
@@ -127,13 +131,12 @@ class CarlaEnv:
 
         self.spectator = self.set_spectator()
         self.goal_location_trans, self.goal_location_loc, self.route = self.plan_the_route()
-        self.action_space = self.create_action_space(action_space)
         self.actor_list = []
 
-        # Camera mount: slightly forward, eye height, pitched down 10 degrees.
+        # Camera mount. The collision and lane-invasion sensors use it too.
         self.transform = carla.Transform(
-            carla.Location(x=0.3, z=2.5),
-            carla.Rotation(pitch=-10, yaw=0)
+            carla.Location(x=CAMERA_X, z=CAMERA_Z),
+            carla.Rotation(pitch=CAMERA_PITCH, yaw=0)
         )
 
         self.manual_control = manual_control
@@ -161,16 +164,15 @@ class CarlaEnv:
         self.number_of_resets = 0
         self.car_decisions = []
         self.spawn_points_index = 0
-        
 
         self.walker = None
         self.walker_controller = None
-     
+
     def _apply_sync_settings(self):
         """Enable synchronous simulation with a fixed timestep."""
         self.settings = self.world.get_settings()
         self.settings.synchronous_mode = True
-        self.settings.fixed_delta_seconds = 0.1
+        self.settings.fixed_delta_seconds = FIXED_DELTA_SECONDS
         self.settings.max_substep_delta_time = 0.01
         self.settings.max_substeps = 10
         self.world.apply_settings(self.settings)
@@ -289,8 +291,6 @@ class CarlaEnv:
 
         # CARLA sometimes repeats consecutive waypoints; drop those and keep turns only.
         _ = []
-        # decisions = [el2 for el1, el2 in self.route]
-        # decisions = [decisions[index] for index in range(len(decisions)) if index==0 or decisions[index] != decisions[index-1]]
         decisions = [el2 for el1, el2 in self.route]
         decisions = [decisions[index] for index in range(len(decisions)) if (index==0 or decisions[index] != decisions[index-1]) and decisions[index] != RoadOption.LANEFOLLOW and decisions[index] != RoadOption.CHANGELANELEFT and decisions[index] != RoadOption.CHANGELANERIGHT]
         decisions = [DECISIONS_DICT[el] for el in decisions]
@@ -318,23 +318,12 @@ class CarlaEnv:
 
         return self.goal_location_trans, self.goal_location_loc, self.route
 
-    def spawn_car(self, spawning_type=1, episode=None):
+    def spawn_car(self):
         """Spawn the ego vehicle at the current spawn point."""
 
-        tesla = self.blueprint_library.filter('model3')[0]
+        tesla = self.blueprint_library.filter(EGO_BLUEPRINT)[0]
         tesla.set_attribute('role_name', 'ego')
-        if spawning_type==0:
-            self.spawn_point = random.choice(self.route)[0].transform
-        elif spawning_type == 1:
-            # self.spawn_point.location.x -= 9
-            pass
-        elif spawning_type==2:
-            if bool(episode%2):
-                self.spawn_point = self.route[0][0].transform
-            else:
-                self.spawn_point = self.route[-120][0].transform
-        # self.spawn_point.location.z = 20.0  # keep spawn above the ground
-        
+
         for attempt in range(MAX_ATTEMPTS):
             self.vehicle = self.world.try_spawn_actor(tesla, self.spawn_point)
             if self.vehicle is not None:
@@ -350,10 +339,9 @@ class CarlaEnv:
         return self.vehicle
 
     def create_action_space(self, action_space):
-        """Resolve discrete action ids from ``rl_configuration.Actions``."""
+        """Resolve discrete action ids from ``rl_configuration.ACTIONS``."""
         if action_space == 'discrete':
-            self.action_space = [
-                getattr(ac, name) for name in ac.ACTIONS_NAMES.values()]
+            self.action_space = list(range(len(ACTIONS)))
             return self.action_space
         else:
             self.action_space = action_space
@@ -368,19 +356,12 @@ class CarlaEnv:
 
         rgb_cam = self.world.spawn_actor(rgb_cam_bp, self.transform, attach_to=self.vehicle)
         self.actor_list.append(rgb_cam)
-        # remove_pictures()
         self.image_queue = queue.Queue()
         rgb_cam.listen(self.image_queue.put)
-        # rgb_cam.listen(lambda data: self.process_rgb_img(data))
-        # rgb_cam.listen(lambda data: data.save_to_disk('A_to_B/camera_rgb_outputs/%06d.png' % data.frame) )
 
 
     def process_rgb_img(self, image):
         """Convert a raw RGB frame to a CHW float tensor."""
-        # os.makedirs('A_to_B/camera_rgb_outputs/', exist_ok=True)
-        # image.save_to_disk('A_to_B/camera_rgb_outputs/%06d.png' % image.frame)
-
-
         i = np.array(image.raw_data)
         # Drop the unused alpha channel.
         i2 = i.reshape((self.resY, self.resX, 4))
@@ -396,25 +377,12 @@ class CarlaEnv:
     def add_semantic_camera(self):
         """Attach a semantic-segmentation camera and queue its frames."""
         semantic_cam_bp = self.blueprint_library.find('sensor.camera.semantic_segmentation')
-        # semantic_cam_bp = carla.sensor.Camera('MyCamera', PostProcessing='SemanticSegmentation')
         semantic_cam_bp.set_attribute('image_size_x', f'{self.resX}')
         semantic_cam_bp.set_attribute('image_size_y', f'{self.resY}')
         semantic_cam_bp.set_attribute('fov', CAMERA_FOV)
 
-        # new_location = carla.Location(self.transform.location.x, 
-        #                             self.transform.location.y, 
-        #                             self.transform.location.z + 1.0)  # raise camera 1 m
-
-        # new_rotation = carla.Rotation(self.transform.rotation.pitch - 15,  # pitch down 15 degrees
-        #                             self.transform.rotation.yaw, 
-        #                             self.transform.rotation.roll)
-
-        # new_transform = carla.Transform(new_location, new_rotation)
-
-        # semantic_cam_sensor = self.world.spawn_actor(semantic_cam_bp, new_transform, attach_to=self.vehicle)
         semantic_cam_sensor = self.world.spawn_actor(semantic_cam_bp, self.transform, attach_to=self.vehicle)
 
-        # semantic_cam_sensor.listen(lambda data: self.process_semantic_img(data))
         self.actor_list.append(semantic_cam_sensor)
 
         self.image_queue = queue.Queue()
@@ -423,8 +391,6 @@ class CarlaEnv:
     def process_semantic_img(self, image):
         """Convert a semantic frame to CityScapes colors and a CHW tensor."""
         image.convert(cc.CityScapesPalette)
-        # image.convert(carla.ColorConverter.CityScapesPalette)
-        # image = image.to_array() 
         image = np.array(image.raw_data)
         image = image.reshape((self.resY, self.resX, 4))
         image = image[:, :, :3]
@@ -455,7 +421,7 @@ class CarlaEnv:
         elif lin_or_log == "log":
             image.convert(cc.LogarithmicDepth)
         else:
-            self.log.err(f"Wrong value of an lin_or_log argument, replace: {lin_or_log} with 'linear' or 'log'")
+            print(f"Wrong value of an lin_or_log argument, replace: {lin_or_log} with 'linear' or 'log'")
             return
 
         # Array of BGRA 32-bit pixels.
@@ -512,6 +478,8 @@ class CarlaEnv:
             if curr_point_diff > 1:
                 diff = True
 
+            # Scenarios 1 and 2 (see town03.py) run without middle goals on
+            # turns. That is why the two branches below skip them.
             # Start of a turn.
             if diff and i:
                 if not self.is_junction:
@@ -763,9 +731,10 @@ class CarlaEnv:
 
     def car_control_discrete(self, action):
         """Apply throttle/steer/brake from a discrete action id."""
-        self.control.throttle = ac.ACTION_CONTROL[self.action_space[action]][0]
-        self.control.brake = ac.ACTION_CONTROL[self.action_space[action]][1]
-        self.control.steer = ac.ACTION_CONTROL[self.action_space[action]][2]
+        _, throttle, brake, steer = ACTIONS[action]
+        self.control.throttle = throttle
+        self.control.brake = brake
+        self.control.steer = steer
         self.control.hand_brake = False
         self.control.reverse = False
         self.control.manual_gear_shift = False
@@ -786,7 +755,7 @@ class CarlaEnv:
         mp_min = min(mp_distances)
         mp_index = mp_distances.index(mp_min)
 
-        if mp_min < 3 and self.stat_reward_mp[mp_index][1] == 0:
+        if mp_min < GOAL_RADIUS_M and self.stat_reward_mp[mp_index][1] == 0:
             self.stat_reward_mp[mp_index][1] = 1
             if mp_index == len(self.stat_reward_mp) - 1:
                 return static_reward_from_mp, True
@@ -825,33 +794,13 @@ class CarlaEnv:
         
         self._apply_sync_settings()
 
-        # self.world = self.client.reload_world()
-
-
-
-        # Duplicate of _apply_sync_settings (kept for reference).
-        # self.settings = self.world.get_settings()
-        # self.settings.synchronous_mode = True
-        # self.settings.fixed_delta_seconds = 0.1
-        # self.settings.max_substep_delta_time = 0.01
-        # self.settings.max_substeps = 10
-        # self.world.apply_settings(self.settings)
-        # self.client.reload_world(False)
-
         tries = 3
         self.world = self.client.get_world()
-
-        # spawn_points = self.world.get_map().get_spawn_points()
-        # for i, spawn_point in enumerate(spawn_points):
-        #     location = spawn_point.location
-        #     self.world.debug.draw_string(location, str(i), draw_shadow=False, color=carla.Color(r=0, g=255, b=0), life_time=120.0)
-            # self.world.tick()
 
         while prev_world_id == self.world.id and tries > 0:
             tries -= 1
             self.world.tick()
             self.world = self.client.get_world()
-        # self.world = self.client.reload_world()
 
         self.collision_history_list = []
         self.invasion_history_list = []
@@ -885,7 +834,7 @@ class CarlaEnv:
         self.speed = 0
         self.prev_speed = 0
 
-    def _get_latest_camera_image(self, timeout=2.0):
+    def _get_latest_camera_image(self, timeout=CAMERA_TIMEOUT_S):
         """Drain the camera queue; raise if no frame arrives in time."""
         try:
             image = self.image_queue.get(timeout=timeout)
@@ -907,11 +856,8 @@ class CarlaEnv:
             self.scenario = random.choice(self.scenario_list)
             self.create_scenario(self.sp, self.tp, self.middle_goals_density)
 
-        # self.spawn_single_pedestrian()
-        # self.spawn_npc_vehicle(spawn_index=48)
-
         self.plan_the_route()
-        self.spawn_car(self.spawning_type, episode)
+        self.spawn_car()
         self.set_spectator()
 
         if self.camera_type == 'rgb':
@@ -919,70 +865,37 @@ class CarlaEnv:
         elif self.camera_type == 'semantic':
             self.add_semantic_camera()
         else:
-            self.log.err(f"Wrong camera type. Pick rgb or semantic, not: {self.camera_type}")
+            print(f"Wrong camera type. Pick rgb or semantic, not: {self.camera_type}")
 
-        # self.add_depth_camera()
         self.add_collision_sensor()
         self.add_line_invasion_sensor()
-
-        # self.vehicle.apply_control(carla.VehicleControl(throttle=1.0, brake=1.0))
-        # time.sleep(2)
-        # time.sleep(0.5)
-
-        # while self.front_camera is None:
-        #     time.sleep(0.01)
-
-        # self.vehicle.apply_control(carla.VehicleControl(brake=0.0))
-
-        # results_queue.put(1)
-        # # A frame from the spawn point
-        # while not self.image_queue.empty():
-        #     _ = self.image_queue.get()
 
         # A few ticks so the debug route is visible on the first frame.
         self.step_apply_action(3)
         for i in range(15):
             self.world.tick()
-            
+
         while not self.image_queue.empty():
             _ = self.image_queue.get()
 
         self.world.tick()
-        image = self._get_latest_camera_image(timeout=2.0)
+        image = self._get_latest_camera_image()
 
         self.state_observer.image = image
 
-        # if save_image:
-        #     self.state_observer.save_to_disk(image, episode, 0)
-        
         if self.camera_type == 'rgb':
             self.process_rgb_img(image)
         else:
             self.process_semantic_img(image)
         return self.front_camera, float(self.speed)
-    
+
     def step_apply_action(self, action):
         """Apply one control command without ticking the world."""
         self.step_counter += 1
-
-        if self.action_space == 'continuous':
-            self.car_control_continuous(action)
-        else:
-            self.car_control_discrete(action)
+        self.car_control_discrete(action)
 
     def step(self, episode, step, save_image=False, on_junction=False):
         """Observe reward and the next camera frame after the world has been ticked."""
-        # self.step_counter += 1
-
-        # if self.action_space == 'continuous':
-        #     self.car_control_continuous(action)
-        # else:
-        #     self.car_control_discrete(action)
-
-        
-        # if sleep_time:
-        #     time.sleep(sleep_time)
-
         distance_from_goal, vehicle_location = self.calculate_distance()
 
         route_distance = self.calculate_route_distance(vehicle_location)
@@ -1011,13 +924,9 @@ class CarlaEnv:
         self.prev_speed = self.speed
         self.done = self.done or done
 
-        if self.step_counter >= self.step_limit:
-            self.done = True
-        image = self._get_latest_camera_image(timeout=2.0)
+        # No step limit here: the wrapper owns the one episode length limit.
+        image = self._get_latest_camera_image()
         self.state_observer.image = image
-
-        # if save_image:
-        #     self.state_observer.save_to_disk(image, episode, step)
 
         if self.camera_type == 'rgb':
             self.process_rgb_img(image)

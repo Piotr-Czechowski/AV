@@ -1,57 +1,80 @@
-"""Discrete action space and the env reward function."""
+"""Agent interface (observations and actions) and the env reward function.
+
+This file is the one description of what the agent sees and does:
+
+- ``observation_spec(config)`` gives the shape and dtype of every
+  observation key,
+- ``ACTIONS`` is the discrete action table.
+
+The network, the wrapper, the vehicle control, and the logs read from here.
+"""
 
 import math
-from dataclasses import dataclass
 
 REWARD_FROM_TP = 0
 REWARD_FROM_MP = 0
 REWARD_FROM_COL = 0
 REWARD_FROM_INV = 0
 
+# The episode ends when the vehicle is this far from the planned route.
+OFFROUTE_THRESHOLD_M = 10.0
 
-@dataclass()
-class Actions:
-    """Discrete driving actions and their throttle/brake/steer values."""
+# One row per discrete action: (name, throttle, brake, steer). The row index
+# is the action id the policy outputs.
+ACTIONS = (
+    ('forward', 0.5, 0.0, 0.0),
+    ('forward_left', 0.5, 0.0, -0.5),
+    ('forward_right', 0.5, 0.0, 0.5),
+    ('brake', 0.0, 1.0, 0.0),
+    ('brake_left', 0.0, 1.0, -0.5),
+    ('brake_right', 0.0, 1.0, 0.5),
+    ('forward_slight_left', 0.5, 0.0, -0.2),
+    ('forward_slight_right', 0.5, 0.0, 0.2),
+    ('brake_slight_left', 0.0, 1.0, -0.2),
+    ('brake_slight_right', 0.0, 1.0, 0.2),
+)
+N_ACTIONS = len(ACTIONS)
 
-    forward = 0
-    forward_left = 1
-    forward_right = 2
-    brake = 3
-    brake_left = 4
-    brake_right = 5
-    forward_slight_left = 6
-    forward_slight_right = 7
-    brake_slight_left = 8
-    brake_slight_right = 9
+IMAGE_CHANNELS = 3  # both cameras deliver three colour channels
+NUM_MANEUVERS = 3  # 0 = left, 1 = straight, 2 = right
 
-    ACTION_CONTROL = {
-        # acc, br, steer
-        0: [0.5, 0, 0],  # forward
-        1: [0.5, 0, -0.5],  # forward left
-        2: [0.5, 0, 0.5],  # forward right
-        3: [0, 1, 0],  # brake
-        4: [0, 1, -0.5],  # brake left
-        5: [0, 1, 0.5],  # brake right
-        6: [0.5, 0, -0.2],  # forward slight left
-        7: [0.5, 0, 0.2],  # forward slight right
-        8: [0, 1, -0.2],  # brake slight left
-        9: [0, 1, 0.2],  # brake slight right
+
+def observation_spec(config):
+    """Shape and dtype of every observation key, without a batch dimension.
+
+    This is a pure function of the config: the main process builds the
+    network from it before any CARLA connection exists. The wrapper checks
+    every observation against it.
+    """
+    return {
+        'image': {'shape': (IMAGE_CHANNELS, config.res, config.res),
+                  'dtype': 'float32'},
+        'speed': {'shape': (1,), 'dtype': 'float32'},
+        'maneuver': {'shape': (), 'dtype': 'int64',
+                     'num_classes': NUM_MANEUVERS},
     }
 
-    ACTIONS_NAMES = {
-        0: "forward",
-        1: "forward_left",
-        2: "forward_right",
-        3: "brake",
-        4: "brake_left",
-        5: "brake_right",
-        6: "forward_slight_left",
-        7: "forward_slight_right",
-        8: "brake_slight_left",
-        9: "brake_slight_right",
-    }
 
-    ACTIONS_VALUES = {y: x for x, y in ACTIONS_NAMES.items()}
+def check_observation(obs, obs_spec):
+    """Raise ValueError when ``obs`` does not match ``obs_spec``."""
+    if set(obs) != set(obs_spec):
+        raise ValueError(
+            'observation keys {} do not match the spec keys {}'.format(
+                sorted(obs), sorted(obs_spec)))
+    for key, spec in obs_spec.items():
+        value = obs[key]
+        if tuple(value.shape) != tuple(spec['shape']) or \
+                str(value.dtype) != spec['dtype']:
+            raise ValueError(
+                "observation '{}' is {} {}, the spec says {} {}".format(
+                    key, value.dtype, tuple(value.shape),
+                    spec['dtype'], tuple(spec['shape'])))
+        num_classes = spec.get('num_classes')
+        if num_classes is not None and \
+                not (0 <= value.min() and value.max() < num_classes):
+            raise ValueError(
+                "observation '{}' has a value outside 0..{}".format(
+                    key, num_classes - 1))
 
 
 def reward_function(
@@ -65,7 +88,8 @@ def reward_function(
     prev_speed,
 ):
     """Scalar reward and done flag computed by CarlaEnv."""
-    if len(collision_history_list) != 0 or route_distance >= 10:
+    if len(collision_history_list) != 0 or \
+            route_distance >= OFFROUTE_THRESHOLD_M:
         done = True
         col_reward = REWARD_FROM_COL
     else:
