@@ -2,94 +2,90 @@
 
 Four layers. Each value has one place of definition.
 
-1. `.env`: this machine (CARLA image, ports, W&B key).
-2. `settings.py`: defaults of the experiment (map, scenario, camera, episode limit).
-3. `rl_configuration.py`: what the agent sees and does, and the legacy reward.
-4. `train_a3c.py`: the CLI for values that change between runs, and `DEFAULT_*` constants for the rest.
+| Layer | Holds | Example |
+|---|---|---|
+| `.env` | This machine: CARLA image, ports, W&B key | `CARLA_CONTAINER_IMAGE` |
+| `settings.py` | Defaults of the experiment | map, scenario, camera, episode limit |
+| `rl_configuration.py` | What the agent sees and does, and the legacy reward | `ACTIONS`, `observation_spec` |
+| `train_a3c.py` | CLI flags for values that change between runs, `DEFAULT_*` constants for the rest | `--lr`, `DEFAULT_REWARD_CLIP` |
 
-The CLI wins over `settings.py`. `.env` never overrides a variable that is already in the process environment.
+Precedence: a CLI flag wins over its default from `settings.py`, which in turn reads `.env`.
 
-Some values are constants on purpose and have no flag. A flag exists only for a value that really changes between runs. To change a constant, edit it in the file named below.
+Some values are constants on purpose and have no flag. A flag exists only for a value that really changes between runs. To change a constant, edit it in the file named below. `python train_a3c.py --help` lists every flag.
 
 ## What do I change, and where
 
-| I want to change | Where |
-|---|---|
-| CARLA image, entrypoint inside the image | `.env`: `CARLA_CONTAINER_IMAGE`, `CARLA_BINARY` |
-| First port, port step | `.env`: `CARLA_START_PORT`, `CARLA_PORT_STEP`; per run `--start-port` |
-| Map | `.env`: `CARLA_MAP`; per run `--map-name` |
-| W&B key, project, entity, run name | `.env`: `WANDB_API_KEY`, `WANDB_PROJECT`, `WANDB_ENTITY`, `WANDB_RUN_NAME`; per run `--wandb-*`, `--no-wandb` |
-| Workers, steps, seed, run directory | pipeline options and `train_a3c.py` CLI |
-| Scenario, camera, resolution | CLI `--scenario`, `--camera`, `--res`; defaults in `settings.py` |
-| Episode length limit, action repeat | CLI `--episode-max-decisions`, `--action-repeat`; defaults in `settings.py` |
-| Learning rate, gamma, rollout length, entropy schedule, gradient clip | CLI; defaults are the `DEFAULT_*` constants in `train_a3c.py` |
-| Optimizer internals (RMSprop alpha and eps, Adam betas and eps) | constants in `train_a3c.py` (no flag) |
-| Reward mode | CLI `--reward-mode legacy\|shaped` |
-| Shaped-reward coefficients | `DEFAULT_REWARD_*` constants in `train_a3c.py` (no flag) |
-| Legacy reward terms, off-route distance that ends an episode | `rl_configuration.py`: `REWARD_FROM_*`, `OFFROUTE_THRESHOLD_M`, `reward_function` |
-| Actions | `rl_configuration.py`: `ACTIONS` |
-| Observation keys and shapes | `rl_configuration.py`: `observation_spec` (see `docs/extending.md`) |
-| Network | `model.py` (`build_model`) |
-| Spawn points and goals | `town03.py` (one file per map) |
-| Simulation step, client timeout, ego vehicle, camera mount and FOV, camera timeout, goal radius | constants at the top of `carla_env.py` (no flag) |
-| Scale of the speed observation | `SPEED_SCALE` in `carla_wrapper.py` (no flag) |
-| Debug drawing, camera preview window | `settings.py`: `DRAW`, `SHOW_CAM` |
-| Worker restart limits and backoff, CARLA reconnect waits | CLI (`--max-restarts-per-worker`, `--carla-timeout-wait`, ...); defaults in `train_a3c.py` |
-| How long training waits for the servers at start | `SERVER_READY_TIMEOUT_S` in `train_a3c.py` (no flag) |
-| CARLA command-line flags, health-check timing, Apptainer adapter offset, Docker container name prefix | constants at the top of `carla_multiserver_launcher.py` (no flag) |
-| Time training gets to stop on a signal | `GRACEFUL_SHUTDOWN_WAIT` at the top of the pipeline script |
-| Slurm resources and time limit | `#SBATCH` header of `examples/apptainer/train.slurm`, or `sbatch` flags |
+| I want to change | Where | Details |
+|---|---|---|
+| CARLA image, entrypoint inside the image | `.env`: `CARLA_CONTAINER_IMAGE`, `CARLA_BINARY` | `docs/launch.md` |
+| First port, port step | `.env`: `CARLA_START_PORT`, `CARLA_PORT_STEP`; per run `--start-port` | `docs/launch.md` |
+| Workers, servers per GPU, run directory | pipeline options | `docs/launch.md` |
+| Slurm resources and time limit | `#SBATCH` header of `examples/apptainer/train.slurm`, or `sbatch` flags | `docs/launch.md` |
+| CARLA command-line flags, health-check timing, Apptainer adapter offset | constants at the top of `carla_multiserver_launcher.py` | `docs/launch.md` |
+| Map, scenario, camera, resolution | CLI `--map-name`, `--scenario`, `--camera`, `--res`; defaults in `settings.py` | `docs/environment.md` |
+| Episode length limit, action repeat | CLI `--episode-max-decisions`, `--action-repeat`; defaults in `settings.py` | `docs/environment.md` |
+| Reward mode | CLI `--reward-mode legacy\|shaped` | `docs/environment.md` |
+| Legacy reward terms, off-route distance | `rl_configuration.py`: `REWARD_FROM_*`, `OFFROUTE_THRESHOLD_M`, `reward_function` | `docs/environment.md` |
+| Shaped-reward coefficients | `DEFAULT_REWARD_*` constants in `train_a3c.py` | `docs/environment.md` |
+| Spawn points and goals | `town03.py`, one file per map | `docs/environment.md` |
+| Simulation step, timeouts, ego vehicle, camera mount, goal radius | constants at the top of `carla_env.py` | `docs/environment.md` |
+| Actions, observation keys and shapes | `rl_configuration.py`: `ACTIONS`, `observation_spec` | `docs/how_to_adjust.md` |
+| Network | `model.py`: `build_model` | `docs/how_to_adjust.md` |
+| Steps, learning rate, gamma, rollout length, entropy schedule, gradient clip | CLI; defaults are `DEFAULT_*` constants in `train_a3c.py` | `docs/algorithm.md` |
+| Optimizer internals | constants in `train_a3c.py` | `docs/algorithm.md` |
+| Checkpoint frequency, resume, fine-tune | CLI `--save-frequency`, `--resume`, `--init-from` | `docs/architecture.md` |
+| Worker restart limits, backoff, reconnect waits | CLI `--max-restarts-per-worker`, `--carla-timeout-wait`, ... | `docs/architecture.md` |
+| What is logged, W&B project and run name | CLI `--log-*`, `--wandb-*`, `--no-wandb`; `.env`: `WANDB_*` | `docs/logging.md` |
 
 ## `.env`
 
-Copy `env.example`. The file is gitignored.
+Copy `env.example` to `.env`. The file is gitignored.
 
-- `CARLA_CONTAINER_IMAGE`: Docker tag or `.sif` path. Required. `CHANGE_ME` is rejected.
-- `CARLA_BINARY`: entrypoint inside the image, default `/home/carla/CarlaUE4.sh`.
-- `CARLA_START_PORT`, `CARLA_PORT_STEP`, `CARLA_MAP`: optional.
-- `APPTAINER_BIND`: extra bind mounts. Apptainer reads it itself.
-- `WANDB_API_KEY`: required to turn W&B on. `WANDB_PROJECT`, `WANDB_ENTITY`, `WANDB_RUN_NAME` are optional. `--no-wandb` still turns it off.
+| Variable | Meaning |
+|---|---|
+| `CARLA_CONTAINER_IMAGE` | Docker tag or `.sif` path. Required. An empty value or `CHANGE_ME` is rejected |
+| `CARLA_BINARY` | Entrypoint inside the image, default `/home/carla/CarlaUE4.sh` |
+| `CARLA_START_PORT`, `CARLA_PORT_STEP` | First RPC port (2000) and distance between two servers (5) |
+| `CARLA_MAP` | Default of `--map-name` (`Town03`) |
+| `VENV` | Python environment that the pipeline script activates on the host |
+| `CLIENT_CONTAINER_IMAGE`, `CLIENT_PYTHON` | Apptainer only: run training inside this image with this interpreter |
+| `APPTAINER_BIND` | Apptainer only: extra bind mounts. Apptainer reads it itself |
+| `WANDB_API_KEY` | Turns W&B on. `--no-wandb` still turns it off |
+| `WANDB_PROJECT`, `WANDB_ENTITY`, `WANDB_RUN_NAME` | Optional W&B names. The project defaults to `a3c-carla` |
+
+Two programs read the file, so keep it to plain `KEY=value` lines:
+
+- The pipeline scripts `source` it. A value in `.env` then replaces one that is already exported in the shell.
+- `settings.py` loads it when you run a Python program directly. A variable that is already in the environment then wins over `.env`.
 
 ## `settings.py`
 
-- `CARLA_HOST`: always `localhost`. Both pipelines run the servers on the machine that trains.
-- `PORT`, `PORT_STEP`: from `CARLA_START_PORT` (2000) and `CARLA_PORT_STEP` (5).
-- `MAP_NAME` (Town03), `CAMERA_TYPE`, `RES`, `SCENARIO`: defaults of `--map-name`, `--camera`, `--res`, `--scenario`.
-- `ACTION_REPEAT` (2): world ticks per agent decision.
-- `EPISODE_MAX_DECISIONS` (200): default of `--episode-max-decisions`. This is the only episode length limit. `0` turns it off.
-- `SHOW_CAM`, `DRAW`: debug switches that `CarlaEnv` reads directly.
-
-## `rl_configuration.py`
-
-- `ACTIONS`: one table of `(name, throttle, brake, steer)`. The row index is the action id. The number of actions and the vehicle control come from it.
-- `observation_spec(config)`: shape and dtype of every observation key. The network is built from it and the wrapper checks every observation against it.
-- `reward_function` and the `REWARD_FROM_*` terms: the legacy reward path.
-
-`--reward-mode shaped` uses the `DEFAULT_REWARD_*` constants in `train_a3c.py` and not these terms.
-
-## Maps and scenarios
-
-Spawn and goal tables live in `<map_name.lower()>.py` next to `carla_env.py`. The default is `town03.py`. A missing file or a missing scenario id is an error. The env never falls back to Town03 indices on another map.
-
-A new map: copy `town03.py` to `town04.py`, replace the spawn and goal indices, and run with `--map-name Town04`.
-
-Commented tuples inside the scenario lists are unused variants. Keep them there.
+| Name | Default | Meaning |
+|---|---|---|
+| `CARLA_HOST` | `localhost` | Fixed: both pipelines run the servers on the machine that trains |
+| `PORT`, `PORT_STEP` | 2000, 5 | From `CARLA_START_PORT` and `CARLA_PORT_STEP` |
+| `MAP_NAME` | `Town03` | From `CARLA_MAP`. Default of `--map-name` |
+| `CAMERA_TYPE`, `RES` | `semantic`, 250 | Defaults of `--camera` and `--res` |
+| `SCENARIO` | `[14]` | Default of `--scenario` |
+| `ACTION_REPEAT` | 2 | Default of `--action-repeat` |
+| `EPISODE_MAX_DECISIONS` | 200 | Default of `--episode-max-decisions` |
+| `SHOW_CAM`, `DRAW` | `False` | Debug switches that `CarlaEnv` reads directly |
 
 ## `train_a3c.py`
 
-`a3c_core.py` and `carla_wrapper.py` do not read `settings.py` or argparse. `train_a3c.py` builds one config namespace from the CLI, the off-CLI constants (`_apply_config_defaults`), and the agent interface (`n_actions`, `obs_spec`). Every field is required: the core and the wrapper have no fallback values, so a missing field is an error and not a silent second default.
+Flags that shape a run. The other flags are listed in the document of their topic.
 
-### New run, resume, fine-tune
+| Flag | Default | Meaning |
+|---|---|---|
+| `--num-workers` | 1 | Worker processes. Worker `i` uses port `start port + i * port step` |
+| `--start-port`, `--port-step` | from `settings.py` | Port grid of the servers |
+| `--workers-per-gpu` | 1 | Worker models per GPU. `0` puts them on the CPU |
+| `--worker-gpu-start` | 0 | First GPU that gets worker models |
+| `--outdir` | `runs/a3c_<N>w_<date>` | Directory of a new run |
+| `--resume DIR`, `--init-from PATH` | not set | Continue a run, or start a new one from saved weights |
+| `--save-frequency` | 100 000 | Global steps between checkpoints |
+| `--save-worker-checkpoints` | off | Also keep a checkpoint copy per worker |
 
-| Flag | Directory | Weights | Optimizer, counters, schedules | W&B run |
-|---|---|---|---|---|
-| `--outdir DIR` (or none) | new: `DIR` or `runs/a3c_<N>w_<date>` | random | new | new |
-| `--resume DIR` | continues in `DIR` | from `DIR/checkpoint.pth` | continued | the same run |
-| `--init-from PATH` | new (as in the first row) | from `PATH` | new | new |
+The pipeline scripts set `--num-workers`, `--start-port`, `--outdir`, and `--resume` themselves (`docs/launch.md`).
 
-- A new run refuses a directory that already holds a run (`checkpoint.pth`, `checkpoints/`, `logs/`, or `resume_state.json`). Choose another directory, delete it, or use `--resume`.
-- `--resume DIR` without a checkpoint in `DIR` is an error.
-- `--init-from PATH` takes a `checkpoint.pth` file. Only `checkpoint['model']` is read. Use it to fine-tune: the learning-rate and entropy schedules start from step 0.
-- At the end of a session the last checkpoint is written only when the session made at least one optimizer update. A run that is stopped before it learned anything leaves the existing checkpoint untouched.
-
-Checkpoints: only the last `checkpoint.pth` (plus a step sidecar). There is no `best_checkpoint.pth`.
+`train_a3c.py` joins the CLI, the constants without a flag (`_apply_config_defaults`), the number of actions, and the observation spec into one config namespace. The core and the wrapper read only this namespace. To add a value, see `docs/how_to_adjust.md`.

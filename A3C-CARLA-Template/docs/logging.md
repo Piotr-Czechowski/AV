@@ -1,15 +1,13 @@
-# What gets logged, where, and how often
+# Logging
 
-Two independent destinations:
+What gets logged, where, and how often. Two independent destinations:
 
-- **Local JSONL** under `<run_dir>/logs/`. Complete record of the run: every
-  value exactly as training produced it. This is the source of truth.
-- **Weights & Biases**, when enabled (opt-in: `WANDB_API_KEY` set, `wandb` extra installed, no `--no-wandb`). A curated subset, forwarded one record to
-  one point — never averaged, batched, or downsampled. Best effort: if the
-  internal queue fills up, W&B loses points while local files stay complete.
+- **Local JSONL** under `<run directory>/logs/`. The complete record of the run: every value exactly as training produced it. This is the source of truth.
+- **Weights & Biases**, when enabled. A selected subset, one record forwarded as one point. Nothing is averaged, batched, or downsampled.
 
-`NaN` and infinities become `null` in JSON (strict JSON cannot hold them) and
-are simply not sent to W&B.
+Each training process writes its own files, so local logging needs no locking. Records for W&B and all events travel through one queue to a single telemetry process. That path is best effort: when the queue (10 000 records) is full, W&B loses points and the local files stay complete.
+
+`NaN` and infinities become `null` in JSON and are not sent to W&B.
 
 ## Files
 
@@ -17,156 +15,141 @@ are simply not sent to W&B.
 |---|---|---|
 | `logs/worker_<id>/episodes.jsonl` | each worker | finished episode |
 | `logs/worker_<id>/updates.jsonl` | each worker | optimizer update |
-| `logs/worker_<id>/timing.jsonl` | each worker | diagnostic window (`--diag-log-interval` updates or `--diag-log-wall-s` seconds) |
-| `logs/worker_<id>/steps.jsonl` | each worker | environment step — **only with `--log-steps`** |
+| `logs/worker_<id>/timing.jsonl` | each worker | timing window |
+| `logs/worker_<id>/steps.jsonl` | each worker | environment step, only with `--log-steps` |
 | `logs/worker_<id>/resources.jsonl` | each worker | resource sample, only with `--log-resources` |
-| `logs/worker_-1/resources.jsonl` | main process | resource sample incl. GPU usage, only with `--log-resources` |
-| `logs/events.jsonl` | telemetry process only | lifecycle or health event |
-| `logs/metadata.json` | main process | written once at startup |
+| `logs/worker_-1/resources.jsonl` | main process | resource sample with GPU usage, only with `--log-resources` |
+| `logs/events.jsonl` | telemetry process | lifecycle or health event |
+| `logs/metadata.json` | main process | rewritten at the start of every session: arguments, model name, parameter count |
 
-Every record carries `kind` (record type), `ts` (timestamp), `worker` (source
-worker, `-1` for run-level) and, where meaningful, `global_t`.
+Every record carries `kind` (record type), `ts` (timestamp), `worker` (source worker, `-1` for the main process), and `global_t` where it applies. A resumed run appends to the same files. The `training_start` and `training_end` events mark the sessions.
+
+The console output of training is `a3c_training.log` in the run directory. Its lines are tagged, for example `[BEST]`, `[TIMING]`, `[SAVE]`, `[RESTART]`, `[ROLLBACK]`, `[NaN]`, and a final `[BENCHMARK]` line with steps per second.
 
 ## Step, update, episode
 
 Training writes on three cadences, from densest to sparsest:
 
-- **step** — every `env.step()`. Written only with `--log-steps`, only to
-  `steps.jsonl`, never to W&B: `action`, `value`, `entropy`, `reward`, `done`,
-  `step_in_ep`, plus `speed_kmh`, `route_dist`, `goal_dist`, `maneuver` and
-  `reward_components` when the environment reports them. The only view inside
-  an episode, and gigabytes per hour with 16 workers — hence off by default.
-- **update** — every `--rollout-length` steps (default 20) *or* at episode end,
-  whichever comes first. Losses, gradients, and statistics of that one rollout.
-  This is the dense W&B path: roughly 16 points per second with 16 workers.
-- **episode** — at episode end. Outcome of the whole episode, plus the
-  run-wide bests and rolling means as they stood at that moment.
+- **step**: every `env.step()`. Only with `--log-steps`, only to `steps.jsonl`, never to W&B. Fields: `action`, `value`, `entropy`, `reward`, `done`, `step_in_ep`, `speed_kmh`, `route_dist`, `goal_dist`, `maneuver`, `reward_components`. It is the only view inside an episode and grows by gigabytes per hour with many workers, so it is off by default.
+- **update**: every `--rollout-length` steps or at episode end, whichever comes first. Losses, gradients, and statistics of that one rollout.
+- **episode**: at episode end. The outcome of the whole episode, plus the run-wide best and rolling means at that moment.
 
-`timing` and `system` records follow their own clocks and are independent of
-all three.
+`timing` and `system` records follow their own clocks.
 
 ## Episode values
 
-Written on every episode end, aggregating the whole episode. All of them reach
-W&B.
+All of them reach W&B.
 
 | Field | W&B metric | Meaning |
 |---|---|---|
 | `global_episode` | `episode/id` | Episode counter shared by all workers |
-| `global_t` | `global_step` | Total environment steps across the run; the x-axis of every chart |
-| `total_reward` | `episode/reward`, `worker_<id>/reward` | Sum of rewards collected in this episode |
-| `mean_reward` | `episode/reward_per_step` | `total_reward / steps` — reward density, comparable across episode lengths |
-| `steps` | `episode/length`, `worker_<id>/episode_length` | Decisions taken before the episode ended |
-| `duration_s` | `episode/duration_s` | Wall-clock seconds. Rising values usually mean CARLA is degrading |
+| `global_t` | `global_step` | Global step at episode end. The x-axis of every chart |
+| `total_reward` | `episode/reward`, `worker_<id>/reward` | Sum of rewards in this episode, before `--reward-scale` |
+| `mean_reward` | `episode/reward_per_step` | `total_reward / steps`, comparable across episode lengths |
+| `steps` | `episode/length`, `worker_<id>/episode_length` | Decisions taken in the episode |
+| `duration_s` | `episode/duration_s` | Wall-clock seconds. A rising value usually means CARLA is degrading |
 | `reached_goal` | `episode/success` | 1 when the goal was reached, else 0 |
-| `max_speed_kmh` | `episode/max_speed_kmh` | Fastest speed reached |
-| `min_route_dist` | `episode/min_route_distance` | Closest approach to the reference route |
+| `max_speed_kmh` | `episode/max_speed_kmh` | Highest speed reached |
+| `min_route_dist` | `episode/min_route_distance` | Closest approach to the planned route |
 | `goal_dist` | `episode/goal_distance` | Distance to the goal at episode end. The main progress signal on failed episodes |
 | `collisions` | `episode/collisions` | Collision events recorded by CARLA |
-| `local_mean_reward` | `worker_<id>/reward_mean_100` | This worker's mean reward over its last 100 episodes |
-| `global_mean_reward` | `global/reward_mean` | Run-wide rolling mean reward |
+| `local_mean_reward` | `worker_<id>/reward_mean_100` | Mean reward of this worker's last 100 episodes |
+| `global_mean_reward` | `global/reward_mean` | Mean reward of the run's last `100 * workers` episodes |
 | `best_reward` | `global/best_reward` | Best single-episode reward so far |
-| `action_counts` | `episode/action_<n>_fraction` | How often each discrete action was chosen. Sent as a fraction; a value near 1.0 means the policy collapsed onto one action |
-| `reward_components` | `episode/reward_<name>` | Per-episode total of each reward term (see below) |
-| `is_new_best`, `port` | — | Local only |
+| `action_counts` | `episode/action_<n>_fraction` | How often each action was chosen, sent as a fraction. A value near 1.0 means the policy collapsed onto one action |
+| `reward_components` | `episode/reward_<name>` | Episode total of each reward term (see below) |
+| `is_new_best`, `port` | not sent | Local only |
 
 ## Update values
 
-Written on every optimizer update, covering that one rollout rather than the
-episode around it. All of them reach W&B twice: once as `train/<metric>` (all
-workers interleaved) and once as `worker_<id>/train/<metric>` (that worker
-alone).
+One record per optimizer update, covering that one rollout. Each value reaches W&B twice: as `train/<metric>` (all workers interleaved) and as `worker_<id>/train/<metric>` (that worker alone).
 
 | Field | W&B metric | Meaning |
 |---|---|---|
-| `pi_loss` | `train/pi_loss` | Policy loss. Noisy by nature; watch the trend, not single points |
-| `v_loss` | `train/v_loss` | Value-function loss — how badly the critic predicts returns |
-| `total_loss` | `train/total_loss` | Combined optimized objective |
-| `gradient_norm` | `train/gradient_norm` | Gradient norm **after** clipping |
-| `gradient_norm_pre_clip` | `train/gradient_norm_pre_clip` | Gradient norm **before** clipping. Compare with `--max-grad-norm` |
-| `grad_clipped` | `train/grad_clipped` | 1 when clipping actually bound this update. Average it in W&B to get the clipping rate |
-| `ent_mean` | `train/entropy` | Policy entropy. Falling towards 0 means exploration is dying |
-| `entropy_coef` | `train/entropy_coef` | Current entropy bonus weight (annealed, see `--beta-*`) |
-| `lr` | `train/lr` | Current learning rate |
-| `advantages_mean`, `advantages_std` | `train/advantages_mean`, `train/advantages_std` | Advantage statistics of this rollout. With `--no-normalize-advantages` off, mean sits near 0 |
-| `val_mean`, `val_std` | `train/value_mean`, `train/value_std` | Critic output statistics — the value scale the agent believes in |
-| `rew_mean`, `rew_sum` | `train/reward_mean`, `train/reward_sum` | Scaled rewards inside this rollout |
-| `trajectory_length` | `train/trajectory_length` | Transitions in this update; below `--rollout-length` means the episode ended early |
-| `reward_<name>_sum`, `reward_<name>_mean` | `train/reward_<name>_sum`, `train/reward_<name>_mean` | Per-rollout totals and means of each reward term |
-| `update`, `is_terminal` | — | Local only |
-| `advantages`, `values`, `rewards`, `entropies` | — | Raw arrays, local only, and only with `--log-update-arrays` |
+| `pi_loss` | `train/pi_loss` | Policy loss. Noisy by nature: watch the trend |
+| `v_loss` | `train/v_loss` | Value loss, already multiplied by `--value-loss-coef` |
+| `total_loss` | `train/total_loss` | The optimized objective |
+| `gradient_norm_pre_clip` | `train/gradient_norm_pre_clip` | Gradient norm before clipping. Compare with `--max-grad-norm` |
+| `gradient_norm` | `train/gradient_norm` | Gradient norm after clipping |
+| `grad_clipped` | `train/grad_clipped` | 1 when clipping changed this update. Its average in W&B is the clipping rate |
+| `ent_mean` | `train/entropy` | Policy entropy. A fall towards 0 means exploration is dying |
+| `entropy_coef` | `train/entropy_coef` | Entropy coefficient at this step |
+| `lr` | `train/lr` | Learning rate at this step |
+| `advantages_mean`, `advantages_std` | `train/advantages_mean`, `train/advantages_std` | Statistics of the advantages before normalization |
+| `val_mean`, `val_std` | `train/value_mean`, `train/value_std` | Statistics of the critic output: the value scale the agent believes in |
+| `rew_mean`, `rew_sum` | `train/reward_mean`, `train/reward_sum` | Rewards of this rollout, after `--reward-scale` |
+| `trajectory_length` | `train/trajectory_length` | Steps in this update. Below `--rollout-length` when the episode ended early |
+| `reward_<name>_sum`, `reward_<name>_mean` | `train/reward_<name>_sum`, `train/reward_<name>_mean` | Rollout total and mean of each reward term |
+| `update`, `is_terminal` | not sent | Global update number, and whether the rollout ended the episode. Local only |
+| `advantages`, `values`, `rewards`, `entropies` | not sent | Raw arrays, local only, and only with `--log-update-arrays` |
 
 ## Reward components
 
-Present only with `--reward-mode shaped`. Each term is logged separately so you
-can see which one dominates.
+Every term of the reward is logged under its own name, so you can see which one dominates.
 
-| Component | Meaning |
-|---|---|
-| `progress` | Progress made along the route |
-| `target_speed` | Closeness to the target speed |
-| `route_penalty` | Penalty for drifting off the reference route |
-| `time_penalty` | Constant per-step cost, pushes for shorter episodes |
-| `goal_bonus` | One-off bonus for reaching the goal |
-| `collision_penalty` | One-off penalty per new collision |
-| `offroute_penalty` | Penalty for exceeding the off-route threshold |
-| `lane_invasion_penalty` | Penalty per lane invasion |
-| `total` | Sum after clipping. Duplicates `episode/reward`, so it is not sent separately |
+- `--reward-mode legacy` has one component, `legacy`.
+- `--reward-mode shaped` has `progress`, `target_speed`, `route_penalty`, `time_penalty`, `goal_bonus`, `collision_penalty`, `offroute_penalty`, `lane_invasion_penalty`, and `total`. `total` is the sum after clipping. It equals `episode/reward`, so the episode view does not send it again.
+
+The formulas are in `docs/environment.md`. A term added to the shaped reward appears in the logs without further changes.
 
 ## Resource values
 
-Written only when the run is launched with `--log-resources`, sampled
-every `--log-resources-interval` seconds (default 10).
+Only with `--log-resources`, sampled every `--log-resources-interval` seconds. Needs `psutil`, and `pynvml` for the GPU values (`pip install -e ".[resources]"`).
 
 | Field | W&B metric | Meaning |
 |---|---|---|
 | `proc_cpu_percent` | `system/proc_cpu_percent`, per worker `worker_<id>/system/proc_cpu_percent` | CPU usage of the logging process |
-| `proc_rss_gb` | `system/proc_rss_gb`, per worker `worker_<id>/system/proc_rss_gb` | RAM (RSS) of the logging process. Steady growth means a leak |
-| `gpus[n].util_percent` | `system/gpu<n>_util_percent` | GPU utilization, sampled once by the main process |
-| `gpus[n].mem_used_gb` | `system/gpu<n>_mem_used_gb` | GPU memory in use |
-
-Every record lands in `logs/worker_<id>/resources.jsonl`; GPU samples come
-only from the main process (`worker_-1`). GPU sampling needs `pynvml`
-(`pip install -e ".[resources]"`).
+| `proc_rss_gb` | `system/proc_rss_gb`, per worker `worker_<id>/system/proc_rss_gb` | RAM of the logging process. Steady growth means a leak |
+| `gpus[n].util_percent` | `system/gpu<n>_util_percent` | GPU utilization, sampled by the main process |
+| `gpus[n].mem_used_gb` | `system/gpu<n>_mem_used_gb` | GPU memory in use, sampled by the main process |
 
 ## Timing values
 
-Written to `logs/worker_<id>/timing.jsonl` only — **not** sent to W&B. Each
-record holds `avg_ms`, `count`, and `total_s` for the phases of the training
-loop (`forward`, `backward`, `optim_update`, `sync`, `env_step`,
-`checkpoint_save`). This is where you look when steps-per-second drops.
+`timing.jsonl` only, not sent to W&B. Each record holds `avg_ms`, `count`, and `total_s` for the phases of the worker loop since the previous record: `sync`, `env_reset`, `forward`, `env_step`, `loss_compute`, `backward`, `optim_update`, `checkpoint_save`. The same numbers are printed as a `[TIMING]` line. Look here when steps per second drop.
+
+A record is written when the global update counter reaches a multiple of `--diag-log-interval`, or at an episode end once `--diag-log-wall-s` seconds have passed since the worker's last record.
 
 ## Events
 
-Discrete occurrences rather than periodic measurements. Written to the single
-shared `logs/events.jsonl` by the telemetry process — workers never write it
-themselves. Full payload (error message, checkpoint path, layer names) stays
-local; W&B receives only a running counter, and only for the six health types.
+Single occurrences, not periodic measurements. Workers send them through the queue, and the telemetry process is the only writer of `logs/events.jsonl`. The full payload (error message, checkpoint path, layer names) stays local. W&B receives only a running counter for the six health events. The counter starts from 0 in every session.
 
 | Event | Emitted when | W&B counter |
 |---|---|---|
-| `training_start` | Session begins — worker count, GPU map, resume flag | — |
-| `training_end` | Session ends — steps, elapsed time, restart counts, error | — |
-| `worker_start` | A worker process is started or restarted | — |
-| `worker_restart` | A worker died and is being restarted | `health/worker_restarts_total` |
-| `worker_give_up` | `--max-restarts-per-worker` exceeded; worker abandoned | `health/workers_given_up_total` |
+| `training_start` | A session begins: worker count, device map, resume flag | |
+| `training_end` | A session ends: steps, elapsed time, restart counts, error | |
+| `worker_start` | A worker process is started at the beginning of a session | |
+| `worker_restart` | The supervisor found a dead worker | `health/worker_restarts_total` |
+| `worker_give_up` | A worker reached `--max-restarts-per-worker` | `health/workers_given_up_total` |
 | `worker_crash` | Unhandled exception inside a worker | `health/worker_crashes_total` |
-| `rollback` | Rapid crash burst; global network restored from checkpoint | `health/rollbacks_total` |
-| `nan_gradient` | NaN gradients detected; update skipped | `health/nan_updates_total` |
-| `camera_timeout` | Camera queue timed out; episode dropped | `health/camera_timeouts_total` |
-| `crash_recovery` | CARLA server timeout; worker reconnected | — |
-| `checkpoint_save` | Periodic or shutdown last-checkpoint written (`checkpoint.pth` only) | — |
-| `wandb_unavailable` | W&B requested but the package is not installed | — |
-| `wandb_init_failed`, `wandb_metric_setup_failed` | W&B startup failed; run continues locally | — |
-| `final_summary` | Written last: final counters, best reward, elapsed time, `queue_drops`, `wandb_errors` | mirrored into W&B summary |
+| `rollback` | Rapid crashes: the global network was restored from a checkpoint (`success` tells whether it worked) | `health/rollbacks_total` |
+| `nan_gradient` | NaN in the gradients: the update was skipped | `health/nan_updates_total` |
+| `camera_timeout` | No camera frame in time: the episode was dropped | `health/camera_timeouts_total` |
+| `crash_recovery` | CARLA call timed out: the worker reconnects | |
+| `checkpoint_save` | A periodic checkpoint was written | |
+| `wandb_unavailable` | W&B was not turned off, and the package is missing or `WANDB_API_KEY` is empty | |
+| `wandb_init_failed`, `wandb_metric_setup_failed` | W&B startup failed. The run continues with local logs | |
+| `final_summary` | Last record of a session: final counters, best reward, elapsed time, health counts, `queue_drops`, `wandb_errors` | copied to the W&B summary |
 
-## Health of the logging itself
+`final_summary` tells whether the W&B view was complete. `queue_drops` counts records dropped because the queue was full. `wandb_errors` counts failed W&B calls, which are swallowed so they cannot interrupt training. Both are written with `--no-wandb` too.
 
-`final_summary` reports two counters that tell you whether the remote view was
-complete:
+## Weights & Biases
 
-- `queue_drops` — records dropped because the telemetry queue was full. Non-zero
-  means W&B has gaps; local files do not.
-- `wandb_errors` — failed W&B calls, swallowed so they cannot interrupt training.
+W&B is on when three things hold: the `wandb` package is installed, `WANDB_API_KEY` is set, and `--no-wandb` is not passed.
 
-Both are written to `events.jsonl` even with `--no-wandb`.
+- Project, entity, and run name come from `--wandb-project`, `--wandb-entity`, `--wandb-run-name`, or from `WANDB_PROJECT`, `WANDB_ENTITY`, `WANDB_RUN_NAME`. The default run name is `a3c-<N>w-<W&B run id>`.
+- Every metric is plotted against `global_step`.
+- The run id is stored in `wandb_run_id.txt`. `--resume` continues the same W&B run. `--init-from` starts a new one.
+- Only the telemetry process imports `wandb`, so a W&B problem cannot stop a worker.
+
+## Parameters
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--log-steps` | off | Write `steps.jsonl` |
+| `--log-update-arrays` | off | Keep the raw per-step arrays in update records |
+| `--log-resources` | off | Sample CPU, RAM, and GPU usage |
+| `--log-resources-interval` | 10 s | Time between resource samples |
+| `--diag-log-interval` | 100 | Updates between timing records. `0` turns this trigger off |
+| `--diag-log-wall-s` | 60 s | Longest time between timing records. `0` turns this trigger off |
+| `--wandb-project`, `--wandb-entity`, `--wandb-run-name` | from `.env` | W&B names |
+| `--no-wandb` | off | Turns W&B off |
