@@ -83,9 +83,9 @@ SERVERS_PER_GPU=""
 NO_CARLA=""
 PYTHON_EXTRA_ARGS=()
 
-VENV="/net/tscratch/people/plgbartoszkawa/venv"
-PROJECT_DIR="/net/tscratch/people/plgbartoszkawa/AV/A_to_B_GPU_34"
-MULTISERVER_SCRIPT="/net/tscratch/people/plgbartoszkawa/carla_athena_multiserver_v3.py"
+VENV="/net/tscratch/people/<plgyourname>/venv"
+PROJECT_DIR="/net/tscratch/people/<plgyourname>/AV/A_to_B_GPU_34"
+MULTISERVER_SCRIPT="/net/tscratch/people/<plgyourname>/carla_athena_multiserver_v3.py"
 
 # ----- parse named args ------------------------------------------------------
 while [[ $# -gt 0 ]]; do
