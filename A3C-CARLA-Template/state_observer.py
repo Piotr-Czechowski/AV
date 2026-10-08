@@ -2,7 +2,6 @@
 
 import os
 
-
 class StateObserver:
     """Hold the latest camera image. JPEG dumps go through ``carla.Image.save_to_disk``."""
 
