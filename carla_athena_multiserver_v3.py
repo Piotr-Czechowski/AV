@@ -47,12 +47,17 @@ PORT_STEP = ARGS.port_step
 ENABLE_DASHBOARD = ARGS.enable_dashboard
 
 
-# TO BE CHANGED FOR EACH SYSTEM
-CONTAINER_IMAGE: str = (
-    "/net/tscratch/people/plgkatsiaryna/carla-scratch/carla_0.9.15.sif"
-)
+# Paths come from A3C/new_hogwild_train_paths.sh, which the SLURM script
+# sources.  Running this script by hand: source that file first.
+CONTAINER_IMAGE: str = os.environ.get("CARLA_CONTAINER_IMAGE", "")
+if not CONTAINER_IMAGE:
+    sys.exit(
+        "ERROR: CARLA_CONTAINER_IMAGE is not set. Set it in "
+        "A3C/new_hogwild_train_paths.sh and source that file before running "
+        "this script directly."
+    )
 CARLA_BINARY: List[str] = [
-    "/home/carla/CarlaUE4.sh",
+    os.environ.get("CARLA_BINARY", "") or "/home/carla/CarlaUE4.sh",
     "-RenderOffScreen",
     "-nosound",
     "--carla-server",

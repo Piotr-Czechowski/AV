@@ -280,6 +280,9 @@ class CarlaA3CWrapper:
         self._save_dir_cached = None
 
         if hasattr(self.env, 'state_observer'):
+            if self._run_output_dir:
+                self.env.state_observer.output_dir = os.path.join(
+                    self._run_output_dir, 'images')
             self.env.state_observer.reset()
 
         full_reload = self._world_reload_interval > 0 and \
@@ -306,7 +309,10 @@ class CarlaA3CWrapper:
         return state_np, speed_f, self._current_maneuver
 
     def _frames_dir(self):
-        """Return the canonical on-disk path for this episode's saved frames, rooted at <script_dir>/episodes/<run_id>/<episode>-<port>/."""
+        """Return the canonical on-disk path for this episode's saved frames, rooted at <run_output_dir>/episodes/<episode>-<port>/ so frames stay with the rest of the run."""
+        if self._run_output_dir:
+            return os.path.join(self._run_output_dir, 'episodes',
+                                '{}-{}'.format(self.global_episode, self.port))
         base = os.path.dirname(os.path.abspath(__file__))
         return os.path.join(base, 'episodes',
                             self._run_id or 'unnamed_run',
