@@ -29,6 +29,7 @@ py-modules = [
     "carla_multiserver_launcher",
     "evaluation",
     "model",
+    "reward_stats",
     "rl_configuration",
     "run_a3c",
     "settings",

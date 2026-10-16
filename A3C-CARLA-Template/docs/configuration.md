@@ -36,6 +36,7 @@ Some values are constants on purpose and have no flag. A flag exists only for a 
 | Checkpoint frequency, resume, fine-tune | CLI `--save-frequency`, `--resume`, `--init-from` | `docs/architecture.md` |
 | Worker restart limits, backoff, reconnect waits | CLI `--max-restarts-per-worker`, `--carla-timeout-wait`, ... | `docs/architecture.md` |
 | What is logged, W&B project and run name | CLI `--log-*`, `--wandb-*`, `--no-wandb`; `.env`: `WANDB_*` | `docs/logging.md` |
+| Reward values whose first crossing is logged (global step and training time) | CLI `--reward-thresholds 0 50 100`; default `DEFAULT_REWARD_THRESHOLDS` in `train_a3c.py` (none) | `docs/logging.md` |
 
 ## `.env`
 

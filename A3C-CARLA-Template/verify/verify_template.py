@@ -1,4 +1,5 @@
-"""Smoke checks that do not need a CARLA server."""
+"""Template checks that need no CARLA server: launcher, actions, scenarios,
+checkpoint lookup, example scripts, model shapes."""
 
 import os
 import sys

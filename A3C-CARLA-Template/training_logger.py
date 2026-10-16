@@ -14,7 +14,8 @@ Two independent paths, on purpose:
 Records travel as plain dicts carrying a ``kind`` field, which is all the
 consumer needs in order to route them.  Values are forwarded to W&B one
 for one: the telemetry path never averages, downsamples, or otherwise
-alters what training produced.
+alters what training produced.  Reward statistics are computed in training
+by ``reward_stats`` and only carried here as episode fields.
 
 Telemetry is best effort.  A full queue costs W&B points, never local
 records and never training throughput.
@@ -32,6 +33,8 @@ import queue as queue_module
 import signal
 import threading
 from datetime import datetime
+
+from reward_stats import threshold_summary
 
 try:
     import psutil
@@ -158,7 +161,12 @@ def _put_metric(payload, name, value):
 
 
 def project_episode_to_wandb(record):
-    """Project one local episode record onto a small metric whitelist."""
+    """Project one local episode record onto a small metric whitelist.
+
+    An ``interrupted`` episode projects to nothing: it stays local only.
+    """
+    if record.get('interrupted'):
+        return {}
     payload = {}
     _put_metric(payload, 'global_step', record.get('global_t'))
     mapping = {
@@ -173,7 +181,14 @@ def project_episode_to_wandb(record):
         'goal_dist': 'episode/goal_distance',
         'collisions': 'episode/collisions',
         'global_mean_reward': 'global/reward_mean',
+        'global_mean_reward_100': 'global/reward_mean_100',
+        'global_reward_min_100': 'global/reward_min_100',
+        'global_reward_max_100': 'global/reward_max_100',
+        'global_reward_min': 'global/reward_min',
+        'global_reward_max': 'global/reward_max',
         'best_reward': 'global/best_reward',
+        'worst_reward': 'global/worst_reward',
+        'elapsed_training_s': 'global/elapsed_training_s',
     }
     for source, target in mapping.items():
         _put_metric(payload, target, record.get(source))
@@ -184,7 +199,12 @@ def project_episode_to_wandb(record):
         for source, suffix in (
                 ('total_reward', 'reward'),
                 ('steps', 'episode_length'),
-                ('local_mean_reward', 'reward_mean_100')):
+                ('local_mean_reward', 'reward_mean_100'),
+                ('local_reward_min_100', 'reward_min_100'),
+                ('local_reward_max_100', 'reward_max_100'),
+                ('local_best_reward', 'best_reward'),
+                ('local_worst_reward', 'worst_reward'),
+                ('goal_dist', 'goal_distance')):
             _put_metric(payload, prefix + suffix, record.get(source))
 
     action_counts = record.get('action_counts')
@@ -329,8 +349,9 @@ def run_telemetry_loop(telemetry_queue, run_output_dir, wandb_run=None,
     This is the only writer of ``events.jsonl`` and the only place that
     calls ``wandb_run.log``.  Every record is forwarded as its own W&B
     point with the values training produced; nothing is batched or
-    averaged.  W&B failures are counted and swallowed so that losing the
-    network never costs a local event.
+    averaged.  A ``reward_threshold_reached`` event also updates the W&B
+    run summary at once.  W&B failures are counted and swallowed so that
+    losing the network never costs a local event.
 
     ``wandb_run`` may be ``None``, in which case the loop still owns
     ``events.jsonl``.  ``startup_events`` are records created before the
@@ -341,18 +362,30 @@ def run_telemetry_loop(telemetry_queue, run_output_dir, wandb_run=None,
     events_path = os.path.join(logs_dir, 'events.jsonl')
     health_counts = {}
 
+    def count_wandb_error(action, error):
+        counter = _shared_counter(shared_counters, 'wandb_errors')
+        _increment_counter(counter)
+        count = _counter_value(counter) or 1
+        if count == 1 or count % 100 == 0:
+            print('[TELEMETRY] {} failed (count={}): {}'.format(
+                action, count, error), flush=True)
+
     def log_wandb(payload):
         if wandb_run is None or not payload:
             return
         try:
             wandb_run.log(payload)
         except Exception as error:
-            counter = _shared_counter(shared_counters, 'wandb_errors')
-            _increment_counter(counter)
-            count = _counter_value(counter) or 1
-            if count == 1 or count % 100 == 0:
-                print('[TELEMETRY] wandb.log failed (count={}): {}'.format(
-                    count, error), flush=True)
+            count_wandb_error('wandb.log', error)
+
+    def update_wandb_summary(hit):
+        if wandb_run is None:
+            return
+        try:
+            wandb_run.summary.update(normalize_for_json(
+                threshold_summary(hit['signal'], hit['threshold'], hit)))
+        except Exception as error:
+            count_wandb_error('wandb.summary.update', error)
 
     with open(events_path, 'a', buffering=1) as events_handle:
         def write_event(record):
@@ -396,6 +429,8 @@ def run_telemetry_loop(telemetry_queue, run_output_dir, wandb_run=None,
                     _put_metric(payload, 'global_step',
                                 record.get('global_t'))
                     log_wandb(payload)
+                if record.get('event') == 'reward_threshold_reached':
+                    update_wandb_summary(record)
             elif kind in _PROJECTIONS:
                 log_wandb(_PROJECTIONS[kind](record))
 

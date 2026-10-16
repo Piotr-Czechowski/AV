@@ -27,6 +27,7 @@ from training_logger import (
     ResourceLogger, TrainingLogger, make_telemetry_stop,
     telemetry_process_main)
 from a3c_core import GlobalNetwork
+from reward_stats import clean_thresholds
 from carla_multiserver_launcher import carla_rpc_up
 from run_a3c import run_with_restart, find_latest_checkpoint
 import settings
@@ -131,6 +132,9 @@ DEFAULT_DIAG_LOG_WALL_S = 60.0
 DEFAULT_LOG_RESOURCES = False
 DEFAULT_LOG_RESOURCES_INTERVAL = 10.0
 DEFAULT_VERBOSE_ENV_LOGS = False
+# Default of --reward-thresholds: reward values whose first crossing is
+# logged (see docs/logging.md). Empty means none.
+DEFAULT_REWARD_THRESHOLDS = ()
 # W&B names come from the environment (`.env`) unless the CLI overrides them.
 DEFAULT_WANDB_PROJECT = os.environ.get('WANDB_PROJECT') or 'a3c-carla'
 DEFAULT_WANDB_RUN_NAME = os.environ.get('WANDB_RUN_NAME') or None
@@ -288,6 +292,18 @@ def build_parser():
                    default=DEFAULT_LOG_RESOURCES_INTERVAL)
     p.add_argument('--verbose-env-logs', action='store_true',
                    default=DEFAULT_VERBOSE_ENV_LOGS)
+    p.add_argument('--reward-thresholds', type=float, nargs='+',
+                   default=list(DEFAULT_REWARD_THRESHOLDS),
+                   help='Reward values to watch; default: none. For each '
+                        'value X, log the global step and active training '
+                        'time at which each of these first reaches >= X: '
+                        'the total reward of one episode, the run-wide '
+                        'mean of the last 100 episodes, and the run-wide '
+                        'mean of the last 100*num_workers episodes. The '
+                        'means count only once their window is full. Each '
+                        'fires once per run, also across --resume. Results '
+                        'go to logs/events.jsonl and the W&B run summary '
+                        '(see docs/logging.md).')
     p.add_argument('--wandb-project', type=str,
                    default=DEFAULT_WANDB_PROJECT)
     p.add_argument('--wandb-run-name', type=str,
@@ -529,6 +545,10 @@ def main():
     if args.init_from and not os.path.isfile(args.init_from):
         raise SystemExit(
             'ERROR: --init-from {}: no such file'.format(args.init_from))
+    try:
+        args.reward_thresholds = clean_thresholds(args.reward_thresholds)
+    except ValueError as error:
+        raise SystemExit('ERROR: --reward-thresholds: {}'.format(error))
     run_output_dir = prepare_output_dir(args)
     print('[RUN] outdir: {}'.format(run_output_dir), flush=True)
 
@@ -554,15 +574,21 @@ def main():
             args.resume)
         print('[RESUME] loading {} (step {})'.format(
             checkpoint_path, checkpoint_step_number), flush=True)
-        global_network.load(checkpoint_path)
+        checkpoint_elapsed = global_network.load(checkpoint_path)
 
         resume_state = _read_resume_state(run_output_dir)
-        if resume_state:
+        # The checkpoint holds the training time of the moment it was
+        # written; resume_state.json lacks it after a hard kill, so it is
+        # only the fallback for checkpoints that predate it.
+        if checkpoint_elapsed is not None:
+            elapsed_offset = checkpoint_elapsed
+        elif resume_state:
             elapsed_offset = resume_state.get('elapsed_training_s', 0.0)
+        if resume_state:
             saved_args = resume_state.get('training_args', {})
             for key in ('steps', 'lr', 'beta_start', 'beta_end',
                         'beta_anneal_frac', 'rollout_length', 'gamma',
-                        'weight_decay', 'optimizer'):
+                        'weight_decay', 'optimizer', 'reward_thresholds'):
                 saved = saved_args.get(key)
                 current = getattr(config, key, None)
                 if saved is not None and current is not None and \
@@ -676,6 +702,7 @@ def main():
             # Training time counts from the moment the servers are ready.
             session_start_ts = _timestamp()
             start_time = time.time()
+            global_network.reward_stats.set_clock(start_time, elapsed_offset)
             restart_counts = run_with_restart(
                 global_network, config, run_output_dir, shutdown_event,
                 log_queue=log_queue, run_id=run_id,
@@ -724,9 +751,7 @@ def main():
         _stop_telemetry_process(log_queue, telemetry_process, {
             'final_global_step': final_steps,
             'final_global_update': global_network.total_updates.value,
-            'best_reward': global_network.best_reward.value,
-            'final_global_mean_reward':
-                global_network.global_mean_reward.value,
+            **global_network.reward_stats.summary(),
             'session_elapsed_s': round(session_elapsed, 3),
         })
         events.close()
