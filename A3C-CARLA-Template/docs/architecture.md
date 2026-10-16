@@ -58,7 +58,7 @@ runs/a3c_<N>w_<date>[_<job id>]/
 
 ## Checkpoints and resume
 
-`checkpoint.pth` holds the model weights, the optimizer state, and the run counters (steps, episodes, updates, best reward, recent rewards). It is written to a temporary file and renamed, so an interrupted write leaves the previous file intact.
+`checkpoint.pth` holds the model weights, the optimizer state, and the run counters (steps, episodes, updates), and the reward statistics (`reward_stats`: reward windows, best and worst rewards, reached reward thresholds, and the active training time; see `docs/logging.md`). `--resume` restores all of them; a checkpoint written before `reward_stats` existed is migrated. It is written to a temporary file and renamed, so an interrupted write leaves the previous file intact.
 
 It is written at two moments:
 

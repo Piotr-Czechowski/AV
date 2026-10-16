@@ -24,6 +24,7 @@ import torch.nn.functional as F
 import torch.multiprocessing as mp
 from torch.distributions.categorical import Categorical
 
+from reward_stats import RewardTracker
 from timing_utils import TimingAccumulator
 from training_logger import ResourceLogger, TrainingLogger
 from carla_wrapper import CarlaA3CWrapper
@@ -243,13 +244,8 @@ class GlobalNetwork:
         self.global_episode = mp.Value('l', 0)
         self.total_updates = mp.Value('l', 0)
         self.last_checkpoint_boundary = mp.Value('l', 0)
-        self.best_reward = mp.Value('d', -float('inf'))
-        self.global_mean_reward = mp.Value('d', 0.0)
-        self._reward_buf_size = config.num_workers * 100
-        self.worker_mean_rewards = mp.Array('d', [0.0] * config.num_workers)
-        self.recent_rewards = mp.Array('d', [0.0] * self._reward_buf_size)
-        self.recent_reward_count = mp.Value('l', 0)
-        self.recent_reward_index = mp.Value('l', 0)
+        self.reward_stats = RewardTracker(
+            config.num_workers, config.reward_thresholds)
 
     # -- counters --
 
@@ -267,24 +263,6 @@ class GlobalNetwork:
         with self.total_updates.get_lock():
             self.total_updates.value += 1
             return self.total_updates.value
-
-    def update_stats(self, worker_id, mean_reward, episode_reward):
-        """Record one episode reward; return ``(global_mean, is_new_best)``."""
-        with self.stats_lock:
-            is_new_best = False
-            if episode_reward > self.best_reward.value:
-                self.best_reward.value = episode_reward
-                is_new_best = True
-            self.worker_mean_rewards[worker_id] = mean_reward
-            idx = self.recent_reward_index.value % self._reward_buf_size
-            self.recent_rewards[idx] = float(episode_reward)
-            self.recent_reward_index.value += 1
-            self.recent_reward_count.value = min(
-                self._reward_buf_size, self.recent_reward_count.value + 1)
-            recent = self.recent_rewards[:self.recent_reward_count.value]
-            if recent:
-                self.global_mean_reward.value = sum(recent) / len(recent)
-            return self.global_mean_reward.value, is_new_best
 
     # -- LR scheduling (linear decay from config.lr to 0) --
 
@@ -311,12 +289,7 @@ class GlobalNetwork:
             'global_episode': self.global_episode.value,
             'total_updates': self.total_updates.value,
             'last_checkpoint_boundary': self.last_checkpoint_boundary.value,
-            'best_reward': self.best_reward.value,
-            'global_mean_reward': self.global_mean_reward.value,
-            'worker_mean_rewards': list(self.worker_mean_rewards[:]),
-            'recent_rewards': list(self.recent_rewards[:]),
-            'recent_reward_count': self.recent_reward_count.value,
-            'recent_reward_index': self.recent_reward_index.value,
+            'reward_stats': self.reward_stats.state_dict(),
             'model': self.model.state_dict(),
             'optimizer': self.optimizer.state_dict(),
         }
@@ -417,7 +390,11 @@ class GlobalNetwork:
             return True, global_checkpoint_path
 
     def load(self, path):
-        """Restore model, optimizer, and counters from a checkpoint file."""
+        """Restore model, optimizer, and counters from a checkpoint file.
+
+        Returns the training time stored in the checkpoint, or ``None`` if
+        it has none.
+        """
         state = torch_load_checkpoint(path, map_location=self.device)
         with self.save_lock:
             if 'model' not in state:
@@ -441,20 +418,11 @@ class GlobalNetwork:
                 state.get('last_checkpoint_boundary',
                           self.global_step.value //
                           max(1, int(self.config.save_frequency))))
-            self.best_reward.value = float(
-                state.get('best_reward', -float('inf')))
-            self.global_mean_reward.value = float(
-                state.get('global_mean_reward', 0.0))
-            for i, value in enumerate(state.get('worker_mean_rewards', [])):
-                if i < len(self.worker_mean_rewards):
-                    self.worker_mean_rewards[i] = float(value)
-            for i, value in enumerate(state.get('recent_rewards', [])):
-                if i < len(self.recent_rewards):
-                    self.recent_rewards[i] = float(value)
-            self.recent_reward_count.value = min(
-                self._reward_buf_size, int(state.get('recent_reward_count', 0)))
-            self.recent_reward_index.value = int(
-                state.get('recent_reward_index', 0))
+            if 'reward_stats' in state:
+                return self.reward_stats.load_state_dict(
+                    state['reward_stats'])
+            # Checkpoint written before RewardTracker existed.
+            return self.reward_stats.load_legacy(state)
 
     def load_weights(self, path):
         """Load only the model weights (``--init-from``); counters stay fresh."""
@@ -492,8 +460,6 @@ class A3CWorker(mp.Process):
         self.trajectory = []
         self.rewards = []
         self.reward_components = []
-        self.mean_reward = 0.0
-        self.episode_rewards_history = []
         self.local_updates = 0
         self.total_steps = 0
         self.episode_count = 0
@@ -690,14 +656,20 @@ class A3CWorker(mp.Process):
     # -- episode logging --
 
     def _log_episode(self, training_logger, env, global_episode, global_t,
-                     episode_total_reward, episode_step_count, duration_s):
-        """Write episode stats. Does not write a separate best-model file."""
-        self.episode_rewards_history.append(episode_total_reward)
-        window = min(100, len(self.episode_rewards_history))
-        self.mean_reward = float(
-            np.mean(self.episode_rewards_history[-window:]))
-        global_mean, is_new_best = self.global_network.update_stats(
-            self.worker_id, self.mean_reward, episode_total_reward)
+                     episode_total_reward, episode_step_count, duration_s,
+                     interrupted=False):
+        """Write episode stats. Does not write a separate best-model file.
+
+        An interrupted episode (cut off by shutdown or the ``--steps``
+        limit) is logged and marked, but never enters the reward statistics
+        or the thresholds.
+        """
+        if interrupted:
+            stats, new_hits = {'interrupted': True}, []
+        else:
+            stats, new_hits = self.global_network.reward_stats.record_episode(
+                self.worker_id, episode_total_reward, global_t,
+                global_episode)
 
         record = training_logger.log_episode(
             global_episode=global_episode,
@@ -705,17 +677,23 @@ class A3CWorker(mp.Process):
             total_reward=episode_total_reward,
             steps=episode_step_count,
             duration_s=duration_s,
-            local_mean_reward=self.mean_reward,
-            global_mean_reward=global_mean,
-            best_reward=self.global_network.best_reward.value,
-            is_new_best=is_new_best,
+            **stats,
             **env.episode_stats()
         )
 
-        if is_new_best:
+        if stats.get('is_new_best'):
             print('[BEST] W{} new best reward {:.2f} at Ep{} '
                   '(logged only; last checkpoint is checkpoint.pth)'.format(
                       self.worker_id, episode_total_reward, global_episode),
+                  flush=True)
+
+        for hit in new_hits:
+            training_logger.log_event('reward_threshold_reached', **hit)
+            print('[THRESHOLD] W{} {} reached {:g} (value {:.2f}) at step '
+                  '{}, Ep{}, {:.0f}s of training'.format(
+                      self.worker_id, hit['signal'], hit['threshold'],
+                      hit['value'], hit['global_t'], hit['global_episode'],
+                      hit['elapsed_training_s']),
                   flush=True)
 
         return record
@@ -784,15 +762,6 @@ class A3CWorker(mp.Process):
         timer = TimingAccumulator()
         last_diag_wall = time.time()
         last_diag_update = 0
-
-        # Restore this worker's mean reward if the shared array already has one.
-        try:
-            prev = self.global_network.worker_mean_rewards[self.worker_id]
-            if prev != 0.0:
-                self.mean_reward = prev
-                self.episode_rewards_history = [prev] * 100
-        except Exception:
-            pass
 
         env = CarlaA3CWrapper(
             port=self.port, config=self.config, run_id=self.run_id,
@@ -920,7 +889,8 @@ class A3CWorker(mp.Process):
                     self._log_episode(
                         training_logger, env, current_episode,
                         self.global_network.global_step.value,
-                        episode_total_reward, episode_step_count, duration)
+                        episode_total_reward, episode_step_count, duration,
+                        interrupted=not done)
 
                     if self.config.diag_log_wall_s > 0 and \
                             time.time() - last_diag_wall >= \

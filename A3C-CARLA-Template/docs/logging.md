@@ -9,6 +9,25 @@ Each training process writes its own files, so local logging needs no locking. R
 
 `NaN` and infinities become `null` in JSON and are not sent to W&B.
 
+## Quick map: where do I find ...
+
+Local fields are in `logs/worker_<id>/episodes.jsonl` unless noted; `<id>` is
+the worker number. Every field is explained in "Episode values".
+
+| Question | Local field | W&B |
+|---|---|---|
+| Mean reward, last 100 episodes (run-wide / one worker) | `global_mean_reward_100` / `local_mean_reward` | `global/reward_mean_100` / `worker_<id>/reward_mean_100` |
+| Mean reward, last 100 x workers episodes | `global_mean_reward` | `global/reward_mean` |
+| Distance from the target | `goal_dist` at episode end (per step in `steps.jsonl` with `--log-steps`) | `episode/goal_distance`, `worker_<id>/goal_distance` |
+| Min and max reward of a worker | `local_reward_min_100`, `local_reward_max_100` (last 100 episodes); `local_worst_reward`, `local_best_reward` (all time) | `worker_<id>/reward_min_100`, `.../reward_max_100`, `.../worst_reward`, `.../best_reward` |
+| Min and max reward of the run | `global_reward_min(_100)`, `global_reward_max(_100)`, `worst_reward`, `best_reward` | `global/reward_min(_100)`, `global/reward_max(_100)`, `global/worst_reward`, `global/best_reward` |
+| Global steps and time to reach a reward | `logs/events.jsonl`: `reward_threshold_reached`; `final_summary` | run summary: `threshold/<signal>/<label>/global_step`, `.../elapsed_training_s` |
+| Training time | `elapsed_training_s` | `global/elapsed_training_s` |
+
+Each worker writes only its own file, so run-wide values are repeated in
+every worker's records. For one run-wide series, merge the
+`worker_*/episodes.jsonl` files and sort by `global_t`.
+
 ## Files
 
 | File | Written by | One line per |
@@ -32,13 +51,47 @@ Training writes on three cadences, from densest to sparsest:
 
 - **step**: every `env.step()`. Only with `--log-steps`, only to `steps.jsonl`, never to W&B. Fields: `action`, `value`, `entropy`, `reward`, `done`, `step_in_ep`, `speed_kmh`, `route_dist`, `goal_dist`, `maneuver`, `reward_components`. It is the only view inside an episode and grows by gigabytes per hour with many workers, so it is off by default.
 - **update**: every `--rollout-length` steps or at episode end, whichever comes first. Losses, gradients, and statistics of that one rollout.
-- **episode**: at episode end. The outcome of the whole episode, plus the run-wide best and rolling means at that moment.
+- **episode**: at episode end. The outcome of the whole episode, plus the reward statistics at that moment (see "Reward statistics").
 
 `timing` and `system` records follow their own clocks.
 
+## Reward statistics
+
+`reward_stats.py` keeps ring buffers of **episode rewards** (`total_reward`)
+in shared memory and attaches the results to each episode record:
+
+- **worker window**: the last 100 episodes of one worker (`local_*_100`),
+- **run window**: the last 100 episodes of all workers (`global_*_100`),
+- **long run window**: the last 100 x `--num-workers` episodes of all workers
+  (`global_mean_reward`, `global_reward_min`, `global_reward_max`; the same
+  as the run window with one worker),
+- **all time**: best and worst reward, per worker and for the run.
+
+Notes:
+
+- Only completed episodes count. An episode cut off by shutdown or `--steps`
+  is written with `"interrupted": true`, without reward statistics, is not
+  sent to W&B, and cannot reach a threshold. An episode skipped after a
+  camera timeout is never logged; only the `camera_timeout` event records it.
+- Windows survive worker restarts, are stored in `checkpoint.pth`, and are
+  restored by `--resume` (`--init-from` starts them empty). A window holds
+  fewer episodes at the start of a run; its statistics then cover what
+  exists. Episodes enter in the order they finish, while `global_episode` is
+  assigned at episode start, so it can be out of order between workers.
+- `--resume` with a different `--num-workers`: workers present in both runs
+  keep their windows, new ones start empty, and the long run window keeps its
+  most recent episodes.
+- A checkpoint from before this feature holds one run-wide window.
+  `--resume` rebuilds the run and long run windows and `best_reward` from it.
+  Per-worker windows, best and worst values start empty, and the run-wide
+  `worst_reward` is the lowest reward in the rebuilt window.
+- The statistics are read under a lock shared with the workers. If a killed
+  worker still holds it, the final checkpoint and summary wait 5 s, print
+  `[REWARD_STATS] lock busy; reading without it`, and read without the lock.
+
 ## Episode values
 
-All of them reach W&B.
+All of them reach W&B, except for an interrupted episode, which stays local.
 
 | Field | W&B metric | Meaning |
 |---|---|---|
@@ -51,14 +104,85 @@ All of them reach W&B.
 | `reached_goal` | `episode/success` | 1 when the goal was reached, else 0 |
 | `max_speed_kmh` | `episode/max_speed_kmh` | Highest speed reached |
 | `min_route_dist` | `episode/min_route_distance` | Closest approach to the planned route |
-| `goal_dist` | `episode/goal_distance` | Distance to the goal at episode end. The main progress signal on failed episodes |
+| `goal_dist` | `episode/goal_distance`, `worker_<id>/goal_distance` | Distance to the goal at episode end. The main progress signal on failed episodes |
 | `collisions` | `episode/collisions` | Collision events recorded by CARLA |
 | `local_mean_reward` | `worker_<id>/reward_mean_100` | Mean reward of this worker's last 100 episodes |
-| `global_mean_reward` | `global/reward_mean` | Mean reward of the run's last `100 * workers` episodes |
-| `best_reward` | `global/best_reward` | Best single-episode reward so far |
+| `local_reward_min_100`, `local_reward_max_100` | `worker_<id>/reward_min_100`, `worker_<id>/reward_max_100` | Lowest and highest reward in that window |
+| `local_best_reward`, `local_worst_reward` | `worker_<id>/best_reward`, `worker_<id>/worst_reward` | Highest and lowest reward of this worker, all time |
+| `global_mean_reward_100`, `global_reward_min_100`, `global_reward_max_100` | `global/reward_mean_100`, `global/reward_min_100`, `global/reward_max_100` | Mean, lowest, and highest reward of the run's last 100 episodes |
+| `global_mean_reward`, `global_reward_min`, `global_reward_max` | `global/reward_mean`, `global/reward_min`, `global/reward_max` | Mean, lowest, and highest reward of the run's last `100 * workers` episodes |
+| `best_reward`, `worst_reward` | `global/best_reward`, `global/worst_reward` | Highest and lowest single-episode reward of the run so far |
+| `elapsed_training_s` | `global/elapsed_training_s` | Active training time at the end of this episode (see "Time") |
 | `action_counts` | `episode/action_<n>_fraction` | How often each action was chosen, sent as a fraction. A value near 1.0 means the policy collapsed onto one action |
 | `reward_components` | `episode/reward_<name>` | Episode total of each reward term (see below) |
+| `interrupted` | not sent | `true` only for an episode cut off by shutdown or `--steps`. Such a record has no reward statistics |
 | `is_new_best`, `port` | not sent | Local only |
+
+## Reward thresholds
+
+A threshold answers "how many global steps and how much training time did the
+run need to reach reward X". Set values on the command line (default: none):
+
+```bash
+./examples/docker/train.sh -w 4 --reward-thresholds 0 50 100
+```
+
+Each value is watched through three signals:
+
+| Signal | Reached when |
+|---|---|
+| `episode_reward` | one episode's `total_reward` is `>=` the threshold |
+| `reward_mean_100` | the mean of the run window (last 100 episodes) is `>=` the threshold |
+| `reward_mean` | the mean of the long run window (last 100 x workers) is `>=` the threshold |
+
+The two means count only once their window is full. Each (signal, threshold)
+pair fires **at most once per run**, at the first episode that satisfies it.
+Values must be finite, and two values that share the first six significant
+digits (1000000 and 1000001) are rejected; an invalid value stops the launch
+with `ERROR: --reward-thresholds: ...` before the run directory is created.
+`args.txt`, `metadata.json`, and the W&B config show the sorted, deduplicated
+list.
+
+Where the result lands:
+
+1. **`logs/events.jsonl`**: a `reward_threshold_reached` event when it
+   happens. Events are best effort: one is dropped after a 1 s wait on a full
+   telemetry queue, and a killed worker can lose events it has not handed
+   over. `global_t`, `elapsed_training_s`, and `worker` are those of the
+   episode that reached the threshold.
+2. **W&B run summary**, updated at once: `threshold/<signal>/<label>/reached`
+   plus `.../global_step`, `.../elapsed_training_s`, `.../global_episode`,
+   `.../value`, `.../worker`.
+3. **`final_summary`** (event and W&B summary), built from shared memory, so
+   it is the authoritative copy: the same keys for every configured pair. A
+   pair never reached has `reached = false` and `null` for the other five
+   fields, which also overwrites stale values in a resumed W&B run.
+
+`<label>` is the threshold with `-` written as `neg`, `.` as `p`, and `+`
+dropped (after `{:g}`), because W&B reads a dot in a metric name as nesting:
+`0.5` is `0p5`, `-50` is `neg50`, `100` is `100`, `1000000` is `1e06`. The
+`threshold` field of the event stays the plain number.
+
+```json
+{"signal": "reward_mean_100", "threshold": 50.0, "value": 51.2, "global_t": 412000, "global_episode": 3350, "elapsed_training_s": 5321.4, "worker": 2, "event": "reward_threshold_reached", "kind": "event", "ts": "2026-01-01T14:03:22.118"}
+```
+
+On `--resume`, reached thresholds come back from the checkpoint and do not
+fire again, and new times continue the clock stored in the checkpoint (see
+"Time"). A hit reached after the last checkpoint and lost in a crash fires
+again and appears twice in `events.jsonl`. Hits for thresholds no longer
+configured are not restored; they stay only in the old events. A threshold
+that is new on resume fires at the first episode that satisfies it.
+`--reward-thresholds` is compared with the previous session's `training_args`
+in `resume_state.json`; a difference prints a `[RESUME] WARNING`.
+
+## Time
+
+| Clock | Meaning |
+|---|---|
+| `elapsed_training_s` (episode records, threshold events, `global/elapsed_training_s`, `cumulative_elapsed_s` in `training_end`) | Active training time: counted from the moment all CARLA servers answer, **summed over resumed sessions**; excludes the server wait and the time between sessions. `--resume` continues from the value stored in `checkpoint.pth`, which is right even after a hard kill. Only a checkpoint from before this field falls back to `resume_state.json` or the last `training_end` event, which exist only after a graceful exit. |
+| `ts` (every record) | Wall-clock time of the machine. Includes the CARLA server wait and gaps between sessions, so it is not training time. |
+| W&B relative time (`_runtime`) | Measured from the start of the W&B run, which begins before the servers are ready. Not the training clock. |
 
 ## Update values
 
@@ -111,7 +235,7 @@ A record is written when the global update counter reaches a multiple of `--diag
 
 ## Events
 
-Single occurrences, not periodic measurements. Workers send them through the queue, and the telemetry process is the only writer of `logs/events.jsonl`. The full payload (error message, checkpoint path, layer names) stays local. W&B receives only a running counter for the six health events. The counter starts from 0 in every session.
+Single occurrences, not periodic measurements. Workers send them through the queue, and the telemetry process is the only writer of `logs/events.jsonl`. The full payload (error message, checkpoint path, layer names) stays local. W&B receives only a running counter for the six health events, plus the run-summary keys of `reward_threshold_reached`. The health counters start from 0 in every session.
 
 | Event | Emitted when | W&B counter |
 |---|---|---|
@@ -125,10 +249,23 @@ Single occurrences, not periodic measurements. Workers send them through the que
 | `nan_gradient` | NaN in the gradients: the update was skipped | `health/nan_updates_total` |
 | `camera_timeout` | No camera frame in time: the episode was dropped | `health/camera_timeouts_total` |
 | `crash_recovery` | CARLA call timed out: the worker reconnects | |
+| `reward_threshold_reached` | A configured reward threshold was reached for the first time (see "Reward thresholds") | W&B run summary `threshold/...` keys |
 | `checkpoint_save` | A periodic checkpoint was written | |
 | `wandb_unavailable` | W&B was not turned off, and the package is missing or `WANDB_API_KEY` is empty | |
 | `wandb_init_failed`, `wandb_metric_setup_failed` | W&B startup failed. The run continues with local logs | |
-| `final_summary` | Last record of a session: final counters, best reward, elapsed time, health counts, `queue_drops`, `wandb_errors` | copied to the W&B summary |
+| `final_summary` | Last record of a session (keys below) | copied to the W&B summary |
+
+`final_summary` holds:
+
+- `final_global_step`, `final_global_update`, `session_elapsed_s`.
+- `best_reward`, `worst_reward`: all workers, all time.
+- `final_global_mean_reward`, `final_reward_min`, `final_reward_max`: the
+  last 100 x workers episodes at the end of the run.
+- `final_reward_mean_100`, `final_reward_min_100`, `final_reward_max_100`:
+  the last 100 episodes at the end of the run.
+- `threshold/<signal>/<label>/...` for every configured threshold (see
+  "Reward thresholds").
+- `queue_drops`, `wandb_errors` (below) and the `health/*` counters.
 
 `final_summary` tells whether the W&B view was complete. `queue_drops` counts records dropped because the queue was full. `wandb_errors` counts failed W&B calls, which are swallowed so they cannot interrupt training. Both are written with `--no-wandb` too.
 
@@ -153,3 +290,4 @@ W&B is on when three things hold: the `wandb` package is installed, `WANDB_API_K
 | `--diag-log-wall-s` | 60 s | Longest time between timing records. `0` turns this trigger off |
 | `--wandb-project`, `--wandb-entity`, `--wandb-run-name` | from `.env` | W&B names |
 | `--no-wandb` | off | Turns W&B off |
+| `--reward-thresholds` | none | Reward values whose first crossing is logged (see "Reward thresholds") |
