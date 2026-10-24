@@ -98,7 +98,7 @@ def reward_function(
 
     inv_reward = invasion_counter * REWARD_FROM_INV
 
-    # Peak near 20 km/h.
+    # Peak near 16 km/h.
     speed_reward = -1.2 + 4 * math.sin(speed / 10)
     if route_distance < 1.5:
         route_distance_reward = 1

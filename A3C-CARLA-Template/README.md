@@ -53,7 +53,7 @@ apptainer build carla_0.9.15.sif docker://carlasim/carla:0.9.15
 sbatch examples/apptainer/train.slurm -w 1
 ```
 
-`-w N` starts N workers and N CARLA servers. Several servers can share one GPU: `-w 2 --servers-per-gpu 2`. Every argument the script does not know goes to `train_a3c.py` unchanged, for example `--scenario 14 15 --steps 2000000`.
+`-w N` starts N workers and N CARLA servers. Several servers can share one GPU: `-w 2 --servers-per-gpu 2`. Every argument the script does not know goes to [`train_a3c.py`](train_a3c.py) unchanged, for example `--scenario 14 15 --steps 2000000`.
 
 Each run gets its own directory under `runs/`. A new run refuses a directory that already holds a run.
 
@@ -68,30 +68,48 @@ Weights & Biases is opt-in: install the `wandb` extra, set `WANDB_API_KEY` in `.
 
 | File | Role |
 |---|---|
-| `train_a3c.py` | Entry point: CLI, default values, run directory, signals, last checkpoint |
-| `run_a3c.py` | Worker supervisor: restart, backoff, rollback |
-| `a3c_core.py` | Global network, shared optimizers, worker loop, loss, checkpoints |
-| `model.py` | The network (`SharedActorCritic`, `build_model`) |
-| `rl_configuration.py` | Observation spec, action table, legacy reward |
-| `carla_wrapper.py` | `reset()` / `step()` for the worker: observation dict, action repeat, episode limit, shaped reward |
-| `carla_env.py` | CARLA client: world, route, vehicle, sensors |
-| `town03.py` | Spawn and goal tables for Town03 (one file per map) |
-| `carla_navigation/` | Route planner from the CARLA agents package (MIT) |
-| `settings.py` | `.env` loader and experiment defaults |
-| `training_logger.py`, `timing_utils.py` | JSONL logs, telemetry process, W&B, resource sampler, phase timer |
-| `carla_multiserver_launcher.py` | Starts and supervises the CARLA servers |
-| `examples/` | The two pipeline scripts |
-| `evaluation.py` | Stub. Its docstring describes the planned evaluation program |
-| `tests/` | Smoke tests that need no CARLA: `python -m unittest tests.test_template_smoke` |
+| [`train_a3c.py`](train_a3c.py) | Entry point: CLI, default values, run directory, signals, last checkpoint |
+| [`run_a3c.py`](run_a3c.py) | Worker supervisor: restart, backoff, rollback |
+| [`a3c_core.py`](a3c_core.py) | Global network, shared optimizers, worker loop, loss, checkpoints |
+| [`model.py`](model.py) | The network (`SharedActorCritic`, `build_model`) |
+| [`rl_configuration.py`](rl_configuration.py) | Observation spec, action table, legacy reward |
+| [`carla_wrapper.py`](carla_wrapper.py) | `reset()` / `step()` for the worker: observation dict, action repeat, episode limit, shaped reward |
+| [`carla_env.py`](carla_env.py) | CARLA client: world, route, vehicle, sensors |
+| [`state_observer.py`](state_observer.py) | Holds the latest camera frame for the wrapper and the JPEG dumps |
+| [`town03.py`](town03.py) | Spawn and goal tables for Town03 (one file per map) |
+| [`carla_navigation/`](carla_navigation/) | Route planner from the CARLA agents package (MIT) |
+| [`settings.py`](settings.py) | `.env` loader and experiment defaults |
+| [`training_logger.py`](training_logger.py), [`timing_utils.py`](timing_utils.py) | JSONL logs, telemetry process, W&B, resource sampler, phase timer |
+| [`reward_stats.py`](reward_stats.py) | Reward windows, best and worst rewards, reward thresholds, shared by all workers |
+| [`carla_multiserver_launcher.py`](carla_multiserver_launcher.py) | Starts and supervises the CARLA servers |
+| [`examples/`](examples/) | The two pipeline scripts |
+| [`evaluation.py`](evaluation.py) | Stub. Its docstring describes the planned evaluation program |
+| [`verify/`](verify/) | Checks that need no CARLA (see "Verification"): `python -m unittest discover -s verify -p 'verify_*.py'` |
 
 ## Documentation
 
 | Document | Content |
 |---|---|
-| `docs/architecture.md` | Processes, life of a run, run directory, checkpoints and resume, failure handling |
-| `docs/algorithm.md` | What a worker does, the loss, the schedules, the network, algorithm parameters |
-| `docs/environment.md` | Simulation, episode, observation, actions, reward, routes and scenarios |
-| `docs/configuration.md` | Where each value is defined and which file to edit to change it |
-| `docs/launch.md` | Docker and Apptainer pipelines, ports, GPU placement, server health checks |
-| `docs/logging.md` | Every logged value, local files, W&B metrics, events |
-| `docs/how_to_adjust.md` | How to adjust the template to your own agent: new network, input, action table, reward, camera, map |
+| [`docs/architecture.md`](docs/architecture.md) | Processes, life of a run, run directory, checkpoints and resume, failure handling |
+| [`docs/algorithm.md`](docs/algorithm.md) | What a worker does, the loss, the schedules, the network, algorithm parameters |
+| [`docs/environment.md`](docs/environment.md) | Simulation, episode, observation, actions, reward, routes and scenarios |
+| [`docs/configuration.md`](docs/configuration.md) | Where each value is defined and which file to edit to change it |
+| [`docs/launch.md`](docs/launch.md) | Docker and Apptainer pipelines, ports, GPU placement, server health checks |
+| [`docs/logging.md`](docs/logging.md) | Every logged value, local files, W&B metrics, events, and timing when a reward is first reached (`--reward-thresholds`) |
+| [`docs/how_to_adjust.md`](docs/how_to_adjust.md) | How to adjust the template to your own agent: new network, input, action table, reward, camera, map |
+
+## Verification
+
+The scripts in [`verify/`](verify/) check that the template still works after a change. They need no CARLA server, no GPU, and no W&B, so they run on a laptop in about a second. Run them from the template directory:
+
+```bash
+python -m unittest discover -s verify -p 'verify_*.py'   # all checks
+python verify/verify_metrics.py                          # one file
+```
+
+| File | What it checks |
+|---|---|
+| [`verify/verify_template.py`](verify/verify_template.py) | The launcher builds correct Docker and Apptainer commands (ports, GPU, image checks, warm-up). The action table, the Town03 scenario routes, the checkpoint lookup used by `--resume`, the shell syntax of the example scripts, and the model's input and output shapes. |
+| [`verify/verify_metrics.py`](verify/verify_metrics.py) | The reward statistics (rolling means, min and max, best and worst), the reward thresholds, their checkpoint round trip and migration from old checkpoints, several worker processes sharing one tracker, and what reaches `episodes.jsonl`, `events.jsonl`, and W&B. |
+
+Run them after you change the launcher, the action or observation interface, the reward tracking, or the logging, and before a cluster run. Three checks need torch (checkpoint lookup and model shapes; the model check also needs carla); without them they are reported as skipped, not failed. In the training environment all of them run. The scripts do not run the A3C training loop itself, which needs CARLA: the first end-to-end check is a short run, for example `--steps 5000`.

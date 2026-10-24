@@ -1,3 +1,5 @@
+> Historical README of the original project ([Michal-Kolomanski/Autonomous-driving-in-Carla](https://github.com/Michal-Kolomanski/Autonomous-driving-in-Carla)), kept for reference. Its A to B code is [`A_to_B_GPU_34/`](A_to_B_GPU_34/) here (`settings.py`, `a2c_rgb.py`). `A_to_B/final_models` and the `Pipfile` are not part of this repository; only [`A_to_B_GPU_34/Pipfile.lock`](A_to_B_GPU_34/Pipfile.lock) is. The current overview is [`README.md`](README.md).
+
 The goal of this venture is to develop models capable of completing a variety of autonomous tasks within the Carla simulator using reinforcement learning methods. The repository is divided into two distinct projects which are still being developed.
 
 # A to B

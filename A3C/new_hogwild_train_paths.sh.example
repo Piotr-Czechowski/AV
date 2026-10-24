@@ -1,0 +1,28 @@
+# Copy to new_hogwild_train_paths.sh and fill in the values for this machine.
+#   cp new_hogwild_train_paths.sh.example new_hogwild_train_paths.sh
+#
+# new_hogwild_train.slurm sources the copy and every value is exported, so the
+# trainer and carla_athena_multiserver_v3.py inherit it. The copy is gitignored.
+# Running the trainer or the multiserver by hand: source the copy first.
+# Meaning and default of every variable: docs/running.md, "The paths file".
+
+# Required: Apptainer image of the CARLA server. A value containing CHANGE_ME
+# is rejected.
+export CARLA_CONTAINER_IMAGE=CHANGE_ME   # e.g. /net/tscratch/people/<you>/carla_0.9.15.sif
+
+# Optional. Unset means the default after "default:".
+# export PROJECT_DIR=/path/to/AV/A3C                                # default: the sbatch submit directory
+# export MULTISERVER_SCRIPT=/path/to/AV/carla_athena_multiserver_v3.py  # default: PROJECT_DIR/../carla_athena_multiserver_v3.py
+# export RUNS_DIR=/path/to/runs                                     # default: PROJECT_DIR/runs
+# export VENV=/path/to/venv                                         # default: the Python on PATH
+# export CARLA_BINARY=/home/carla/CarlaUE4.sh                       # CARLA entrypoint inside the image
+
+# Weights & Biases.
+# export WANDB_PROJECT=a3c-carla
+# export WANDB_RUN_NAME=                                            # default: a3c-<workers>w-<id>
+# export WANDB_ENTITY=                                              # default: your personal entity
+# export WANDB_API_KEY=                                             # only when ~/.netrc is not set up
+
+# Only for starting CARLA from Python instead of through MULTISERVER_SCRIPT.
+# export CARLA_PATH=
+# export CARLA_EGG_PATH=

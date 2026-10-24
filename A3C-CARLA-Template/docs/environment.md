@@ -1,12 +1,12 @@
 # Environment
 
-`CarlaEnv` (`carla_env.py`) talks to CARLA. `CarlaA3CWrapper` (`carla_wrapper.py`) turns it into `reset()` and `step()` for the worker. `rl_configuration.py` defines the observation, the actions, and the legacy reward.
+`CarlaEnv` ([`carla_env.py`](../carla_env.py)) talks to CARLA. `CarlaA3CWrapper` ([`carla_wrapper.py`](../carla_wrapper.py)) turns it into `reset()` and `step()` for the worker. [`rl_configuration.py`](../rl_configuration.py) defines the observation, the actions, and the legacy reward.
 
 ## Simulation
 
 - **One worker, one world.** The client connects to `localhost` on the worker's port, checks that client and server versions match, and loads the map.
 - **Synchronous mode.** The world advances only when the worker ticks it. One tick is 0.1 s of simulated time (`FIXED_DELTA_SECONDS`).
-- **Ego vehicle.** A Tesla Model 3. It drives alone: no traffic and no pedestrians are spawned. `spawn_npc_vehicle` and `spawn_single_pedestrian` exist in `carla_env.py`, and nothing calls them.
+- **Ego vehicle.** A Tesla Model 3. It drives alone: no traffic and no pedestrians are spawned. `spawn_npc_vehicle` and `spawn_single_pedestrian` exist in [`carla_env.py`](../carla_env.py), and nothing calls them.
 - **Sensors.** One camera (`semantic` or `rgb`), a collision sensor, and a lane-invasion sensor. The camera sits 0.3 m forward and 2.5 m up, pitched 10° down, with a 75° field of view.
 
 ## Episode
@@ -29,10 +29,10 @@ An episode ends when one of these is true:
 
 | Condition | Defined in |
 |---|---|
-| Any collision | `reward_function` in `rl_configuration.py` |
-| The vehicle is 10 m or more from the route | `OFFROUTE_THRESHOLD_M` in `rl_configuration.py` |
-| The vehicle is within 3 m of the goal. The episode counts as a success | `GOAL_RADIUS_M` in `carla_env.py` |
-| `--episode-max-decisions` decisions were taken (default 200, which is 40 s; `0` turns it off) | `carla_wrapper.py` |
+| Any collision | `reward_function` in [`rl_configuration.py`](../rl_configuration.py) |
+| The vehicle is 10 m or more from the route | `OFFROUTE_THRESHOLD_M` in [`rl_configuration.py`](../rl_configuration.py) |
+| The vehicle is within 3 m of the goal. The episode counts as a success | `GOAL_RADIUS_M` in [`carla_env.py`](../carla_env.py) |
+| `--episode-max-decisions` decisions were taken (default 200, which is 40 s; `0` turns it off) | [`carla_wrapper.py`](../carla_wrapper.py) |
 
 ## Observation
 
@@ -41,14 +41,14 @@ A dict of NumPy values without a batch dimension. `observation_spec(config)` giv
 | Key | dtype | Shape | Content |
 |---|---|---|---|
 | `image` | float32 | `[3, res, res]` | Camera frame scaled to `[0, 1]`, channels in CARLA's BGR order. The semantic camera is drawn in the CityScapes colour palette |
-| `speed` | float32 | `[1]` | km/h divided by `SPEED_SCALE` (100) |
+| `speed` | float32 | `[1]` | km/h divided by `SPEED_SCALE` (100, in [`carla_wrapper.py`](../carla_wrapper.py)) |
 | `maneuver` | int64 | scalar | Turn to take at the next junction: 0 = left, 1 = straight, 2 = right |
 
 `maneuver` follows the planned route. It starts with the first turn of the plan and moves to the next one each time the vehicle leaves a junction. After the last turn it is 1.
 
 ## Actions
 
-Ten discrete actions from the `ACTIONS` table in `rl_configuration.py`. Each one is half throttle or full brake, combined with one of five steering values. The numbers in the table are the action ids.
+Ten discrete actions from the `ACTIONS` table in [`rl_configuration.py`](../rl_configuration.py). Each one is half throttle or full brake, combined with one of five steering values. The numbers in the table are the action ids.
 
 | | steer 0 | steer −0.5 | steer +0.5 | steer −0.2 | steer +0.2 |
 |---|---|---|---|---|---|
@@ -61,7 +61,7 @@ Ten discrete actions from the `ACTIONS` table in `rl_configuration.py`. Each one
 
 ### `legacy` (default)
 
-`reward_function` in `rl_configuration.py`, with the speed `v` in km/h:
+`reward_function` in [`rl_configuration.py`](../rl_configuration.py), with the speed `v` in km/h:
 
 ```
 speed term = -1.2 + 4 * sin(v / 10)
@@ -76,7 +76,7 @@ reward     = speed term + route term + event terms
 
 ### `shaped`
 
-`_shape_reward` in `carla_wrapper.py`. The coefficients are the `DEFAULT_REWARD_*` constants in `train_a3c.py` and have no flag.
+`_shape_reward` in [`carla_wrapper.py`](../carla_wrapper.py). The coefficients are the `DEFAULT_REWARD_*` constants in [`train_a3c.py`](../train_a3c.py) and have no flag.
 
 | Component | Value per decision | Default |
 |---|---|---|
@@ -89,11 +89,11 @@ reward     = speed term + route term + event terms
 | `offroute_penalty` | when the distance to the route reaches the threshold (10 m) | −25 |
 | `lane_invasion_penalty` | on a step with a lane invasion | −5 |
 
-The sum is clipped to ±`DEFAULT_REWARD_CLIP` (50). Every component is logged separately (`docs/logging.md`).
+The sum is clipped to ±`DEFAULT_REWARD_CLIP` (50). Every component is logged separately ([`docs/logging.md`](logging.md)).
 
 ## Routes and scenarios
 
-A scenario is a set of routes. The tables live in one file per map, named after the lowercased map name: `town03.py` for `Town03`. A missing file or a missing scenario id is an error. The environment never falls back to another map's table.
+A scenario is a set of routes. The tables live in one file per map, named after the lowercased map name: [`town03.py`](../town03.py) for `Town03`. A missing file or a missing scenario id is an error. The environment never falls back to another map's table.
 
 Each entry of `SCENARIOS` is a dict:
 
@@ -121,9 +121,9 @@ Town03 scenarios:
 
 With several ids, `--scenario 14 15`, every episode first picks one id at random. The `cycle` position is kept per worker.
 
-**Route.** `GlobalRoutePlanner` (`carla_navigation/`) traces the route as waypoints 1 m apart. The distance to the route is the distance to the nearest of these waypoints.
+**Route.** `GlobalRoutePlanner` ([`carla_navigation/`](../carla_navigation/)) traces the route as waypoints 1 m apart. The distance to the route is the distance to the nearest of these waypoints.
 
-**Middle goals.** Points along the route: the entry and the exit of every turn, extra points that split a segment longer than 25 m (`DEFAULT_MP_DENSITY` in `train_a3c.py`), and the goal as the last one. The legacy reward pays `REWARD_FROM_MP` once for each. Reaching the last one ends the episode.
+**Middle goals.** Points along the route: the entry and the exit of every turn, extra points that split a segment longer than 25 m (`DEFAULT_MP_DENSITY` in [`train_a3c.py`](../train_a3c.py)), and the goal as the last one. The legacy reward pays `REWARD_FROM_MP` once for each. Reaching the last one ends the episode.
 
 ## Debugging aids
 
@@ -132,8 +132,8 @@ With several ids, `--scenario 14 15`, every episode first picks one id at random
 | `--save-episodes 10 500` | Saves every camera frame of these global episodes as JPEG under `episodes/<episode>-<port>/` |
 | `--save-episode-interval N` | The same for every N-th global episode |
 | `--verbose-env-logs` | Prints the planned maneuvers and spawn attempts |
-| `DRAW` in `settings.py` | Draws the route in the simulator |
-| `SHOW_CAM` in `settings.py` | Opens a window with the camera image |
+| `DRAW` in [`settings.py`](../settings.py) | Draws the route in the simulator |
+| `SHOW_CAM` in [`settings.py`](../settings.py) | Opens a window with the camera image |
 
 ## Parameters
 
@@ -148,4 +148,4 @@ With several ids, `--scenario 14 15`, every episode first picks one id at random
 | `--world-reload-interval` | 0 | Episodes of a worker between full world reloads |
 | `--reward-mode` | `legacy` | Or `shaped` |
 
-The simulation step, the client and camera timeouts, the ego vehicle, the camera mount, and the goal radius are constants at the top of `carla_env.py`.
+The simulation step, the client and camera timeouts, the ego vehicle, the camera mount, and the goal radius are constants at the top of [`carla_env.py`](../carla_env.py).

@@ -11,7 +11,7 @@ The A3C core (`a3c_core.py`, `run_a3c.py`) does not know what an observation con
 - `a3c_core.obs_to_tensors(obs, device)` adds a batch dimension of 1 to every key and moves it to the worker's device.
 - The model takes that dict, `forward(obs)`, and returns `(logits [1, n_actions], value [1, 1])`.
 
-`ModelContractTests` in `tests/test_template_smoke.py` checks these shapes.
+`ModelContractTests` in `verify/verify_template.py` checks these shapes.
 
 ## A new network
 
