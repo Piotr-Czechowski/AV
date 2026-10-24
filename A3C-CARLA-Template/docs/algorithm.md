@@ -1,6 +1,6 @@
 # Algorithm
 
-Asynchronous advantage actor-critic (A3C) with Hogwild updates. The code is in `a3c_core.py`, the network in `model.py`.
+Asynchronous advantage actor-critic (A3C) with Hogwild updates. The code is in [`a3c_core.py`](../a3c_core.py), the network in [`model.py`](../model.py).
 
 ## Shared state
 
@@ -55,7 +55,7 @@ Both schedules are functions of the global step `t` and of `--steps`.
 
 ## Network
 
-`SharedActorCritic` in `model.py`, about 2.65 million parameters with the default inputs:
+`SharedActorCritic` in [`model.py`](../model.py), about 2.65 million parameters with the default inputs:
 
 ```
 image [3, H, W]  -> 4 x (Conv, stride 2, ReLU): 32, 64, 128, 256 channels -> average pool to 4 x 4 -> 4096
@@ -69,7 +69,7 @@ concatenate 4160 -> Linear 512, ReLU -> Linear 256, ReLU -> policy head: n_actio
 - The network is feed-forward and sees one frame per decision. It keeps no state between steps.
 - The adaptive pooling makes it independent of the image size.
 
-`a3c_core.py` builds the global model and every local copy through `build_model`. To train another network, see `docs/how_to_adjust.md`.
+[`a3c_core.py`](../a3c_core.py) builds the global model and every local copy through `build_model`. To train another network, see [`docs/how_to_adjust.md`](how_to_adjust.md).
 
 ## Parameters
 
@@ -93,4 +93,4 @@ concatenate 4160 -> Linear 512, ReLU -> Linear 256, ReLU -> policy head: n_actio
 | `--gc-interval` | 10 | Episodes between garbage collection and GPU cache release in a worker |
 | `--seed` | 52 | Base random seed |
 
-The optimizer internals have no flag. They are constants in `train_a3c.py`: RMSprop `alpha` 0.99 and `eps` 1e-5, Adam betas 0.9 and 0.999 and `eps` 1e-8.
+The optimizer internals have no flag. They are constants in [`train_a3c.py`](../train_a3c.py): RMSprop `alpha` 0.99 and `eps` 1e-5, Adam betas 0.9 and 0.999 and `eps` 1e-8.

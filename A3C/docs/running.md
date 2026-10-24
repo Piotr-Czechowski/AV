@@ -1,6 +1,6 @@
 # Running the trainer, and what every parameter does
 
-`README.md` covers the normal path: fill in the paths JSON, `sbatch`. This
+[`README.md`](../../README.md) covers the normal path: fill in the paths file, `sbatch`. This
 document explains what happens underneath and what each parameter actually
 changes.
 
@@ -8,9 +8,10 @@ changes.
 
 Every user-specific path lives in `new_hogwild_train_paths.sh`, a plain list of
 `export` lines. Nothing else in the repository holds one, so a new user edits
-exactly this file.
+exactly this file. Create it from the template:
+`cp new_hogwild_train_paths.sh.example new_hogwild_train_paths.sh`.
 
-`new_hogwild_train.slurm` sources it, and everything in it is exported, so the
+[`new_hogwild_train.slurm`](../new_hogwild_train.slurm) sources it, and everything in it is exported, so the
 trainer and the CARLA multiserver inherit the values with no further plumbing.
 The lookup order is:
 
@@ -28,7 +29,7 @@ where it is used, so an error names both the variable and the file to fix.
 | Variable | Default | Meaning |
 |---|---|---|
 | `CARLA_CONTAINER_IMAGE` | **none — you set this** | Apptainer `.sif` holding the CARLA server. Checked just before the servers start, so `--no-carla` runs do not need it. |
-| `PROJECT_DIR` | the directory you ran `sbatch` from | Absolute path of the `A3C/` directory. Becomes the working directory. |
+| `PROJECT_DIR` | the directory you ran `sbatch` from | Absolute path of the [`A3C/`](../) directory. Becomes the working directory. |
 | `MULTISERVER_SCRIPT` | `${PROJECT_DIR}/../carla_athena_multiserver_v3.py` | CARLA multiserver launcher — its location in a fresh checkout. The job stops with its path if the file is not there. |
 | `RUNS_DIR` | `${PROJECT_DIR}/runs` | Parent of the per-run output directories. Point it elsewhere when code and results live on different filesystems. |
 | `VENV` | unset — use the Python on `PATH` | Virtualenv to activate. When set it must exist; the job stops rather than running on the wrong Python. |
@@ -40,8 +41,9 @@ where it is used, so an error names both the variable and the file to fix.
 | `CARLA_PATH` | empty | CARLA executable directory, only for starting CARLA from Python instead of through `MULTISERVER_SCRIPT`. Reaches the code as `settings.CARLA_PATH`. |
 | `CARLA_EGG_PATH` | empty | CARLA `.egg` glob pattern, same case as above. |
 
-`--venv`, `--project-dir`, and `--multiserver-script` override the first three
-for a single job without editing the file.
+`--venv`, `--project-dir`, and `--multiserver-script` override `VENV`,
+`PROJECT_DIR`, and `MULTISERVER_SCRIPT` for a single job without editing the
+file.
 
 The file is gitignored, so a W&B key or a private scratch path in it is not
 committed.
@@ -103,7 +105,7 @@ is a reasonable range.
 | `--workers-per-gpu` | `2` | Learner processes per GPU. |
 | `--worker-gpu-start` | `0` | First GPU index used by learners. |
 | `--start-port`, `--port-step` | `2000`, `100` | RPC ports of the CARLA servers. Worker *i* connects to `start-port + i * port-step`. |
-| `--scenario` | `14` | Route set. Full list of ids is documented in `settings.py`. Several ids can be given. |
+| `--scenario` | `14` | Route set. Full list of ids is documented in [`settings.py`](../settings.py). Several ids can be given. |
 | `--camera` | `semantic` | `semantic` or `rgb`. Changes the observation, so switching invalidates old checkpoints. |
 | `--res` | `250` | Camera resolution fed to the network. Also invalidates old checkpoints. |
 | `--seed` | `52` | RNG seed. Does not make a Hogwild run deterministic — worker interleaving is not reproducible. |
@@ -126,14 +128,14 @@ is a reasonable range.
 | `--max-grad-norm` | `5.0` | Gradient clipping threshold. `0` disables it. Check `train/grad_clipped`: constant 1 means the threshold is too tight. |
 | `--no-normalize-advantages` | normalization on | Turns off per-rollout advantage normalization. With 20-step rollouts normalization is usually helpful. |
 | `--weight-decay` | `0.0` | L2 regularization. |
-| `--reward-scale` | `0.0` | Multiplies rewards before the loss. `0` means no scaling. |
+| `--reward-scale` | `0.0` | Divides rewards before the loss. `0` means no scaling. |
 | `--sync-every-n-updates` | `1` | How often a worker pulls fresh weights from the shared model. Raising it reduces contention at the cost of more staleness. |
 | `--hogwild-lock-updates` | off | Serializes optimizer steps. Removes the Hogwild race at a throughput cost; useful when diagnosing instability. |
 | `--gc-interval` | `10` | Episodes between forced garbage collection and CUDA cache clearing. |
 
 Optimizer internals (`RMSPROP_ALPHA`, `RMSPROP_EPS`, `ADAM_BETA1`,
 `ADAM_BETA2`, `ADAM_EPS`) are deliberately not CLI arguments — they are
-module-level constants in `new_hogwild_train_a3c_carla.py` and are filled in as
+module-level constants in [`new_hogwild_train_a3c_carla.py`](../new_hogwild_train_a3c_carla.py) and are filled in as
 defaults when missing.
 
 ## Environment and reward parameters
@@ -148,7 +150,7 @@ defaults when missing.
 The shaping coefficients (`DEFAULT_REWARD_PROGRESS_COEF`,
 `DEFAULT_REWARD_GOAL_BONUS`, `DEFAULT_REWARD_COLLISION_PENALTY`,
 `DEFAULT_REWARD_CLIP`, and the rest) are **not** CLI arguments. They are
-module-level constants near the top of `new_hogwild_train_a3c_carla.py` and are
+module-level constants near the top of [`new_hogwild_train_a3c_carla.py`](../new_hogwild_train_a3c_carla.py) and are
 edited in place. Every one of them is recorded in `logs/metadata.json`, so past
 runs stay reproducible.
 
@@ -197,7 +199,7 @@ checkpoint no longer matches the network.
 | Parameter | Default | What it controls |
 |---|---|---|
 | `--no-wandb` | off | Disables W&B. Local JSONL is unaffected, and `events.jsonl` is still written. |
-| `--wandb-project`, `--wandb-run-name`, `--wandb-entity` | from paths JSON | W&B destination. |
+| `--wandb-project`, `--wandb-run-name`, `--wandb-entity` | from the paths file | W&B destination. |
 | `--log-steps` | off | One record per environment step. Enormous; use only for short debugging runs. |
 | `--log-update-arrays` | off | Keeps raw advantage/value/reward/entropy arrays inside update records. |
 | `--diag-log-interval` | `100` | Updates between timing snapshots. |

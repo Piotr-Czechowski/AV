@@ -16,20 +16,20 @@ pipeline script
 
 | Process | Code | Owns |
 |---|---|---|
-| Launcher | `carla_multiserver_launcher.py` | The CARLA servers. Restarts one that exits or hangs (`docs/launch.md`). |
-| Main | `train_a3c.py`, `run_a3c.py` | The global model, the shared optimizer, and the run counters, all in CPU shared memory. Supervises the workers and writes the last checkpoint. |
-| Worker | `a3c_core.py` | One CARLA client, one local copy of the model on its device, its own log files. |
-| Telemetry | `training_logger.py` | `logs/events.jsonl` and every call to W&B. |
+| Launcher | [`carla_multiserver_launcher.py`](../carla_multiserver_launcher.py) | The CARLA servers. Restarts one that exits or hangs ([`docs/launch.md`](launch.md)). |
+| Main | [`train_a3c.py`](../train_a3c.py), [`run_a3c.py`](../run_a3c.py) | The global model, the shared optimizer, and the run counters, all in CPU shared memory. Supervises the workers and writes the last checkpoint. |
+| Worker | [`a3c_core.py`](../a3c_core.py) | One CARLA client, one local copy of the model on its device, its own log files. |
+| Telemetry | [`training_logger.py`](../training_logger.py) | `logs/events.jsonl` and every call to W&B. |
 
 Three boundaries keep the parts replaceable:
 
-- `train_a3c.py` never starts the simulator. It waits for servers that already listen on the expected ports.
-- `a3c_core.py` and `carla_wrapper.py` read neither `settings.py` nor the command line. `train_a3c.py` builds one config namespace and passes it down. Every field is required: a missing one raises `AttributeError` instead of falling back to a second default.
-- The core does not look inside an observation. It moves the observation dict from the wrapper to the model. `rl_configuration.py` and `model.py` define what the dict holds and what the network does with it.
+- [`train_a3c.py`](../train_a3c.py) never starts the simulator. It waits for servers that already listen on the expected ports.
+- [`a3c_core.py`](../a3c_core.py) and [`carla_wrapper.py`](../carla_wrapper.py) read neither [`settings.py`](../settings.py) nor the command line. [`train_a3c.py`](../train_a3c.py) builds one config namespace and passes it down. Every field is required: a missing one raises `AttributeError` instead of falling back to a second default.
+- The core does not look inside an observation. It moves the observation dict from the wrapper to the model. [`rl_configuration.py`](../rl_configuration.py) and [`model.py`](../model.py) define what the dict holds and what the network does with it.
 
 ## Life of a run
 
-1. **Config.** `train_a3c.py` parses the CLI and adds the constants that have no flag, the number of actions, the observation spec, and the worker-to-device map.
+1. **Config.** [`train_a3c.py`](../train_a3c.py) parses the CLI and adds the constants that have no flag, the number of actions, the observation spec, and the worker-to-device map.
 2. **Run directory.** A new run creates its directory and refuses one that already holds a run. `--resume` continues in an existing one.
 3. **Global network.** The model and the optimizer are created on the CPU and placed in shared memory. `--init-from` loads weights. `--resume` loads weights, optimizer state, and counters.
 4. **Telemetry.** The telemetry process starts and writes the `training_start` event.
@@ -58,7 +58,7 @@ runs/a3c_<N>w_<date>[_<job id>]/
 
 ## Checkpoints and resume
 
-`checkpoint.pth` holds the model weights, the optimizer state, and the run counters (steps, episodes, updates), and the reward statistics (`reward_stats`: reward windows, best and worst rewards, reached reward thresholds, and the active training time; see `docs/logging.md`). `--resume` restores all of them; a checkpoint written before `reward_stats` existed is migrated. It is written to a temporary file and renamed, so an interrupted write leaves the previous file intact.
+`checkpoint.pth` holds the model weights, the optimizer state, and the run counters (steps, episodes, updates), and the reward statistics (`reward_stats`: reward windows, best and worst rewards, reached reward thresholds, and the active training time; see [`docs/logging.md`](logging.md)). `--resume` restores all of them; a checkpoint written before `reward_stats` existed is migrated. It is written to a temporary file and renamed, so an interrupted write leaves the previous file intact.
 
 It is written at two moments:
 
@@ -83,7 +83,7 @@ Only the latest state is kept. A new best episode reward is logged (`[BEST]`, `i
 
 | Failure | Reaction |
 |---|---|
-| A CARLA server exits or hangs | The launcher restarts it (`docs/launch.md`). The worker notices through the next two rows. |
+| A CARLA server exits or hangs | The launcher restarts it ([`docs/launch.md`](launch.md)). The worker notices through the next two rows. |
 | A CARLA call times out (`... waiting for the simulator`) | The worker emits `crash_recovery`, drops the rollout, waits `--carla-timeout-wait`, and reconnects. A connection is tried `--max-connect-retries` times, `--connect-retry-wait` apart. |
 | No camera frame within 2 s | The worker emits `camera_timeout`, drops the rollout, and starts a new episode. |
 | NaN in the gradients | The worker emits `nan_gradient`, skips the update, and copies the global weights again. |
@@ -109,4 +109,4 @@ Only the latest state is kept. A new best episode reward is logged (`[BEST]`, `i
 | `--max-connect-retries` | 5 | Connection attempts of a worker |
 | `--connect-retry-wait` | 30 s | Wait between connection attempts |
 
-The client timeout for one CARLA call (`CLIENT_TIMEOUT_S`, 120 s) and the camera timeout (`CAMERA_TIMEOUT_S`, 2 s) are constants at the top of `carla_env.py`.
+The client timeout for one CARLA call (`CLIENT_TIMEOUT_S`, 120 s) and the camera timeout (`CAMERA_TIMEOUT_S`, 2 s) are constants at the top of [`carla_env.py`](../carla_env.py).

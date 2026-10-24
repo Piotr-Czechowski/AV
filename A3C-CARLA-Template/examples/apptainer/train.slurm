@@ -1,12 +1,12 @@
 #!/bin/bash
-#SBATCH --partition=CHANGE_ME
+#SBATCH --partition=plgrid-gpu-a100
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=7
 #SBATCH --mem=25G
 #SBATCH --time=20:50:00
 #SBATCH --gpus=1
-#SBATCH --account=CHANGE_ME
+#SBATCH --account=plgdyplomanci7-gpu-a100
 #SBATCH --job-name=a3c-carla
 #SBATCH --output=a3c-carla-log-%J.log
 #SBATCH --error=a3c-carla-log-%J.log
@@ -71,7 +71,9 @@ if [ -n "${TMPDIR:-}" ] && [ -n "${SLURM_JOB_ID:-}" ]; then
 fi
 
 # Site-specific modules. Uncomment and edit for your cluster.
-# module load GCCcore/11.3.0 Python/3.10.4 2>/dev/null || true
+# Athena: Python 3.10 for the launcher venv. Training runs in the client
+# image, which brings its own CUDA, so the CUDA modules stay off.
+module load GCCcore/11.3.0 Python/3.10.4 2>/dev/null || true
 # module load CUDA/12.4.0 cuDNN/9.2.1.18-CUDA-12.4.0 2>/dev/null || true
 
 if [ -n "${VENV:-}" ]; then
@@ -137,7 +139,15 @@ setsid "${LAUNCHER_CMD[@]}" > "${CARLA_LOG}" 2>&1 &
 LAUNCHER_PID=$!
 
 # --- 5. Training in the background; it waits for the servers itself ---
-TRAIN_CMD=(python -u train_a3c.py --num-workers "${NUM_WORKERS}")
+# With CLIENT_CONTAINER_IMAGE set, training runs inside that image. The
+# launcher stays on the host, because it is the one that calls apptainer.
+TRAIN_PYTHON=(python)
+if [ -n "${CLIENT_CONTAINER_IMAGE:-}" ]; then
+    # The host module's PYTHONPATH must not reach the Python in the image.
+    TRAIN_PYTHON=(env -u PYTHONPATH apptainer exec --nv
+        "${CLIENT_CONTAINER_IMAGE}" "${CLIENT_PYTHON:-python}")
+fi
+TRAIN_CMD=("${TRAIN_PYTHON[@]}" -u train_a3c.py --num-workers "${NUM_WORKERS}")
 [ -n "${START_PORT}" ] && TRAIN_CMD+=(--start-port "${START_PORT}")
 if [ -n "${RESUME}" ]; then
     TRAIN_CMD+=(--resume "${RESUME}")

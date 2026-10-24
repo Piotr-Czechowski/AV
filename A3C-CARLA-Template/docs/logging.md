@@ -57,7 +57,7 @@ Training writes on three cadences, from densest to sparsest:
 
 ## Reward statistics
 
-`reward_stats.py` keeps ring buffers of **episode rewards** (`total_reward`)
+[`reward_stats.py`](../reward_stats.py) keeps ring buffers of **episode rewards** (`total_reward`)
 in shared memory and attaches the results to each episode record:
 
 - **worker window**: the last 100 episodes of one worker (`local_*_100`),
@@ -214,7 +214,7 @@ Every term of the reward is logged under its own name, so you can see which one 
 - `--reward-mode legacy` has one component, `legacy`.
 - `--reward-mode shaped` has `progress`, `target_speed`, `route_penalty`, `time_penalty`, `goal_bonus`, `collision_penalty`, `offroute_penalty`, `lane_invasion_penalty`, and `total`. `total` is the sum after clipping. It equals `episode/reward`, so the episode view does not send it again.
 
-The formulas are in `docs/environment.md`. A term added to the shaped reward appears in the logs without further changes.
+The formulas are in [`docs/environment.md`](environment.md). A term added to the shaped reward appears in the logs without further changes.
 
 ## Resource values
 

@@ -98,8 +98,9 @@ alone).
 
 ## Reward components
 
-Present only with `--reward-mode shaped`. Each term is logged separately so you
-can see which one dominates.
+Each term is logged separately so you can see which one dominates.
+`--reward-mode legacy` (the default) has one component, `legacy`: the
+unchanged `CarlaEnv` reward. `--reward-mode shaped` has the terms below.
 
 | Component | Meaning |
 |---|---|
@@ -135,8 +136,8 @@ reaches W&B.
 
 Written to `logs/worker_<id>/timing.jsonl` only — **not** sent to W&B. Each
 record holds `avg_ms`, `count`, and `total_s` for the phases of the training
-loop (`forward`, `backward`, `optim_update`, `sync`, `env_step`,
-`checkpoint_save`). This is where you look when steps-per-second drops.
+loop (`sync`, `env_reset`, `forward`, `env_step`, `loss_compute`, `backward`,
+`optim_update`, `checkpoint_save`). This is where you look when steps-per-second drops.
 
 ## Events
 
@@ -149,7 +150,7 @@ local; W&B receives only a running counter, and only for the six health types.
 |---|---|---|
 | `training_start` | Session begins — worker count, GPU map, resume flag | — |
 | `training_end` | Session ends — steps, elapsed time, restart counts, error | — |
-| `worker_start` | A worker process is started or restarted | — |
+| `worker_start` | A worker process is started at the beginning of a session | — |
 | `worker_restart` | A worker died and is being restarted | `health/worker_restarts_total` |
 | `worker_give_up` | `--max-restarts-per-worker` exceeded; worker abandoned | `health/workers_given_up_total` |
 | `worker_crash` | Unhandled exception inside a worker | `health/worker_crashes_total` |
