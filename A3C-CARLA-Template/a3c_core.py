@@ -848,6 +848,8 @@ class A3CWorker(mp.Process):
                         self.reward_components.append(
                             info.get('reward_components', {}))
                         episode_total_reward += reward
+                        if sum(self.rewards) <= -6:
+                            done = True
 
                         if self.config.log_steps:
                             training_logger.log_step(

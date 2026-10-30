@@ -9,6 +9,8 @@ The A2C's high-level flow:
 
 import glob
 import pdb
+import queue
+import signal
 import time
 import numpy as np
 import os
@@ -22,7 +24,6 @@ import torch.multiprocessing as mp
 import wandb
 import settings
 from torch.distributions.categorical import Categorical
-from torch.distributions.multivariate_normal import MultivariateNormal
 
 from carla_env import CarlaEnv
 import carla
@@ -33,8 +34,7 @@ from pathlib import Path
 
 # For RGB
 # from nets.a2c import Actor as DeepActor  # Continuous
-from nets.a2c import DiscreteActor as DeepDiscreteActor  # Separate actor
-from nets.a2c import Critic as DeepCritic  # Separate critic
+from nets.a2c import SharedImageSpeedActorCritic
 
 from ACTIONS import ACTIONS as ac
 from utils import ColoredPrint
@@ -56,8 +56,8 @@ port = settings.PORT
 action_type = settings.ACTION_TYPE
 camera_type = settings.CAMERA_TYPE
 load_model = settings.LOAD_MODEL
-model_incr_load = 'A_to_B_GPU_34/PC_models/currently_trained/synchr_200_semantic_camera_7_15_img_right_manouver_enhanced_base_model_1_1.pth'
-model_incr_save = 'A_to_B_GPU_34/PC_models/currently_trained/synchr_200_semantic_camera_7_15_img_right_manouver_enhanced_base_model_1_1'
+model_incr_load = 'A_to_B_GPU_34/PC_models/currently_trained/a2c_shared_image_speed.pth'
+model_incr_save = model_incr_load
 
 gamma = settings.GAMMA
 lr = settings.LR
@@ -65,6 +65,74 @@ use_entropy = settings.USE_ENTROPY
 scenario = settings.SCENARIO
 testing = settings.TESTING
 logging = settings.LOGGING
+
+STOP_REQUESTED = False
+ACTIVE_WORKER = None
+
+
+def _request_worker_stop(signum, frame):
+    global STOP_REQUESTED
+    STOP_REQUESTED = True
+    print('[SLURM] Stop requested; finishing the current episode before exit.')
+
+
+def _forward_stop_to_worker(signum, frame):
+    global STOP_REQUESTED
+    STOP_REQUESTED = True
+    print('[SLURM] Stop requested; forwarding to the A2C worker.')
+    if ACTIVE_WORKER is not None and ACTIVE_WORKER.is_alive():
+        try:
+            os.kill(ACTIVE_WORKER.pid, signal.SIGUSR1)
+        except ProcessLookupError:
+            pass
+
+
+def _normalized_speed_tensor(speed):
+    return torch.as_tensor(
+        [[float(speed) / 100.0]], dtype=torch.float32, device=device)
+
+
+def _run_state_path(filename):
+    run_dir = os.environ.get('A2C_RUN_DIR')
+    return Path(run_dir) / filename if run_dir else None
+
+
+def _get_wandb_run_id():
+    run_id_path = _run_state_path('wandb_run_id.txt')
+    if run_id_path is None:
+        return None
+    if run_id_path.exists():
+        run_id = run_id_path.read_text().strip()
+        if not run_id:
+            raise RuntimeError(
+                'W&B run ID file is empty: {}'.format(run_id_path))
+        return run_id
+
+    run_id = wandb.util.generate_id()
+    temporary_path = run_id_path.with_suffix('.tmp')
+    temporary_path.write_text(run_id)
+    temporary_path.replace(run_id_path)
+    return run_id
+
+
+def _load_run_global_step():
+    step_path = _run_state_path('global_step.txt')
+    if step_path is None or not step_path.exists():
+        return None
+    step = int(step_path.read_text().strip())
+    if step < 0:
+        raise ValueError('Invalid negative A2C global step in {}'.format(
+            step_path))
+    return step
+
+
+def _save_run_global_step(step):
+    step_path = _run_state_path('global_step.txt')
+    if step_path is None:
+        return
+    temporary_path = step_path.with_suffix('.tmp')
+    temporary_path.write_text(str(step))
+    temporary_path.replace(step_path)
 
 
 # Transition - the representation of a single transition
@@ -74,7 +142,8 @@ logging = settings.LOGGING
 :param a: the action taken
 :param log_prob_a: the logarithm of the probability of taking action a according to the actor's current policy
 """
-Transition = namedtuple("Transition", ["s", "value_s", "a", "log_prob_a"])
+Transition = namedtuple(
+    "Transition", ["s", "value_s", "a", "log_prob_a", "entropy"])
 
 
 class DeepActorCriticAgent(mp.Process):
@@ -99,118 +168,42 @@ class DeepActorCriticAgent(mp.Process):
         self.environment = env  # Carla env
         self.trajectory = []  # Contains the trajectory of the self as a sequence of transitions
         self.rewards = []  # Contains the rewards obtained from the env at every step
-        self.policy = self.discrete_policy  # discrete or continuous
-
         self.best_mean_reward = - float("inf")  # self's personal best mean episode reward
         self.best_reward = - float("inf")
         self.global_step_num = 0
         self.log = ColoredPrint()
 
-        # For continuous policy
-        self.mu, self.sigma = 0, 0
-        # For discrete policy
-        self.logits = 0
-
-        self.value = 0
-        self.action_distribution = None
-
-        # state_shape = [80, 80, 3]
-        state_shape = [200, 200, 3]
-
-        critic_shape = 1
-
         if self.action_type == 'discrete':
             self.action_shape = len(ac.ACTIONS_NAMES)
-            self.policy = self.discrete_policy
-            self.actor = DeepDiscreteActor(input_shape=state_shape, actor_shape=self.action_shape, device=device).to(device)
-
-            # self.actor = DeepDiscreteActor(state_shape, self.action_shape, device).to(device)
-        # elif self.action_type == 'continuous':
-        #     self.action_shape = 2
-        #     self.policy = self.multi_variate_gaussian_policy
-            # self.actor = DeepActor(state_shape, self.action_shape, device).to(device)
         else:
             self.log.err(f"Wrong action type: {self.action_type}, choose discrete or continuous")
 
-        self.critic = DeepCritic(state_shape, critic_shape, device).to(device)
-        # self.critic = DeepCritic(state_shape, critic_shape, embed_dim=128, device=device).to(device)
-        self.actor_optimizer = torch.optim.Adam(self.actor.parameters(), lr=self.lr, weight_decay=1e-2)
-        self.critic_optimizer = torch.optim.Adam(self.critic.parameters(), lr=self.lr, weight_decay=1e-2)
+        self.model = SharedImageSpeedActorCritic(
+            n_actions=self.action_shape, device=device).to(device)
+        self.optimizer = torch.optim.Adam(
+            self.model.parameters(), lr=self.lr, weight_decay=1e-2)
         self.mean_reward = 0
         self.episode = 0
 
-    def multi_variate_gaussian_policy(self, obs):
-        """
-        Calculates a multi-variate gaussian distribution over actions given observations
-        :param obs: self's observation
-        :return: policy, a distribution over actions for the given observation
-        """
-        mu, sigma = self.actor(obs)
-        value = self.critic(obs)
-        # Clamp each dim of mu based on the (low,high) limits of that action dim
-        [mu[:, i].clamp_(-1, 1) for i in range(self.action_shape)]
-        sigma = torch.nn.Softplus()(sigma).squeeze() + 1e-7  # Let sigma be (smoothly) +ve
-        self.mu = mu.to(torch.device("cuda"))
-        self.sigma = sigma.to(torch.device("cuda"))
-        self.value = value.to(torch.device("cuda"))
-        if len(self.mu.shape) == 0: # See if mu is a scalar
-            self.mu.unsqueeze_(0)
-
-        self.action_distribution = MultivariateNormal(self.mu, torch.eye(self.action_shape).to(device) * self.sigma,
-                                                      validate_args=True)
-        return self.action_distribution
-
-    def process_action(self, action):
-        if self.action_type == 'continuous':
-            # Limit the action to lie between the (low, high) limits of the env
-            [action[:, i].clamp_(-1, 1) for i in range(self.action_shape)]
-        action = action.to(torch.device("cuda"))
-        return action.cpu().numpy().squeeze(0)  # Convert to numpy ndarray, squeeze and remove the batch dimension
-
-    # def get_action(self, obs, speed, manouver):
-    # def get_action(self, obs, speed, testing=False):
-    def get_action(self, obs, speed, manouver, testing=False):
-
+    def get_action(self, obs, speed, testing=False):
+        observation = {"image": obs, "speed": speed}
         if testing:
             with torch.no_grad():
-                action_distribution = self.policy(obs, speed, manouver) 
-            action = action_distribution.probs.argmax(dim=-1)
+                logits, value = self.model(observation)
         else:
-            action_distribution = self.policy(obs, speed, manouver) 
-            action = action_distribution.sample()
-        
+            logits, value = self.model(observation)
+        action_distribution = Categorical(logits=logits)
+        action = action_distribution.probs.argmax(dim=-1) if testing \
+            else action_distribution.sample()
         log_prob_a = action_distribution.log_prob(action)
-
-        action = self.process_action(action)
-        # Store the n-step trajectory while training. Skip storing the trajectories in test mode
-        # Construct the trajectory
+        entropy = action_distribution.entropy()
         if not testing:
-            self.trajectory.append(Transition(obs, self.value, action, log_prob_a)) 
-        return action
+            self.trajectory.append(Transition(
+                observation, value, action, log_prob_a, entropy))
+        return int(action.item())
 
-    def discrete_policy(self, obs, speed, manouver):
-    # def discrete_policy(self, obs, speed):
-        """
-        Calculates a discrete/categorical distribution over actions given observations
-        :param obs: self's observation
-        :return: policy, a distribution over actions for the given observation
-        """
-        logits = self.actor(obs, speed, manouver)
-        value = self.critic(obs, speed, manouver)
-        # logits = self.actor(obs, speed)
-        # value = self.critic(obs, speed)
-        self.logits = logits.to(torch.device("cuda"))
-        self.value = value.to(torch.device("cuda"))
-        """
-        The logits argument will be interpreted as unnormalized log probabilities and can therefore be any real number. 
-        It will likewise be normalized so that the resulting probabilities sum to 1 along the last dimension. 
-        attr:logits will return this normalized value.
-        """
-        self.action_distribution = Categorical(logits=self.logits)
-        return self.action_distribution
-
-    def calculate_n_step_return(self, n_step_rewards, final_state, done, gamma, final_speed, manouver):
-    # def calculate_n_step_return(self, n_step_rewards, final_state, done, gamma, final_speed):
+    def calculate_n_step_return(self, n_step_rewards, final_state, done,
+                                gamma, final_speed):
 
         """A_to_B_GPU_34/PC_models/currently_trained/synchr_sc3_30_start_sc_3.pth
         Calculates the n-step return for each state in the input-trajectory/n_step_transitions
@@ -221,10 +214,17 @@ class DeepActorCriticAgent(mp.Process):
         """
         g_t_n_s = []
         with torch.no_grad():
-            g_t_n = torch.tensor([[0]]).float().to(device) if done else self.critic(final_state, final_speed, manouver)
-            # g_t_n = torch.tensor([[0]]).float().to(device) if done else self.critic(final_state, final_speed)
+            if done:
+                g_t_n = torch.zeros((1, 1), dtype=torch.float32, device=device)
+            else:
+                _, g_t_n = self.model({
+                    "image": final_state,
+                    "speed": final_speed,
+                })
             for r_t in n_step_rewards[::-1]:  # Reverse order; From r_tpn to r_t
-                g_t_n = torch.tensor(r_t).float() + gamma * g_t_n
+                g_t_n = torch.as_tensor(
+                    r_t, dtype=torch.float32, device=device).view(1, 1) \
+                    + gamma * g_t_n
                 g_t_n_s.insert(0, g_t_n)  # n-step returns inserted to the left to maintain correct index order
             return g_t_n_s
 
@@ -237,64 +237,46 @@ class DeepActorCriticAgent(mp.Process):
         n_step_trajectory = Transition(*zip(*trajectory))
         v_s_batch = n_step_trajectory.value_s  # Critic prediction of the value of state s
         log_prob_a_batch = n_step_trajectory.log_prob_a
-        actor_losses, critic_losses, advantages = [], [], []
-        for td_target, critic_prediction, log_p_a in zip(td_targets, v_s_batch, log_prob_a_batch):
-            #writer.add_scalar("Value", critic_prediction, self.global_step_num)
-            td_err = td_target - critic_prediction  # td_err is an unbiased estimated of Advantage
-            advantages.append(td_err)
-            result = - log_p_a * td_err
-
-            actor_losses.append(result)
-            critic_losses.append(F.smooth_l1_loss(critic_prediction, td_target))
-
+        entropies = n_step_trajectory.entropy
+        values = torch.cat([value.view(1, -1) for value in v_s_batch], dim=0)
+        returns = torch.cat([target.view(1, -1) for target in td_targets], dim=0)
+        log_probs = torch.cat(
+            [log_prob.view(-1) for log_prob in log_prob_a_batch])
+        advantages = returns - values.detach()
+        actor_loss = -(log_probs * advantages.view(-1)).mean()
         if self.use_entropy:
-            actor_loss = torch.stack(actor_losses).mean() - self.action_distribution.entropy().mean()
-        else:
-            actor_loss = torch.stack(actor_losses).mean()
-
-        critic_loss = torch.stack(critic_losses).mean()
-        advantage = torch.stack(advantages).mean()
+            entropy = torch.cat([item.view(-1) for item in entropies]).mean()
+            actor_loss = actor_loss - entropy
+        critic_loss = F.smooth_l1_loss(values, returns)
 
         return actor_loss, critic_loss
 
-    def optimize(self, final_state_rgb, done, final_speed, manouver):
-    # def optimize(self, final_state_rgb, done, final_speed):
-
-        td_targets = self.calculate_n_step_return(self.rewards, final_state_rgb, done, self.gamma, final_speed, manouver)
-        # td_targets = self.calculate_n_step_return(self.rewards, final_state_rgb, done, self.gamma, final_speed)
+    def optimize(self, final_state_rgb, done, final_speed):
+        td_targets = self.calculate_n_step_return(
+            self.rewards, final_state_rgb, done, self.gamma, final_speed)
 
         actor_loss, critic_loss = self.calculate_loss(self.trajectory, td_targets)
+        self.optimizer.zero_grad()
+        (actor_loss + critic_loss).backward()
+        gradient_logs = {}
         if logging:
-            wandb.log({"actor_loss": actor_loss, "critic_loss": critic_loss})
-        self.actor_optimizer.zero_grad()
-        actor_loss.backward(retain_graph=True)
-        for name, param in self.actor.named_parameters():
-            if param.grad is not None:
-                if logging:
-                    try:
-                        wandb.log({f"gradients/actor/{name}": wandb.Histogram(param.grad.cpu().numpy())})
-                    except:
-                        pass
-                else:
-                    pass
-        self.actor_optimizer.step()
-
-
-        self.critic_optimizer.zero_grad()
-        critic_loss.backward()
-        for name, param in self.critic.named_parameters():
-            if param.grad is not None:
-                if logging:
-                    wandb.log({f"gradients/critic/{name}": wandb.Histogram(param.grad.cpu().numpy())})
-                else:
-                    pass
-        self.critic_optimizer.step()
-        actor_lr = self.actor_optimizer.param_groups[0]['lr']
-        critic_lr =self.critic_optimizer.param_groups[0]['lr']
+            for name, param in self.model.named_parameters():
+                if param.grad is not None:
+                    gradient_logs[f"gradients/{name}"] = wandb.Histogram(
+                        param.grad.detach().cpu().numpy())
+        self.optimizer.step()
+        if logging:
+            wandb.log({
+                "global_step": self.global_step_num,
+                "actor_loss": actor_loss.detach(),
+                "critic_loss": critic_loss.detach(),
+                **gradient_logs,
+            })
+        learning_rate = self.optimizer.param_groups[0]['lr']
         self.trajectory.clear()
         self.rewards.clear()
 
-        return actor_loss, critic_loss, actor_lr, critic_lr
+        return actor_loss, critic_loss, learning_rate, learning_rate
     
     # def save(self, name):
     #     model_file_name = name + ".pth"
@@ -357,18 +339,14 @@ class DeepActorCriticAgent(mp.Process):
         if logging:
             print(f"Saving checkpoint to: {save_path}")
 
-        # The core logic is the same, but we use slightly more descriptive keys.
-        # Calling .state_dict() on the new models automatically includes all sub-modules,
-        # including the SharedFeatureExtractor.
         checkpoint = {
-            "actor_state_dict": self.actor.state_dict(),
-            "critic_state_dict": self.critic.state_dict(),
-            "actor_optimizer_state_dict": self.actor_optimizer.state_dict(),
-            "critic_optimizer_state_dict": self.critic_optimizer.state_dict(),
+            "model_state_dict": self.model.state_dict(),
+            "optimizer_state_dict": self.optimizer.state_dict(),
             "best_mean_reward": self.best_mean_reward,
             "best_reward": self.best_reward,
             "episode": self.episode,
-            "mean_reward": self.mean_reward
+            "mean_reward": self.mean_reward,
+            "global_step": self.global_step_num,
         }
 
         # Save the checkpoint dictionary
@@ -397,17 +375,8 @@ class DeepActorCriticAgent(mp.Process):
         # Load the checkpoint onto the correct device (CPU or GPU)
         checkpoint = torch.load(load_path, map_location=device)
 
-        # Load the state dictionaries into the new model instances
-        self.actor.load_state_dict(checkpoint["actor_state_dict"])
-        self.critic.load_state_dict(checkpoint["critic_state_dict"])
-        
-        # Load the state for the optimizers
-        self.actor_optimizer.load_state_dict(checkpoint["actor_optimizer_state_dict"])
-        self.critic_optimizer.load_state_dict(checkpoint["critic_optimizer_state_dict"])
-
-        # Ensure models are on the correct device after loading
-        self.actor.to(device)
-        self.critic.to(device)
+        self.model.load_state_dict(checkpoint["model_state_dict"])
+        self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
 
         # Safely load training metadata using .get() with default values.
         # This prevents errors if a checkpoint is missing a key.
@@ -415,6 +384,7 @@ class DeepActorCriticAgent(mp.Process):
         self.mean_reward = checkpoint.get("mean_reward", -float('inf'))
         self.best_mean_reward = checkpoint.get("best_mean_reward", -float('inf'))
         self.best_reward = checkpoint.get("best_reward", -float('inf'))
+        self.global_step_num = checkpoint.get("global_step", 0)
 
         if logging:
             print("Checkpoint loaded successfully.")
@@ -422,29 +392,31 @@ class DeepActorCriticAgent(mp.Process):
             print(f"Best Mean Reward: {self.best_mean_reward:.2f}, Best Reward: {self.best_reward:.2f}")
         
 def handle_crash(results_queue):
+    signal.signal(signal.SIGUSR1, _request_worker_stop)
+    signal.signal(signal.SIGTERM, _request_worker_stop)
     if logging:
-        print('Beginngin Weights and Biases initialization')
+        print('Initializing Weights & Biases')
+        wandb_run_id = _get_wandb_run_id()
         wandb.init(
-        # set the ##wandb project where this run will be logged
-        project="A_to_B",
-        # create or extend already logged run:
-        resume="allow",
-        id="synchr_200_semantic_camera_7_15_img_right_manouver_enhanced_base_model_1_1.pth",
-
-        # track hyperparameters and run metadata
-        config={
-        "name" : "synchr_200_semantic_camera_7_15_img_right_manouver_enhanced_base_model_1_1.pth",
-        "learning_rate": lr
-        }
+            project=os.environ.get('WANDB_PROJECT', 'A_to_B'),
+            entity=os.environ.get('WANDB_ENTITY') or None,
+            name=os.environ.get('WANDB_RUN_NAME') or None,
+            id=wandb_run_id,
+            resume='allow' if wandb_run_id else None,
+            config={
+                'algorithm': 'A2C',
+                'scenario': scenario,
+                'map': 'Town03',
+                'camera': camera_type,
+                'learning_rate': lr,
+                'gamma': gamma,
+                'action_type': action_type,
+                'seed': seed,
+            },
+            notes='A2C CARLA experiment from a2c_rgb_try2.py',
         )
-        wandb.run.notes = "Town01. Kamera: carla.Location(x=0.3, z=2.5), carla.Rotation(pitch=-10) Img+speed+manouver. FOV = 75. speed/100.Nowy model (nie ten z blokami rezydualnymi), z predkoscia oraz manewrem na wejsciu. Scenariusz 13 - Krotkie skrety w prawo na roznych skrzyzowaniach. Slight turns like:  9: [0, 1, 0.2], #brake slight right. Gradients logged. Stara/nowa  funkcja nagrody(sin, nacisk an jazde okolo 20 km/h). Kamera (x = 0.3, z=2.5, pitch=-10)\n    " \
-        "speed_reward = -1.2 + 4*math.sin(speed/10) # pik jest w okolicach 20 km/h"\
-        "if route_distance < 1.5:"\
-        "    route_distance_reward = 1"\
-        "    if on_junction and speed_reward > 0:"\
-        "        route_distance_reward = route_distance_reward * 4"\
-        "else:"\
-        "    route_distance_reward = -4*math.sin(speed/10)"
+        wandb.define_metric('global_step')
+        wandb.define_metric('*', step_metric='global_step')
     agent = DeepActorCriticAgent()
     agent.mean_reward = 0
     agent.episode = 0
@@ -455,7 +427,13 @@ def handle_crash(results_queue):
         print(f'Loaded model and episode is {agent.episode}')
     else:
         print("model jeszcze nie istnieje.")
-
+    run_global_step = _load_run_global_step()
+    if run_global_step is not None:
+        agent.global_step_num = run_global_step
+        print('Resuming global step from this Slurm run: {}'.format(
+            run_global_step))
+    elif os.environ.get('A2C_RUN_DIR'):
+        agent.global_step_num = 0
     episode_rewards = []  # Every episode's reward
     prev_checkpoint_mean_ep_rew = agent.best_mean_reward
     num_improved_episodes_before_checkpoint = 0  # To keep track of the num of ep with higher perf to save model
@@ -467,6 +445,8 @@ def handle_crash(results_queue):
     max_speed = 0
     distance_from_goal = 0
     while 1:
+        if STOP_REQUESTED:
+            break
         # with lock:
         agent.episode += 1
         print(agent.episode)
@@ -490,10 +470,11 @@ def handle_crash(results_queue):
         
         agent.environment.state_observer.reset()
 
-        state_rgb, speed_tensor = agent.environment.reset(save_image=save_image, episode = agent.episode)
+        state_rgb, speed = agent.environment.reset(
+            save_image=save_image, episode=agent.episode)
 
         state_rgb = state_rgb / 255.0  # resize the tensor to [0, 1]
-        speed_tensor = speed_tensor/100.0
+        speed_tensor = _normalized_speed_tensor(speed)
 
         done = False
         ep_reward = 0.0 
@@ -505,12 +486,6 @@ def handle_crash(results_queue):
             actions_counter[action] = 0
         episode_step=0
 
-        i = 0 
-        manouver = agent.environment.car_decisions[i]
-
-
-        manouver_tensor = torch.tensor([manouver]).to(device)
-        
         episode_start_time = datetime.now()
 
         while not done:
@@ -522,27 +497,10 @@ def handle_crash(results_queue):
             if speed_tensor.item() > max_speed:
                 max_speed = speed_tensor.item()
 
-            #manouver
-            on_junction, left_junction = agent.environment.planner.on_junction(agent.environment.vehicle.get_location())
-            # manouver = "S" # S - straight, R - right, L - left
-            if left_junction:
-                # print(f"Vehicle left junction")
-                try:
-                    i += 1
-                    manouver = agent.environment.car_decisions[i]
-                except IndexError:
-                    manouver = 1
-                manouver_tensor = torch.tensor([manouver]).to(device)
-
-            # print(f"CAR DECISION ON THE NEAREST JUNCTION: {manouver}")
-
-            # action = agent.get_action(state_rgb)
-            # action = agent.get_action(state_rgb, speed_tensor, testing)
-            action = agent.get_action(state_rgb, speed_tensor, manouver_tensor, testing)
+            action = agent.get_action(state_rgb, speed_tensor, testing)
 
             # print(f'Saving image, {save_image}')
             if save_image:
-                agent.environment.state_observer.manouver = manouver
                 agent.environment.state_observer.action = action # To print action on the frame
                 agent.environment.state_observer.step = episode_step # To print action on the frame
                 agent.environment.state_observer.episode = agent.episode
@@ -563,12 +521,21 @@ def handle_crash(results_queue):
             
             save_image = True if agent.episode in episodes_to_save_images else False
 
-            new_state, reward, done, route_distance, speed_tensor, distance_from_goal = agent.environment.step(save_image=save_image, episode=agent.episode, step=episode_step)
+            (new_state, reward, done, route_distance, speed, distance_from_goal
+             ) = agent.environment.step(
+                save_image=save_image,
+                episode=agent.episode,
+                step=episode_step)
             agent.environment.state_observer.reward = reward
+            agent.global_step_num += 1
+            _save_run_global_step(agent.global_step_num)
             if logging:
-                wandb.log({"step_reward": reward})
+                wandb.log({
+                    "global_step": agent.global_step_num,
+                    "step_reward": reward,
+                })
             new_state = new_state / 255.0  # resize the tensor to [0, 1]
-            speed_tensor = speed_tensor / 100.0
+            speed_tensor = _normalized_speed_tensor(speed)
             agent.rewards.append(reward)
             ep_reward += reward
             step_num += 1
@@ -576,11 +543,10 @@ def handle_crash(results_queue):
                 done = True
             # print("Step number: ", step_num, "reward: ", reward, "ep_reward: ", ep_reward)
             if not testing and (step_num >= 5 or done):
-                actor_loss, critic_loss, actor_lr, critic_lr = agent.optimize(new_state, done, speed_tensor, manouver_tensor)
-                # actor_loss, critic_loss, actor_lr, critic_lr = agent.optimize(new_state, done, speed_tensor)
+                actor_loss, critic_loss, actor_lr, critic_lr = agent.optimize(
+                    new_state, done, speed_tensor)
                 step_num = 0
             state_rgb = new_state
-            agent.global_step_num += 1
 
         print(f'Episode {agent.episode} ended')
         episode_end_time = datetime.now()
@@ -601,7 +567,16 @@ def handle_crash(results_queue):
             print('Logging values of episode steps, episode duration [s], reward, episode, mean_reward etc.')
             print(f'{datetime.now().strftime("%Y %B %d | %H:%M")}  Logging values of episode steps, episode duration [s], reward, episode, mean_reward etc.')
             print(f'Episode {agent.episode}, and mean reward {agent.mean_reward}')
-            wandb.log({"episode steps": episode_step, "episode duration [s]": episode_time.seconds,"reward": ep_reward, "episode": agent.episode, "mean_reward": agent.mean_reward, "max_speed": max_speed, "distance_from_goal": distance_from_goal})
+            wandb.log({
+                "global_step": agent.global_step_num,
+                "episode steps": episode_step,
+                "episode duration [s]": episode_time.seconds,
+                "reward": ep_reward,
+                "episode": agent.episode,
+                "mean_reward": agent.mean_reward,
+                "max_speed": max_speed,
+                "distance_from_goal": distance_from_goal,
+            })
 
         # print("Episode: {} \t ep_reward:{} \t mean_ep_rew:{}\t best_ep_reward:{} max_speed: {} distance_from_goal: {}".format(agent.episode,
         #                                                                                     ep_reward,
@@ -611,20 +586,32 @@ def handle_crash(results_queue):
         #                                                                                     distance_from_goal))        
     agent.environment.world = None
     agent.environment.client = None
+    if logging and wandb.run is not None:
+        wandb.finish()
     results_queue.put(1)
 
 
 if __name__ == "__main__":
+    signal.signal(signal.SIGUSR1, _forward_stop_to_worker)
+    signal.signal(signal.SIGTERM, _forward_stop_to_worker)
     mp.set_start_method('spawn')
     results_queue = mp.Queue()
     manager = mp.Manager()
     # lock = manager.Lock()
-    while 1:   
+    while not STOP_REQUESTED:
         p = mp.Process(target=handle_crash, args=(results_queue,))
+        ACTIVE_WORKER = p
         p.start()
+        if STOP_REQUESTED:
+            os.kill(p.pid, signal.SIGUSR1)
         p.join()
-        if results_queue.empty():
+        try:
+            results_queue.get(timeout=2)
+        except queue.Empty:
             # with lock:
+            if STOP_REQUESTED:
+                raise SystemExit(
+                    '[SLURM] A2C worker exited before graceful shutdown completed.')
             print(f'Process failed.')
             # try to remove 'core.*' files
             for core_file in glob.glob(os.path.join(os.getcwd(), 'core.*')):
@@ -634,6 +621,6 @@ if __name__ == "__main__":
             time.sleep(float(os.getenv('CARLA_SERVER_START_PERIOD', '30.0')))
             continue
         else:
-            # empty the queue
-            results_queue.get()
-            # with lock:
+            if STOP_REQUESTED:
+                print('[SLURM] A2C checkpoint saved; stopping supervisor.')
+                break
