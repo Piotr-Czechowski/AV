@@ -553,6 +553,78 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+
+class _ImageSpeedFeatures(nn.Module):
+    def __init__(self, input_shape, device):
+        super().__init__()
+        self.device = device
+        self.cnn = nn.Sequential(
+            nn.Conv2d(input_shape[2], 32, kernel_size=3, stride=1, padding=1),
+            nn.BatchNorm2d(32),
+            nn.ReLU(),
+            nn.Conv2d(32, 64, kernel_size=3, stride=2, padding=1),
+            nn.BatchNorm2d(64),
+            nn.ReLU(),
+            nn.Conv2d(64, 128, kernel_size=3, stride=2, padding=1),
+            nn.BatchNorm2d(128),
+            nn.ReLU(),
+            nn.Conv2d(128, 256, kernel_size=3, stride=2, padding=1),
+            nn.BatchNorm2d(256),
+            nn.ReLU(),
+            nn.Conv2d(256, 512, kernel_size=3, stride=1, padding=1),
+            nn.BatchNorm2d(512),
+            nn.ReLU(),
+            nn.AdaptiveAvgPool2d((4, 4)),
+        )
+        self.speed_fc = nn.Sequential(
+            nn.Linear(1, 32),
+            nn.ReLU(),
+        )
+
+    def forward(self, image, speed):
+        image = image.to(self.device, dtype=torch.float32)
+        image_features = self.cnn(image).flatten(1)
+        speed = speed.to(self.device, dtype=torch.float32)
+        if speed.dim() == 1:
+            speed = speed.unsqueeze(1)
+        speed_features = self.speed_fc(speed.view(image.size(0), -1))
+        return torch.cat([image_features, speed_features], dim=1)
+
+
+class DiscreteImageSpeedActor(nn.Module):
+    def __init__(self, input_shape, actor_shape, device=torch.device("cpu")):
+        super().__init__()
+        self.features = _ImageSpeedFeatures(input_shape, device)
+        self.fc = nn.Sequential(
+            nn.Linear(512 * 4 * 4 + 32, 512),
+            nn.ReLU(),
+            nn.Dropout(0.3),
+            nn.Linear(512, 256),
+            nn.ReLU(),
+            nn.Linear(256, actor_shape),
+        )
+
+    def forward(self, image, speed):
+        return self.fc(self.features(image, speed))
+
+
+class ImageSpeedCritic(nn.Module):
+    def __init__(self, input_shape, critic_shape=1, device=torch.device("cpu")):
+        super().__init__()
+        self.features = _ImageSpeedFeatures(input_shape, device)
+        self.fc = nn.Sequential(
+            nn.Linear(512 * 4 * 4 + 32, 512),
+            nn.ReLU(),
+            nn.Dropout(0.3),
+            nn.Linear(512, 256),
+            nn.ReLU(),
+            nn.Linear(256, critic_shape),
+        )
+
+    def forward(self, image, speed):
+        return self.fc(self.features(image, speed))
+
+
 class DiscreteActor(nn.Module):
     def __init__(self, input_shape, actor_shape, device=torch.device("cpu")):
         super(DiscreteActor, self).__init__()

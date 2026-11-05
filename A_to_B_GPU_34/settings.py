@@ -1,8 +1,10 @@
+import os
+
 import torch
 SHOULD_USE_CUDA = 'cuda' if torch.cuda.is_available() else 'cpu'
 
 # Global params
-PORT = 2000  # Port on which the server is running
+PORT = int(os.environ.get('CARLA_START_PORT', '2000'))
 ACTION_TYPE = 'discrete'  # 'discrete' or 'continuous'
 CAMERA_TYPE = 'semantic'  # 'rgb' or 'semantic'
 GAMMA = 0.99  # Discount factor
@@ -21,9 +23,14 @@ SERV_RESX = 640  # Server X resolution
 SERV_RESY = 480  # Server Y resolutio
 
 SCENARIO = [10]  # List of scenarios on which the model is trained
+if os.environ.get('A2C_SCENARIO'):
+    SCENARIO = [
+        int(value.strip())
+        for value in os.environ['A2C_SCENARIO'].split(',')
+    ]
 TESTING = False
 SPAWNING_TYPE = 1 # 0 - random, 1 - at the beginning, 2 - in 2 different places one by one
-LOGGING = False
+LOGGING = bool(os.environ.get('WANDB_API_KEY', '').strip())
 FILE_LOGGING = False
 DRAW = True
 
@@ -65,4 +72,3 @@ ACTIONS = ['forward', 'forward_left', 'forward_right', 'brake', 'brake_left', 'b
 
 CARLA_PATH = r''  # provide your carla exec path
 CARLA_EGG_PATH = r''  # Provide your carla egg path
-
