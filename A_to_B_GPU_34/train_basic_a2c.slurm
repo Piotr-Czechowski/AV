@@ -14,6 +14,7 @@
 
 # Submit from AV or this directory:
 #   sbatch A_to_B_GPU_34/train_basic_a2c.slurm --scenario 10
+#   sbatch A_to_B_GPU_34/train_basic_a2c.slurm --resume A_to_B_GPU_34/runs/a2c_experiments/<run-dir>
 # Override the allocation duration at submission time:
 #   sbatch --time=02:30:00 A_to_B_GPU_34/train_basic_a2c.slurm --scenario 13
 # Supported Town03 scenario IDs: 1-8 and 10-16.
@@ -41,6 +42,7 @@ TEMPLATE_DIR="${AV_ROOT}/A3C-CARLA-Template"
 CARLA_LAUNCHER="${TEMPLATE_DIR}/carla_multiserver_launcher.py"
 
 SCENARIO=10
+RESUME_DIR=""
 while [ "$#" -gt 0 ]; do
     case "$1" in
         --scenario)
@@ -51,13 +53,23 @@ while [ "$#" -gt 0 ]; do
             SCENARIO="$2"
             shift 2
             ;;
+        --resume)
+            if [ "$#" -lt 2 ] || [ -z "$2" ]; then
+                echo "ERROR: --resume requires a previous A2C run directory." >&2
+                exit 2
+            fi
+            RESUME_DIR="$2"
+            shift 2
+            ;;
         -h|--help)
-            sed -n '14,19p' "$0"
+            echo "Usage: sbatch [--time=HH:MM:SS] $0 [--scenario ID] [--resume RUN_DIR]"
+            echo "Without --resume, a new model and W&B run are created."
+            echo "With --resume, the checkpoint and W&B run ID from RUN_DIR are continued."
             exit 0
             ;;
         *)
             echo "ERROR: unknown argument: $1" >&2
-            echo "Usage: sbatch [--time=HH:MM:SS] $0 [--scenario ID]" >&2
+            echo "Usage: sbatch [--time=HH:MM:SS] $0 [--scenario ID] [--resume RUN_DIR]" >&2
             exit 2
             ;;
     esac
@@ -99,7 +111,7 @@ if [ -z "${CARLA_CONTAINER_IMAGE:-}" ] || [ ! -f "${CARLA_CONTAINER_IMAGE}" ]; t
     exit 1
 fi
 CARLA_BINARY="${CARLA_BINARY:-/home/carla/CarlaUE4.sh}"
-for command_name in lsof setsid; do
+for command_name in lsof setsid flock; do
     if ! command -v "${command_name}" >/dev/null 2>&1; then
         echo "ERROR: required command '${command_name}' is not on PATH." >&2
         exit 1
@@ -114,6 +126,10 @@ if ! python -c 'import torch, carla, numpy, cv2, wandb' >/dev/null 2>&1; then
 fi
 if [ -z "${WANDB_API_KEY:-}" ]; then
     echo "ERROR: WANDB_API_KEY is missing from ${TEMPLATE_DIR}/.env; W&B logging is required." >&2
+    exit 1
+fi
+if [ -z "${WANDB_RUN_NAME:-}" ]; then
+    echo "ERROR: set WANDB_RUN_NAME in ${TEMPLATE_DIR}/.env to identify this A2C experiment." >&2
     exit 1
 fi
 if ! python -c 'import torch; assert torch.cuda.is_available()' >/dev/null 2>&1; then
@@ -137,8 +153,43 @@ export MKL_NUM_THREADS=1
 
 JOB_ID="${SLURM_JOB_ID:-local}"
 RUN_DIR="${SCRIPT_DIR}/runs/basic_a2c_s${SCENARIO}_$(date +%Y%m%d_%H%M%S)_${JOB_ID}"
+WANDB_PROJECT="${WANDB_PROJECT:-A_to_B}"
+if [ -n "${RESUME_DIR}" ]; then
+    case "${RESUME_DIR}" in
+        /*) RESUME_PATH="${RESUME_DIR}" ;;
+        *) RESUME_PATH="${AV_ROOT}/${RESUME_DIR}" ;;
+    esac
+    if [ ! -d "${RESUME_PATH}" ]; then
+        echo "ERROR: A2C resume directory does not exist: ${RESUME_PATH}" >&2
+        exit 1
+    fi
+    STATE_DIR="$(cd "${RESUME_PATH}" && pwd -P)" || exit 1
+    if [ ! -s "${STATE_DIR}/a2c_model.pth" ]; then
+        echo "ERROR: no A2C checkpoint found in ${STATE_DIR}/a2c_model.pth" >&2
+        exit 1
+    fi
+    if [ ! -s "${STATE_DIR}/wandb_run_id.txt" ]; then
+        echo "ERROR: no saved W&B run ID found in ${STATE_DIR}/wandb_run_id.txt" >&2
+        exit 1
+    fi
+    export A2C_RESUME=1
+else
+    STATE_DIR="${SCRIPT_DIR}/runs/a2c_experiments/a2c_s${SCENARIO}_$(date +%Y%m%d_%H%M%S)_${JOB_ID}"
+    if [ -e "${STATE_DIR}" ]; then
+        echo "ERROR: new A2C run directory already exists: ${STATE_DIR}" >&2
+        exit 1
+    fi
+    mkdir -p "${STATE_DIR}" || exit 1
+    unset A2C_RESUME
+fi
 mkdir -p "${RUN_DIR}" || exit 1
+exec 9>"${STATE_DIR}/training.lock"
+if ! flock -n 9; then
+    echo "[A2C] another job is already using run state ${STATE_DIR}." >&2
+    exit 1
+fi
 export A2C_RUN_DIR="${RUN_DIR}"
+export A2C_STATE_DIR="${STATE_DIR}"
 TRAIN_LOG="${RUN_DIR}/a2c_training.log"
 CARLA_LOG="${RUN_DIR}/carla_servers.log"
 cd "${AV_ROOT}" || exit 1
@@ -146,6 +197,11 @@ cd "${AV_ROOT}" || exit 1
 echo "[A2C] job=${JOB_ID} host=$(hostname) scenario=${SCENARIO} port=${START_PORT}"
 echo "[A2C] python=$(command -v python) version=$(python --version 2>&1)"
 echo "[A2C] output=${RUN_DIR}"
+if [ -n "${RESUME_DIR}" ]; then
+    echo "[A2C] resuming model and W&B run from ${STATE_DIR}"
+else
+    echo "[A2C] starting a new model and W&B run; resume directory=${STATE_DIR}"
+fi
 
 TRAIN_PID=""
 CARLA_PID=""

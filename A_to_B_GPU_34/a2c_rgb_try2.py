@@ -10,6 +10,7 @@ The A2C's high-level flow:
 import glob
 import pdb
 import queue
+import secrets
 import signal
 import time
 import numpy as np
@@ -34,7 +35,7 @@ from pathlib import Path
 
 # For RGB
 # from nets.a2c import Actor as DeepActor  # Continuous
-from nets.a2c import SharedImageSpeedActorCritic
+from nets.a2c import DiscreteImageSpeedActor, ImageSpeedCritic
 
 from ACTIONS import ACTIONS as ac
 from utils import ColoredPrint
@@ -56,7 +57,10 @@ port = settings.PORT
 action_type = settings.ACTION_TYPE
 camera_type = settings.CAMERA_TYPE
 load_model = settings.LOAD_MODEL
-model_incr_load = 'A_to_B_GPU_34/PC_models/currently_trained/a2c_shared_image_speed.pth'
+state_dir = os.environ.get('A2C_STATE_DIR')
+model_incr_load = os.path.join(
+    state_dir, 'a2c_model.pth') if state_dir else \
+    'A_to_B_GPU_34/PC_models/currently_trained/a2c_separate_image_speed.pth'
 model_incr_save = model_incr_load
 
 gamma = settings.GAMMA
@@ -93,8 +97,8 @@ def _normalized_speed_tensor(speed):
 
 
 def _run_state_path(filename):
-    run_dir = os.environ.get('A2C_RUN_DIR')
-    return Path(run_dir) / filename if run_dir else None
+    state_dir = os.environ.get('A2C_STATE_DIR')
+    return Path(state_dir) / filename if state_dir else None
 
 
 def _get_wandb_run_id():
@@ -108,7 +112,7 @@ def _get_wandb_run_id():
                 'W&B run ID file is empty: {}'.format(run_id_path))
         return run_id
 
-    run_id = wandb.util.generate_id()
+    run_id = secrets.token_hex(4)
     temporary_path = run_id_path.with_suffix('.tmp')
     temporary_path.write_text(run_id)
     temporary_path.replace(run_id_path)
@@ -168,6 +172,7 @@ class DeepActorCriticAgent(mp.Process):
         self.environment = env  # Carla env
         self.trajectory = []  # Contains the trajectory of the self as a sequence of transitions
         self.rewards = []  # Contains the rewards obtained from the env at every step
+        self.episode_rewards_history = []
         self.best_mean_reward = - float("inf")  # self's personal best mean episode reward
         self.best_reward = - float("inf")
         self.global_step_num = 0
@@ -178,20 +183,26 @@ class DeepActorCriticAgent(mp.Process):
         else:
             self.log.err(f"Wrong action type: {self.action_type}, choose discrete or continuous")
 
-        self.model = SharedImageSpeedActorCritic(
-            n_actions=self.action_shape, device=device).to(device)
-        self.optimizer = torch.optim.Adam(
-            self.model.parameters(), lr=self.lr, weight_decay=1e-2)
+        state_shape = (250, 250, 3)
+        self.actor = DiscreteImageSpeedActor(
+            state_shape, self.action_shape, device=device).to(device)
+        self.critic = ImageSpeedCritic(
+            state_shape, critic_shape=1, device=device).to(device)
+        self.actor_optimizer = torch.optim.Adam(
+            self.actor.parameters(), lr=self.lr, weight_decay=1e-2)
+        self.critic_optimizer = torch.optim.Adam(
+            self.critic.parameters(), lr=self.lr, weight_decay=1e-2)
         self.mean_reward = 0
         self.episode = 0
 
     def get_action(self, obs, speed, testing=False):
-        observation = {"image": obs, "speed": speed}
         if testing:
             with torch.no_grad():
-                logits, value = self.model(observation)
+                logits = self.actor(obs, speed)
+                value = self.critic(obs, speed)
         else:
-            logits, value = self.model(observation)
+            logits = self.actor(obs, speed)
+            value = self.critic(obs, speed)
         action_distribution = Categorical(logits=logits)
         action = action_distribution.probs.argmax(dim=-1) if testing \
             else action_distribution.sample()
@@ -199,7 +210,7 @@ class DeepActorCriticAgent(mp.Process):
         entropy = action_distribution.entropy()
         if not testing:
             self.trajectory.append(Transition(
-                observation, value, action, log_prob_a, entropy))
+                (obs, speed), value, action, log_prob_a, entropy))
         return int(action.item())
 
     def calculate_n_step_return(self, n_step_rewards, final_state, done,
@@ -217,10 +228,7 @@ class DeepActorCriticAgent(mp.Process):
             if done:
                 g_t_n = torch.zeros((1, 1), dtype=torch.float32, device=device)
             else:
-                _, g_t_n = self.model({
-                    "image": final_state,
-                    "speed": final_speed,
-                })
+                g_t_n = self.critic(final_state, final_speed)
             for r_t in n_step_rewards[::-1]:  # Reverse order; From r_tpn to r_t
                 g_t_n = torch.as_tensor(
                     r_t, dtype=torch.float32, device=device).view(1, 1) \
@@ -256,15 +264,21 @@ class DeepActorCriticAgent(mp.Process):
             self.rewards, final_state_rgb, done, self.gamma, final_speed)
 
         actor_loss, critic_loss = self.calculate_loss(self.trajectory, td_targets)
-        self.optimizer.zero_grad()
-        (actor_loss + critic_loss).backward()
+        self.actor_optimizer.zero_grad()
+        self.critic_optimizer.zero_grad()
+        actor_loss.backward()
+        critic_loss.backward()
         gradient_logs = {}
         if logging:
-            for name, param in self.model.named_parameters():
-                if param.grad is not None:
-                    gradient_logs[f"gradients/{name}"] = wandb.Histogram(
-                        param.grad.detach().cpu().numpy())
-        self.optimizer.step()
+            for model_name, model in (
+                    ("actor", self.actor), ("critic", self.critic)):
+                for name, param in model.named_parameters():
+                    if param.grad is not None:
+                        gradient_logs[
+                            f"gradients/{model_name}/{name}"] = wandb.Histogram(
+                                param.grad.detach().cpu().numpy())
+        self.actor_optimizer.step()
+        self.critic_optimizer.step()
         if logging:
             wandb.log({
                 "global_step": self.global_step_num,
@@ -272,11 +286,12 @@ class DeepActorCriticAgent(mp.Process):
                 "critic_loss": critic_loss.detach(),
                 **gradient_logs,
             })
-        learning_rate = self.optimizer.param_groups[0]['lr']
+        actor_lr = self.actor_optimizer.param_groups[0]['lr']
+        critic_lr = self.critic_optimizer.param_groups[0]['lr']
         self.trajectory.clear()
         self.rewards.clear()
 
-        return actor_loss, critic_loss, learning_rate, learning_rate
+        return actor_loss, critic_loss, actor_lr, critic_lr
     
     # def save(self, name):
     #     model_file_name = name + ".pth"
@@ -340,12 +355,16 @@ class DeepActorCriticAgent(mp.Process):
             print(f"Saving checkpoint to: {save_path}")
 
         checkpoint = {
-            "model_state_dict": self.model.state_dict(),
-            "optimizer_state_dict": self.optimizer.state_dict(),
+            "architecture": "separate_image_speed_actor_critic_v1",
+            "actor_state_dict": self.actor.state_dict(),
+            "critic_state_dict": self.critic.state_dict(),
+            "actor_optimizer_state_dict": self.actor_optimizer.state_dict(),
+            "critic_optimizer_state_dict": self.critic_optimizer.state_dict(),
             "best_mean_reward": self.best_mean_reward,
             "best_reward": self.best_reward,
             "episode": self.episode,
             "mean_reward": self.mean_reward,
+            "episode_rewards_history": self.episode_rewards_history[-100:],
             "global_step": self.global_step_num,
         }
 
@@ -365,6 +384,10 @@ class DeepActorCriticAgent(mp.Process):
         load_path = Path(name)
         
         if not load_path.is_file():
+            if os.environ.get('A2C_RESUME') == '1':
+                raise FileNotFoundError(
+                    'Requested A2C resume checkpoint is missing: {}'.format(
+                        load_path))
             if logging:
                 print(f"Error: No checkpoint found at '{load_path}'. Starting from scratch.")
             return
@@ -375,8 +398,19 @@ class DeepActorCriticAgent(mp.Process):
         # Load the checkpoint onto the correct device (CPU or GPU)
         checkpoint = torch.load(load_path, map_location=device)
 
-        self.model.load_state_dict(checkpoint["model_state_dict"])
-        self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+        if checkpoint.get("architecture") != \
+                "separate_image_speed_actor_critic_v1":
+            raise RuntimeError(
+                "Checkpoint {} uses an incompatible A2C architecture. "
+                "The shared-network checkpoint cannot be resumed with the "
+                "separate actor/critic model; start a new experiment.".format(
+                    load_path))
+        self.actor.load_state_dict(checkpoint["actor_state_dict"])
+        self.critic.load_state_dict(checkpoint["critic_state_dict"])
+        self.actor_optimizer.load_state_dict(
+            checkpoint["actor_optimizer_state_dict"])
+        self.critic_optimizer.load_state_dict(
+            checkpoint["critic_optimizer_state_dict"])
 
         # Safely load training metadata using .get() with default values.
         # This prevents errors if a checkpoint is missing a key.
@@ -385,6 +419,13 @@ class DeepActorCriticAgent(mp.Process):
         self.best_mean_reward = checkpoint.get("best_mean_reward", -float('inf'))
         self.best_reward = checkpoint.get("best_reward", -float('inf'))
         self.global_step_num = checkpoint.get("global_step", 0)
+        history = checkpoint.get("episode_rewards_history")
+        if history is None:
+            history = (
+                [self.mean_reward] * min(100, self.episode)
+                if self.episode > 0 and np.isfinite(self.mean_reward) else [])
+        self.episode_rewards_history = [
+            float(reward) for reward in history[-100:]]
 
         if logging:
             print("Checkpoint loaded successfully.")
@@ -405,6 +446,7 @@ def handle_crash(results_queue):
             resume='allow' if wandb_run_id else None,
             config={
                 'algorithm': 'A2C',
+                'network_architecture': 'separate_image_speed_actor_critic_v1',
                 'scenario': scenario,
                 'map': 'Town03',
                 'camera': camera_type,
@@ -432,9 +474,8 @@ def handle_crash(results_queue):
         agent.global_step_num = run_global_step
         print('Resuming global step from this Slurm run: {}'.format(
             run_global_step))
-    elif os.environ.get('A2C_RUN_DIR'):
+    elif os.environ.get('A2C_STATE_DIR'):
         agent.global_step_num = 0
-    episode_rewards = []  # Every episode's reward
     prev_checkpoint_mean_ep_rew = agent.best_mean_reward
     num_improved_episodes_before_checkpoint = 0  # To keep track of the num of ep with higher perf to save model
     episodes_to_save_images = (1, 5, 10, 43, 44, 50, 150, 400, 401, 402, 1000, 1001, 1002, 1003, 2001, 2002, 2003,
@@ -558,8 +599,9 @@ def handle_crash(results_queue):
         #     print(str(actions_counter))
 
         print(f'Finalizing data to log to Weights and Biases')
-        episode_rewards.append(ep_reward)
-        agent.mean_reward = (agent.mean_reward * (min(100, agent.episode)-1) + ep_reward)/min(100, agent.episode) #mean reward from last 100 episodes
+        agent.episode_rewards_history.append(float(ep_reward))
+        agent.episode_rewards_history = agent.episode_rewards_history[-100:]
+        agent.mean_reward = float(np.mean(agent.episode_rewards_history))
         if ep_reward > agent.best_reward:
             agent.best_reward = ep_reward
         agent.save(model_incr_save)
