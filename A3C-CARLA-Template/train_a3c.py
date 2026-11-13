@@ -297,10 +297,10 @@ def build_parser():
                    help='Reward values to watch; default: none. For each '
                         'value X, log the global step and active training '
                         'time at which each of these first reaches >= X: '
-                        'the total reward of one episode, the run-wide '
-                        'mean of the last 100 episodes, and the run-wide '
-                        'mean of the last 100*num_workers episodes. The '
-                        'means count only once their window is full. Each '
+                        'per worker the total reward of one episode and the '
+                        'mean of its last 100 episodes, and the global mean '
+                        '(the mean of the worker means). '
+                        'A mean counts only once its windows are full. Each '
                         'fires once per run, also across --resume. Results '
                         'go to logs/events.jsonl and the W&B run summary '
                         '(see docs/logging.md).')
@@ -621,7 +621,8 @@ def main():
                       flush=True)
 
     run_id = os.path.basename(run_output_dir.rstrip('/'))
-    telemetry_config = _config_to_dict(config)
+    # 'algorithm' marks A3C runs in W&B.
+    telemetry_config = dict(_config_to_dict(config), algorithm='A3C')
     telemetry_process = mp.Process(
         target=telemetry_process_main,
         kwargs={
@@ -652,7 +653,7 @@ def main():
             publish_metrics=args.wandb_enabled)
         events.log_event(
             'training_start',
-            global_t=global_network.global_step.value,
+            global_step=global_network.global_step.value,
             n_workers=args.num_workers,
             resumed=bool(args.resume),
             worker_gpus=args.worker_gpus,
@@ -662,7 +663,7 @@ def main():
                 'WANDB_API_KEY is empty')
             events.log_event(
                 'wandb_unavailable',
-                global_t=global_network.global_step.value,
+                global_step=global_network.global_step.value,
                 error=reason)
 
         if args.log_resources:
@@ -740,7 +741,7 @@ def main():
 
         events.log_event(
             'training_end',
-            global_t=final_steps,
+            global_step=final_steps,
             session_steps=session_steps,
             session_elapsed_s=round(session_elapsed, 2),
             cumulative_elapsed_s=round(cumulative, 2),

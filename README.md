@@ -24,6 +24,16 @@ The implementations are independent. Each one keeps its machine-specific paths i
 | [`A3C/`](A3C/) | `new_hogwild_train_paths.sh`, copied from [`A3C/new_hogwild_train_paths.sh.example`](A3C/new_hogwild_train_paths.sh.example) | [`A3C/new_hogwild_train.slurm`](A3C/new_hogwild_train.slurm) |
 | [`A_to_B_GPU_34/`](A_to_B_GPU_34/) | Placeholder paths (`<plgyourname>`) in [`A_to_B_GPU_34/new_hogwild_train.slurm`](A_to_B_GPU_34/new_hogwild_train.slurm). [`A_to_B_GPU_34/a3c_improved_train.slurm`](A_to_B_GPU_34/a3c_improved_train.slurm) reads `a3c_improved_train_paths.json`, which is not in the repository | the two scripts |
 
+## Logging: A2C and the A3C template
+
+The A2C script ([`A_to_B_GPU_34/a2c_rgb_try2.py`](A_to_B_GPU_34/a2c_rgb_try2.py), started by [`A_to_B_GPU_34/train_basic_a2c.slurm`](A_to_B_GPU_34/train_basic_a2c.slurm)) logs the same metrics as [`A3C-CARLA-Template/`](A3C-CARLA-Template/). A2C has one worker, so a template `worker_<id>/<name>` is A2C `<name>`, and a template `global/*` aggregate over one worker is that same value. The main differences:
+
+- A2C sends the reward of every step (`step_reward`) and gradient histograms to W&B; the template keeps the step reward local and logs no histograms.
+- The template keeps the gradient norm and clipping, the rollout reward sum and length, and the health events local; A2C does not log them.
+- The template also writes local JSONL logs; A2C logs to W&B only.
+
+The full name mapping and every difference: [`docs/a2c_a3c_logging.md`](docs/a2c_a3c_logging.md).
+
 ## Folder `A3C`
 
 The `A3C` folder contains an accelerated A3C training implementation for CARLA.

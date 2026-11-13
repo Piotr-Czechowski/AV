@@ -80,11 +80,11 @@ Weights & Biases is opt-in: install the `wandb` extra, set `WANDB_API_KEY` in `.
 | [`carla_navigation/`](carla_navigation/) | Route planner from the CARLA agents package (MIT) |
 | [`settings.py`](settings.py) | `.env` loader and experiment defaults |
 | [`training_logger.py`](training_logger.py), [`timing_utils.py`](timing_utils.py) | JSONL logs, telemetry process, W&B, resource sampler, phase timer |
-| [`reward_stats.py`](reward_stats.py) | Reward windows, best and worst rewards, reward thresholds, shared by all workers |
+| [`reward_stats.py`](reward_stats.py) | Per-worker reward and distance windows, run minimum and maximum, run-wide aggregates, reward thresholds, shared by all workers |
 | [`carla_multiserver_launcher.py`](carla_multiserver_launcher.py) | Starts and supervises the CARLA servers |
 | [`examples/`](examples/) | The two pipeline scripts |
 | [`evaluation.py`](evaluation.py) | Stub. Its docstring describes the planned evaluation program |
-| [`verify/`](verify/) | Checks that need no CARLA (see "Verification"): `python -m unittest discover -s verify -p 'verify_*.py'` |
+| [`test/`](test/) | Tests that need no CARLA (see "Tests"): `python -m unittest discover -s test` |
 
 ## Documentation
 
@@ -98,18 +98,20 @@ Weights & Biases is opt-in: install the `wandb` extra, set `WANDB_API_KEY` in `.
 | [`docs/logging.md`](docs/logging.md) | Every logged value, local files, W&B metrics, events, and timing when a reward is first reached (`--reward-thresholds`) |
 | [`docs/how_to_adjust.md`](docs/how_to_adjust.md) | How to adjust the template to your own agent: new network, input, action table, reward, camera, map |
 
-## Verification
+W&B gets each value in one place. By design, to limit the amount of data sent with many workers, the reward of every step and some other values stay in the local files, and gradient histograms are not logged. The full list: [`docs/logging.md`](docs/logging.md#weights--biases).
 
-The scripts in [`verify/`](verify/) check that the template still works after a change. They need no CARLA server, no GPU, and no W&B, so they run on a laptop in about a second. Run them from the template directory:
+## Tests
+
+The tests in [`test/`](test/) check that the template still works after a change. They need no CARLA server, no GPU, and no W&B, so they run on a laptop in about a second. Run them from the template directory:
 
 ```bash
-python -m unittest discover -s verify -p 'verify_*.py'   # all checks
-python verify/verify_metrics.py                          # one file
+python -m unittest discover -s test   # all tests
+python test/test_metrics.py          # one file
 ```
 
 | File | What it checks |
 |---|---|
-| [`verify/verify_template.py`](verify/verify_template.py) | The launcher builds correct Docker and Apptainer commands (ports, GPU, image checks, warm-up). The action table, the Town03 scenario routes, the checkpoint lookup used by `--resume`, the shell syntax of the example scripts, and the model's input and output shapes. |
-| [`verify/verify_metrics.py`](verify/verify_metrics.py) | The reward statistics (rolling means, min and max, best and worst), the reward thresholds, their checkpoint round trip and migration from old checkpoints, several worker processes sharing one tracker, and what reaches `episodes.jsonl`, `events.jsonl`, and W&B. |
+| [`test/test_template.py`](test/test_template.py) | The launcher builds correct Docker and Apptainer commands (ports, GPU, image checks, warm-up). The action table, the Town03 scenario routes, the checkpoint lookup used by `--resume`, the shell syntax of the example scripts, and the model's input and output shapes. |
+| [`test/test_metrics.py`](test/test_metrics.py) | The reward statistics (per-worker means, run minimum and maximum, run-wide aggregates), the reward thresholds, their checkpoint round trip and migration from old checkpoints, several worker processes sharing one tracker, and what reaches `episodes.jsonl`, `events.jsonl`, and W&B. |
 
 Run them after you change the launcher, the action or observation interface, the reward tracking, or the logging, and before a cluster run. Three checks need torch (checkpoint lookup and model shapes; the model check also needs carla); without them they are reported as skipped, not failed. In the training environment all of them run. The scripts do not run the A3C training loop itself, which needs CARLA: the first end-to-end check is a short run, for example `--steps 5000`.
