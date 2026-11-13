@@ -89,7 +89,7 @@ reward     = speed term + route term + event terms
 | `offroute_penalty` | when the distance to the route reaches the threshold (10 m) | −25 |
 | `lane_invasion_penalty` | on a step with a lane invasion | −5 |
 
-The sum is clipped to ±`DEFAULT_REWARD_CLIP` (50). Every component is logged separately ([`docs/logging.md`](logging.md)).
+The sum is clipped to ±`DEFAULT_REWARD_CLIP` (50). Only the sum is logged, not the components ([`docs/logging.md`](logging.md)).
 
 ## Routes and scenarios
 

@@ -28,6 +28,13 @@ if os.environ.get('A2C_SCENARIO'):
         int(value.strip())
         for value in os.environ['A2C_SCENARIO'].split(',')
     ]
+# Reward values whose first crossing is logged to the W&B summary
+REWARD_THRESHOLDS = []
+if os.environ.get('A2C_REWARD_THRESHOLDS'):
+    REWARD_THRESHOLDS = sorted(set(
+        float(value.strip())
+        for value in os.environ['A2C_REWARD_THRESHOLDS'].split(',')
+    ))
 TESTING = False
 SPAWNING_TYPE = 1 # 0 - random, 1 - at the beginning, 2 - in 2 different places one by one
 LOGGING = bool(os.environ.get('WANDB_API_KEY', '').strip())

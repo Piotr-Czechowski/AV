@@ -85,7 +85,6 @@ class CarlaA3CWrapper:
         self._episode_min_route_dist = float('inf')
         self._episode_goal_dist = float('inf')
         self._episode_reached_goal = False
-        self._episode_reward_components = {}
         self._action_counts = np.zeros(self.n_actions, dtype=np.int64)
         self._prev_goal_dist = None
         self._prev_collision_count = 0
@@ -208,19 +207,12 @@ class CarlaA3CWrapper:
         except Exception:
             return None
 
-    def _accumulate_reward_components(self, components):
-        """Add named reward terms into the per-episode totals for the JSONL logger."""
-        for key, value in components.items():
-            self._episode_reward_components[key] = \
-                self._episode_reward_components.get(key, 0.0) + float(value)
-
     def _shape_reward(self, legacy_reward, done, route_distance,
                       speed_kmh, distance_from_goal, collisions,
                       lane_invasions):
-        """Return ``(reward, components)``. Legacy mode forwards CarlaEnv's reward."""
+        """Return the reward of one decision. Legacy mode forwards CarlaEnv's reward."""
         if self._reward_mode == 'legacy':
-            components = {'legacy': float(legacy_reward)}
-            return float(legacy_reward), components
+            return float(legacy_reward)
 
         route_distance = float(route_distance) \
             if route_distance is not None else self._reward_offroute_threshold
@@ -261,8 +253,7 @@ class CarlaA3CWrapper:
         if self._reward_clip > 0:
             reward = float(np.clip(reward, -self._reward_clip,
                                    self._reward_clip))
-        components['total'] = reward
-        return reward, components
+        return reward
 
     def _should_save_this_episode(self):
         """Return True if this episode should dump camera frames."""
@@ -282,7 +273,6 @@ class CarlaA3CWrapper:
         self._episode_min_route_dist = float('inf')
         self._episode_goal_dist = float('inf')
         self._episode_reached_goal = False
-        self._episode_reward_components = {}
         self._action_counts = np.zeros(self.n_actions, dtype=np.int64)
         self._prev_goal_dist = None
         self._prev_collision_count = 0
@@ -403,10 +393,9 @@ class CarlaA3CWrapper:
         if self._episode_max_decisions > 0 and \
                 self.step_count >= self._episode_max_decisions:
             done = True
-        reward_f, reward_components = self._shape_reward(
+        reward_f = self._shape_reward(
             reward, done, route_distance, speed_kmh,
             distance_from_goal, collisions, lane_invasions)
-        self._accumulate_reward_components(reward_components)
         if speed_kmh > self._episode_max_speed:
             self._episode_max_speed = speed_kmh
         if route_distance is not None and \
@@ -428,7 +417,6 @@ class CarlaA3CWrapper:
             'maneuver': self._current_maneuver,
             'collisions': collisions,
             'lane_invasions': lane_invasions,
-            'reward_components': reward_components,
             'legacy_reward': float(reward),
         }
         return obs, reward_f, bool(done), info
@@ -446,5 +434,4 @@ class CarlaA3CWrapper:
             'action_counts': self._action_counts.tolist(),
             'collisions': len(self.env.collision_history_list),
             'port': self.port,
-            'reward_components': dict(self._episode_reward_components),
         }

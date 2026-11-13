@@ -23,7 +23,7 @@ records and never training throughput.
 ``ResourceLogger`` runs only in runs launched with ``--log-resources``:
 one daemon thread per process samples its own CPU/RAM usage, and the
 main process additionally samples every visible GPU, into ``system``
-records that travel the same two paths.
+records that travel the same two paths; the GPU values stay local.
 """
 
 import json
@@ -34,7 +34,7 @@ import signal
 import threading
 from datetime import datetime
 
-from reward_stats import threshold_summary
+from reward_stats import minmax_summary, threshold_summary
 
 try:
     import psutil
@@ -160,143 +160,94 @@ def _put_metric(payload, name, value):
         payload[name] = value
 
 
-def project_episode_to_wandb(record):
-    """Project one local episode record onto a small metric whitelist.
+# Field names are the W&B names.  A value of one worker is sent as
+# ``worker_<id>/<field>``, a run-wide value as ``<field>``.
+_EPISODE_RUN_FIELDS = ('global/reward_mean_100',
+                       'global/goal_distance_mean_100',
+                       'global/elapsed_training_s')
+_EPISODE_WORKER_FIELDS = ('reward', 'episode_length', 'goal_distance',
+                          'reward_mean_100', 'goal_distance_mean_100')
+# The schedules every worker shares.
+_UPDATE_RUN_FIELDS = ('train/lr', 'train/entropy_coef')
+_UPDATE_WORKER_FIELDS = ('train/pi_loss', 'train/v_loss', 'train/total_loss',
+                         'train/entropy', 'train/advantages_mean',
+                         'train/advantages_std', 'train/value_mean',
+                         'train/value_std', 'train/reward_mean')
+_SYSTEM_FIELDS = ('system/proc_cpu_percent', 'system/proc_rss_gb')
 
-    An ``interrupted`` episode projects to nothing: it stays local only.
+
+def _worker_prefix(record):
+    """``worker_<id>/`` of a worker's record, ``''`` for the main process."""
+    worker_id = record.get('worker')
+    if worker_id is None or int(worker_id) < 0:
+        return ''
+    return 'worker_{}/'.format(worker_id)
+
+
+def _project(record, run_fields, worker_fields):
+    """W&B point of ``record``: ``global_step`` and the listed fields."""
+    payload = {}
+    _put_metric(payload, 'global_step', record.get('global_step'))
+    for field in run_fields:
+        _put_metric(payload, field, record.get(field))
+    prefix = _worker_prefix(record)
+    if prefix:
+        for field in worker_fields:
+            _put_metric(payload, prefix + field, record.get(field))
+    return payload
+
+
+def project_episode_to_wandb(record):
+    """Project one episode record onto W&B charts.
+
+    ``episode/*`` values of this episode, the ``global/*`` aggregates, and
+    the series of the worker.  The run minimum and maximum go to the run
+    summary instead (``project_episode_to_wandb_summary``).  An
+    ``interrupted`` episode projects to nothing: it stays local only.
     """
     if record.get('interrupted'):
         return {}
-    payload = {}
-    _put_metric(payload, 'global_step', record.get('global_t'))
-    mapping = {
-        'global_episode': 'episode/id',
-        'total_reward': 'episode/reward',
-        'mean_reward': 'episode/reward_per_step',
-        'steps': 'episode/length',
-        'duration_s': 'episode/duration_s',
-        'reached_goal': 'episode/success',
-        'max_speed_kmh': 'episode/max_speed_kmh',
-        'min_route_dist': 'episode/min_route_distance',
-        'goal_dist': 'episode/goal_distance',
-        'collisions': 'episode/collisions',
-        'global_mean_reward': 'global/reward_mean',
-        'global_mean_reward_100': 'global/reward_mean_100',
-        'global_reward_min_100': 'global/reward_min_100',
-        'global_reward_max_100': 'global/reward_max_100',
-        'global_reward_min': 'global/reward_min',
-        'global_reward_max': 'global/reward_max',
-        'best_reward': 'global/best_reward',
-        'worst_reward': 'global/worst_reward',
-        'elapsed_training_s': 'global/elapsed_training_s',
-    }
-    for source, target in mapping.items():
-        _put_metric(payload, target, record.get(source))
+    episode_fields = [field for field in record
+                      if field.startswith('episode/')]
+    return _project(record, episode_fields + list(_EPISODE_RUN_FIELDS),
+                    _EPISODE_WORKER_FIELDS)
 
+
+def project_episode_to_wandb_summary(record):
+    """Run minimum and maximum of one episode record, for the run summary.
+
+    ``worker_<id>/...`` of this worker and ``global/...`` of the run (see
+    ``reward_stats.minmax_summary``); nothing for an interrupted episode.
+    """
+    if record.get('interrupted'):
+        return {}
     worker_id = record.get('worker')
-    if worker_id is not None and int(worker_id) >= 0:
-        prefix = 'worker_{}/'.format(worker_id)
-        for source, suffix in (
-                ('total_reward', 'reward'),
-                ('steps', 'episode_length'),
-                ('local_mean_reward', 'reward_mean_100'),
-                ('local_reward_min_100', 'reward_min_100'),
-                ('local_reward_max_100', 'reward_max_100'),
-                ('local_best_reward', 'best_reward'),
-                ('local_worst_reward', 'worst_reward'),
-                ('goal_dist', 'goal_distance')):
-            _put_metric(payload, prefix + suffix, record.get(source))
-
-    action_counts = record.get('action_counts')
-    if isinstance(action_counts, list):
-        total = sum(value for value in action_counts
-                    if isinstance(value, (int, float)))
-        if total > 0:
-            for index, count in enumerate(action_counts):
-                _put_metric(
-                    payload,
-                    'episode/action_{}_fraction'.format(index),
-                    count / total)
-
-    reward_components = record.get('reward_components')
-    if isinstance(reward_components, dict):
-        for name, value in reward_components.items():
-            if name != 'total':
-                _put_metric(
-                    payload, 'episode/reward_{}'.format(name), value)
-    return payload
-
-
-_UPDATE_METRICS = {
-    'pi_loss': 'train/pi_loss',
-    'v_loss': 'train/v_loss',
-    'total_loss': 'train/total_loss',
-    'gradient_norm': 'train/gradient_norm',
-    'gradient_norm_pre_clip': 'train/gradient_norm_pre_clip',
-    'grad_clipped': 'train/grad_clipped',
-    'ent_mean': 'train/entropy',
-    'advantages_mean': 'train/advantages_mean',
-    'advantages_std': 'train/advantages_std',
-    'val_mean': 'train/value_mean',
-    'val_std': 'train/value_std',
-    'rew_mean': 'train/reward_mean',
-    'rew_sum': 'train/reward_sum',
-    'trajectory_length': 'train/trajectory_length',
-    'lr': 'train/lr',
-    'entropy_coef': 'train/entropy_coef',
-}
-
-_SYSTEM_METRICS = ('proc_cpu_percent', 'proc_rss_gb')
+    if worker_id is not None and int(worker_id) < 0:
+        worker_id = None
+    return minmax_summary(record, worker_id)
 
 
 def project_update_to_wandb(record):
-    """Project one optimizer update onto W&B metrics, values untouched.
+    """Project one optimizer update onto W&B charts, values untouched.
 
-    Emits ``train/<metric>`` for the run as a whole plus
-    ``worker_<id>/train/<metric>`` so a single misbehaving worker stays
-    visible.  Reward components are forwarded under their own names.  Raw
-    per-step arrays are skipped: ``_put_metric`` only accepts scalars.
+    The schedules all workers share as ``train/*``, the losses and rollout
+    statistics of one worker as ``worker_<id>/train/*``.  The gradient
+    values, the reward sum, the rollout length, and the raw arrays stay
+    local.
     """
-    payload = {}
-    _put_metric(payload, 'global_step', record.get('global_t'))
-    for source, target in _UPDATE_METRICS.items():
-        _put_metric(payload, target, record.get(source))
-    for name, value in record.items():
-        if name.startswith('reward_') and name != 'reward_total_sum':
-            _put_metric(payload, 'train/{}'.format(name), value)
-
-    worker_id = record.get('worker')
-    if worker_id is not None and int(worker_id) >= 0:
-        prefix = 'worker_{}/'.format(worker_id)
-        for name in [key for key in payload if key.startswith('train/')]:
-            payload[prefix + name] = payload[name]
-    return payload
+    return _project(record, _UPDATE_RUN_FIELDS, _UPDATE_WORKER_FIELDS)
 
 
 def project_system_to_wandb(record):
-    """Project one resource sample onto W&B metrics, values untouched.
+    """Project one resource sample onto W&B charts, values untouched.
 
-    The main process reports its own CPU/RSS plus one sample per
-    visible GPU under ``system/*``.  Workers, which own no GPU view,
-    report their process numbers under ``worker_<id>/system/*``.
+    The main process as ``system/*``, a worker as ``worker_<id>/system/*``.
+    GPU samples stay local: W&B records GPU usage itself
+    (``system/gpu.<n>.*``).
     """
-    payload = {}
-    _put_metric(payload, 'global_step', record.get('global_t'))
-    worker_id = record.get('worker')
-    prefix = ''
-    if worker_id is not None and int(worker_id) >= 0:
-        prefix = 'worker_{}/'.format(worker_id)
-    for name in _SYSTEM_METRICS:
-        _put_metric(
-            payload, prefix + 'system/{}'.format(name), record.get(name))
-    for gpu in record.get('gpus') or ():
-        if not isinstance(gpu, dict) or \
-                not isinstance(gpu.get('index'), int):
-            continue
-        prefix = 'system/gpu{}_'.format(gpu['index'])
-        for name in ('util_percent', 'mem_used_gb'):
-            _put_metric(payload, prefix + name, gpu.get(name))
-    return payload
+    if _worker_prefix(record):
+        return _project(record, (), _SYSTEM_FIELDS)
+    return _project(record, _SYSTEM_FIELDS, ())
 
 
 def make_telemetry_stop(final_summary=None):
@@ -310,7 +261,7 @@ def make_telemetry_stop(final_summary=None):
 def configure_wandb_metrics(wandb_run, num_workers):
     """Pin W&B series to ``global_step`` for run-wide and per-worker metrics."""
     wandb_run.define_metric('global_step')
-    for prefix in ('train', 'episode', 'global', 'system', 'health'):
+    for prefix in ('train', 'episode', 'global', 'system'):
         wandb_run.define_metric(
             '{}/*'.format(prefix), step_metric='global_step')
     for worker_id in range(int(num_workers)):
@@ -318,6 +269,7 @@ def configure_wandb_metrics(wandb_run, num_workers):
             'worker_{}/*'.format(worker_id), step_metric='global_step')
 
 
+# Health events, counted for the local ``final_summary`` only.
 _HEALTH_METRICS = {
     'nan_gradient': 'health/nan_updates_total',
     'camera_timeout': 'health/camera_timeouts_total',
@@ -349,9 +301,11 @@ def run_telemetry_loop(telemetry_queue, run_output_dir, wandb_run=None,
     This is the only writer of ``events.jsonl`` and the only place that
     calls ``wandb_run.log``.  Every record is forwarded as its own W&B
     point with the values training produced; nothing is batched or
-    averaged.  A ``reward_threshold_reached`` event also updates the W&B
-    run summary at once.  W&B failures are counted and swallowed so that
-    losing the network never costs a local event.
+    averaged.  The W&B run summary gets a ``reward_threshold_reached``
+    event at once, and the run minimum and maximum of an episode record
+    when they change.  Health events and counters stay local.  W&B
+    failures are counted and swallowed so that losing the network never
+    costs a local event.
 
     ``wandb_run`` may be ``None``, in which case the loop still owns
     ``events.jsonl``.  ``startup_events`` are records created before the
@@ -361,6 +315,7 @@ def run_telemetry_loop(telemetry_queue, run_output_dir, wandb_run=None,
     os.makedirs(logs_dir, exist_ok=True)
     events_path = os.path.join(logs_dir, 'events.jsonl')
     health_counts = {}
+    sent_summary = {}  # run-summary values already sent
 
     def count_wandb_error(action, error):
         counter = _shared_counter(shared_counters, 'wandb_errors')
@@ -378,12 +333,15 @@ def run_telemetry_loop(telemetry_queue, run_output_dir, wandb_run=None,
         except Exception as error:
             count_wandb_error('wandb.log', error)
 
-    def update_wandb_summary(hit):
-        if wandb_run is None:
+    def update_wandb_summary(items):
+        """Send the run-summary values that differ from those already sent."""
+        changed = {key: value for key, value in items.items()
+                   if key not in sent_summary or sent_summary[key] != value}
+        if wandb_run is None or not changed:
             return
         try:
-            wandb_run.summary.update(normalize_for_json(
-                threshold_summary(hit['signal'], hit['threshold'], hit)))
+            wandb_run.summary.update(normalize_for_json(changed))
+            sent_summary.update(changed)
         except Exception as error:
             count_wandb_error('wandb.summary.update', error)
 
@@ -399,14 +357,15 @@ def run_telemetry_loop(telemetry_queue, run_output_dir, wandb_run=None,
             record = telemetry_queue.get()
             if isinstance(record, dict) and \
                     record.get(TELEMETRY_CONTROL_KEY) == 'stop':
-                final_summary = dict(record.get('final_summary') or {})
-                final_summary.update(health_counts)
+                final_summary = record.get('final_summary') or {}
+                # Health and telemetry counters stay local.
+                local_summary = {**final_summary, **health_counts}
                 if isinstance(shared_counters, dict):
                     for name, counter in shared_counters.items():
-                        final_summary[name] = _counter_value(counter)
+                        local_summary[name] = _counter_value(counter)
                 write_event(build_record(
                     'event', worker_id=-1,
-                    data=dict(final_summary, event='final_summary')))
+                    data=dict(local_summary, event='final_summary')))
                 if wandb_run is not None:
                     try:
                         wandb_run.summary.update(
@@ -425,14 +384,14 @@ def run_telemetry_loop(telemetry_queue, run_output_dir, wandb_run=None,
                 metric = _HEALTH_METRICS.get(record.get('event'))
                 if metric:
                     health_counts[metric] = health_counts.get(metric, 0) + 1
-                    payload = {metric: health_counts[metric]}
-                    _put_metric(payload, 'global_step',
-                                record.get('global_t'))
-                    log_wandb(payload)
                 if record.get('event') == 'reward_threshold_reached':
-                    update_wandb_summary(record)
+                    update_wandb_summary(threshold_summary(
+                        record['signal'], record['threshold'], record))
             elif kind in _PROJECTIONS:
                 log_wandb(_PROJECTIONS[kind](record))
+                if kind == 'episode':
+                    update_wandb_summary(
+                        project_episode_to_wandb_summary(record))
 
 
 def telemetry_process_main(telemetry_queue, run_output_dir,
@@ -501,9 +460,9 @@ class ResourceLogger:
     usage and RSS.  The main process, the only one with a node-wide
     view, additionally samples every visible GPU through pynvml.
     Each sample becomes one ``system`` record handed to the
-    ``TrainingLogger``, so it lands in the local ``resources.jsonl``
-    and reaches W&B through the ordinary telemetry path.  Sampling
-    errors are swallowed: monitoring must never disturb training.
+    ``TrainingLogger``, so it lands in the local ``resources.jsonl``,
+    and its CPU/RAM values reach W&B through the ordinary telemetry path.
+    Sampling errors are swallowed: monitoring must never disturb training.
     """
 
     def __init__(self, logger, interval=10.0, gpu_indices=None,
@@ -553,9 +512,9 @@ class ResourceLogger:
     def _sample(self):
         """Return one CPU/RSS sample, plus GPU stats when NVML is available."""
         data = {
-            'proc_cpu_percent': round(
+            'system/proc_cpu_percent': round(
                 self._proc.cpu_percent(interval=None), 1),
-            'proc_rss_gb': round(
+            'system/proc_rss_gb': round(
                 self._proc.memory_info().rss / 1e9, 3),
         }
         pynvml = self._ensure_nvml()
@@ -582,7 +541,7 @@ class ResourceLogger:
                 data = self._sample()
                 if self.global_step_getter is not None:
                     try:
-                        data['global_t'] = self.global_step_getter()
+                        data['global_step'] = self.global_step_getter()
                     except (AttributeError, TypeError, ValueError,
                             RuntimeError):
                         pass
@@ -664,7 +623,7 @@ class TrainingLogger:
         if not self.log_steps_enabled:
             return None
         data = {
-            'global_t': global_t,
+            'global_step': global_t,
             'local_t': local_t,
             'global_episode': global_episode,
             'step_in_ep': step_in_ep,
@@ -687,27 +646,37 @@ class TrainingLogger:
                     min_route_dist=None, goal_dist=None,
                     collisions=None, reached_goal=False,
                     action_counts=None, port=None, **extra):
-        """Write one episode record locally and publish it to telemetry."""
+        """Write one episode record locally and publish it to telemetry.
+
+        Fields carry their W&B names; ``extra`` (the reward statistics of
+        ``reward_stats``) is added as it is.
+        """
         data = {
-            'global_episode': global_episode,
-            'global_t': global_t,
-            'total_reward': total_reward,
-            'steps': steps,
-            'mean_reward': total_reward / steps if steps > 0 else 0.0,
-            'reached_goal': reached_goal,
+            'global_step': global_t,
+            'episode/id': global_episode,
+            'reward': total_reward,
+            'episode_length': steps,
+            'episode/reward_per_step':
+                total_reward / steps if steps > 0 else 0.0,
+            'episode/success': reached_goal,
         }
         optional = {
-            'duration_s': round(duration_s, 3)
+            'episode/duration_s': round(duration_s, 3)
             if duration_s is not None else None,
-            'max_speed_kmh': max_speed_kmh,
-            'min_route_dist': min_route_dist,
-            'goal_dist': goal_dist,
-            'collisions': collisions,
-            'action_counts': action_counts,
+            'episode/max_speed_kmh': max_speed_kmh,
+            'episode/min_route_distance': min_route_dist,
+            'goal_distance': goal_dist,
+            'episode/collisions': collisions,
             'port': port,
         }
         data.update({key: value for key, value in optional.items()
                      if value is not None})
+        # Share of each action in the episode.
+        total = sum(action_counts or ())
+        for index, count in enumerate(action_counts or ()):
+            if total > 0:
+                data['episode/action_{}_fraction'.format(index)] = \
+                    count / total
         data.update(extra)
         record = self._write(
             'episodes.jsonl', self._record('episode', data))
@@ -716,21 +685,28 @@ class TrainingLogger:
 
     def log_update(self, update_count, global_t, trajectory_length,
                    is_terminal, pi_loss, v_loss, total_loss, gradient_norm,
-                   lr, advantages=None, values=None, rewards=None,
-                   entropies=None, **extra):
-        """Write one optimizer-update record and publish it to telemetry."""
+                   lr, entropy_coef=None, gradient_norm_pre_clip=None,
+                   grad_clipped=None, advantages=None, values=None,
+                   rewards=None, entropies=None, **extra):
+        """Write one optimizer-update record and publish it to telemetry.
+
+        Fields carry their W&B names (``train/*``).
+        """
         import numpy as np
 
         data = {
+            'global_step': global_t,
             'update': update_count,
-            'global_t': global_t,
-            'trajectory_length': trajectory_length,
             'is_terminal': is_terminal,
-            'pi_loss': pi_loss,
-            'v_loss': v_loss,
-            'total_loss': total_loss,
-            'gradient_norm': gradient_norm,
-            'lr': lr,
+            'train/trajectory_length': trajectory_length,
+            'train/pi_loss': pi_loss,
+            'train/v_loss': v_loss,
+            'train/total_loss': total_loss,
+            'train/gradient_norm': gradient_norm,
+            'train/gradient_norm_pre_clip': gradient_norm_pre_clip,
+            'train/grad_clipped': grad_clipped,
+            'train/lr': lr,
+            'train/entropy_coef': entropy_coef,
         }
         arrays = {
             'advantages': advantages,
@@ -743,22 +719,22 @@ class TrainingLogger:
                 continue
             values_array = np.asarray(array)
             if name == 'advantages':
-                data['advantages_mean'] = float(values_array.mean()) \
+                data['train/advantages_mean'] = float(values_array.mean()) \
                     if len(values_array) else 0.0
-                data['advantages_std'] = float(values_array.std()) \
+                data['train/advantages_std'] = float(values_array.std()) \
                     if len(values_array) > 1 else 0.0
             elif name == 'values':
-                data['val_mean'] = float(values_array.mean()) \
+                data['train/value_mean'] = float(values_array.mean()) \
                     if len(values_array) else 0.0
-                data['val_std'] = float(values_array.std()) \
+                data['train/value_std'] = float(values_array.std()) \
                     if len(values_array) > 1 else 0.0
             elif name == 'rewards':
-                data['rew_mean'] = float(values_array.mean()) \
+                data['train/reward_mean'] = float(values_array.mean()) \
                     if len(values_array) else 0.0
-                data['rew_sum'] = float(values_array.sum()) \
+                data['train/reward_sum'] = float(values_array.sum()) \
                     if len(values_array) else 0.0
             else:
-                data['ent_mean'] = float(values_array.mean()) \
+                data['train/entropy'] = float(values_array.mean()) \
                     if len(values_array) else 0.0
             if self.log_update_arrays:
                 data[name] = array
@@ -801,16 +777,16 @@ class TrainingLogger:
 
     def log_checkpoint(self, path, global_t, **kwargs):
         return self.log_event(
-            'checkpoint_save', path=path, global_t=global_t, **kwargs)
+            'checkpoint_save', path=path, global_step=global_t, **kwargs)
 
     def log_crash_recovery(self, global_t, error=None, **kwargs):
         return self.log_event(
-            'crash_recovery', global_t=global_t,
+            'crash_recovery', global_step=global_t,
             error=str(error) if error else None, **kwargs)
 
     def log_nan(self, global_t, nan_count, nan_layers=None, **kwargs):
         return self.log_event(
-            'nan_gradient', global_t=global_t,
+            'nan_gradient', global_step=global_t,
             nan_count=nan_count, nan_layers=nan_layers, **kwargs)
 
     def close(self):

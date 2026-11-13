@@ -206,19 +206,6 @@ def compute_entropy_coefficient_for_step(config, global_t):
     return start + interpolation_factor * (end - start)
 
 
-def summarize_reward_components(component_rollout):
-    """Sum and mean each named reward term across the current rollout."""
-    if not component_rollout:
-        return {}
-    keys = sorted({k for comp in component_rollout for k in comp.keys()})
-    summary = {}
-    for key in keys:
-        values = [float(comp.get(key, 0.0)) for comp in component_rollout]
-        summary['reward_{}_sum'.format(key)] = float(np.sum(values))
-        summary['reward_{}_mean'.format(key)] = float(np.mean(values))
-    return summary
-
-
 # ---------------------------------------------------------------------------
 # Global network (CPU shared-memory Hogwild)
 # ---------------------------------------------------------------------------
@@ -421,8 +408,10 @@ class GlobalNetwork:
             if 'reward_stats' in state:
                 return self.reward_stats.load_state_dict(
                     state['reward_stats'])
-            # Checkpoint written before RewardTracker existed.
-            return self.reward_stats.load_legacy(state)
+            # Checkpoint written before RewardTracker existed: its one
+            # run-wide reward window has no worker, so the statistics start
+            # empty.
+            return None
 
     def load_weights(self, path):
         """Load only the model weights (``--init-from``); counters stay fresh."""
@@ -459,7 +448,6 @@ class A3CWorker(mp.Process):
         self.model = None
         self.trajectory = []
         self.rewards = []
-        self.reward_components = []
         self.local_updates = 0
         self.total_steps = 0
         self.episode_count = 0
@@ -481,7 +469,6 @@ class A3CWorker(mp.Process):
         """Drop transitions collected since the last optimizer update."""
         self.trajectory.clear()
         self.rewards.clear()
-        self.reward_components.clear()
 
     def sync_with_global(self):
         """Refresh this worker's local model from CPU shared parameters."""
@@ -613,8 +600,6 @@ class A3CWorker(mp.Process):
                       in advantages_tensor.detach().cpu().view(-1)]
         val_values = [float(x) for x
                       in values_tensor.detach().cpu().view(-1)]
-        component_summary = summarize_reward_components(
-            self.reward_components)
 
         training_logger.log_update(
             update_count=update_number,
@@ -633,7 +618,6 @@ class A3CWorker(mp.Process):
             values=val_values,
             entropies=[float(e.detach().cpu().item()) for e in entropies],
             rewards=rewards_scaled,
-            **component_summary
         )
 
         self._clear_rollout_buffers()
@@ -664,12 +648,13 @@ class A3CWorker(mp.Process):
         limit) is logged and marked, but never enters the reward statistics
         or the thresholds.
         """
+        episode_stats = env.episode_stats()
         if interrupted:
             stats, new_hits = {'interrupted': True}, []
         else:
             stats, new_hits = self.global_network.reward_stats.record_episode(
                 self.worker_id, episode_total_reward, global_t,
-                global_episode)
+                global_episode, goal_dist=episode_stats['goal_dist'])
 
         record = training_logger.log_episode(
             global_episode=global_episode,
@@ -678,7 +663,7 @@ class A3CWorker(mp.Process):
             steps=episode_step_count,
             duration_s=duration_s,
             **stats,
-            **env.episode_stats()
+            **episode_stats
         )
 
         if stats.get('is_new_best'):
@@ -692,7 +677,7 @@ class A3CWorker(mp.Process):
             print('[THRESHOLD] W{} {} reached {:g} (value {:.2f}) at step '
                   '{}, Ep{}, {:.0f}s of training'.format(
                       self.worker_id, hit['signal'], hit['threshold'],
-                      hit['value'], hit['global_t'], hit['global_episode'],
+                      hit['value'], hit['global_step'], hit['global_episode'],
                       hit['elapsed_training_s']),
                   flush=True)
 
@@ -814,8 +799,6 @@ class A3CWorker(mp.Process):
                         timer.record('env_step', phase_start_time)
 
                         self.rewards.append(reward)
-                        self.reward_components.append(
-                            info.get('reward_components', {}))
                         episode_total_reward += reward
                         if sum(self.rewards) <= -6:
                             done = True
@@ -835,8 +818,6 @@ class A3CWorker(mp.Process):
                                 route_dist=info.get('route_distance'),
                                 goal_dist=info.get('distance_from_goal'),
                                 maneuver=int(obs['maneuver']),
-                                reward_components=info.get(
-                                    'reward_components'),
                             )
 
                         if steps_since_last_update >= \
@@ -925,7 +906,7 @@ class A3CWorker(mp.Process):
                               flush=True)
                         training_logger.log_event(
                             'camera_timeout',
-                            global_t=self.global_network.global_step.value,
+                            global_step=self.global_network.global_step.value,
                             error=msg)
                         self._clear_rollout_buffers()
                     else:
@@ -937,7 +918,7 @@ class A3CWorker(mp.Process):
             print('[W{}] crashed: {}'.format(self.worker_id, e), flush=True)
             training_logger.log_event(
                 'worker_crash',
-                global_t=self.global_network.global_step.value,
+                global_step=self.global_network.global_step.value,
                 error=str(e))
             raise
         finally:

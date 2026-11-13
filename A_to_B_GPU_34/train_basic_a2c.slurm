@@ -1,12 +1,12 @@
 #!/bin/bash
-#SBATCH --partition=CHANGEME
+#SBATCH --partition=plgrid-gpu-a100
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=7
 #SBATCH --mem=25G
 #SBATCH --time=05:00:00
 #SBATCH --gpus=1
-#SBATCH --account=CHANGEME
+#SBATCH --account=plgdyplomanci7-gpu-a100
 #SBATCH --job-name=basic-a2c
 #SBATCH --output=basic-a2c-%j.log
 #SBATCH --error=basic-a2c-%j.log
@@ -17,6 +17,8 @@
 #   sbatch A_to_B_GPU_34/train_basic_a2c.slurm --resume A_to_B_GPU_34/runs/a2c_experiments/<run-dir>
 # Override the allocation duration at submission time:
 #   sbatch --time=02:30:00 A_to_B_GPU_34/train_basic_a2c.slurm --scenario 13
+# Log when the reward first reaches each threshold:
+#   sbatch A_to_B_GPU_34/train_basic_a2c.slurm --reward-thresholds 0,50,100
 # Supported Town03 scenario IDs: 1-8 and 10-16.
 
 set -uo pipefail
@@ -43,6 +45,8 @@ CARLA_LAUNCHER="${TEMPLATE_DIR}/carla_multiserver_launcher.py"
 
 SCENARIO=10
 RESUME_DIR=""
+REWARD_THRESHOLDS=""
+USAGE="Usage: sbatch [--time=HH:MM:SS] $0 [--scenario ID] [--resume RUN_DIR] [--reward-thresholds X,Y,...]"
 while [ "$#" -gt 0 ]; do
     case "$1" in
         --scenario)
@@ -61,15 +65,23 @@ while [ "$#" -gt 0 ]; do
             RESUME_DIR="$2"
             shift 2
             ;;
+        --reward-thresholds)
+            if [ "$#" -lt 2 ] || [ -z "$2" ]; then
+                echo "ERROR: --reward-thresholds requires a comma-separated list." >&2
+                exit 2
+            fi
+            REWARD_THRESHOLDS="$2"
+            shift 2
+            ;;
         -h|--help)
-            echo "Usage: sbatch [--time=HH:MM:SS] $0 [--scenario ID] [--resume RUN_DIR]"
+            echo "${USAGE}"
             echo "Without --resume, a new model and W&B run are created."
             echo "With --resume, the checkpoint and W&B run ID from RUN_DIR are continued."
             exit 0
             ;;
         *)
             echo "ERROR: unknown argument: $1" >&2
-            echo "Usage: sbatch [--time=HH:MM:SS] $0 [--scenario ID] [--resume RUN_DIR]" >&2
+            echo "${USAGE}" >&2
             exit 2
             ;;
     esac
@@ -143,6 +155,7 @@ else
     START_PORT=2000
 fi
 export A2C_SCENARIO="${SCENARIO}"
+export A2C_REWARD_THRESHOLDS="${REWARD_THRESHOLDS}"
 export CARLA_START_PORT="${START_PORT}"
 export CARLA_PORT_STEP=5
 export CARLA_SERVER_START_PERIOD=30

@@ -1,15 +1,16 @@
-"""Run-wide reward statistics shared by all workers (stdlib only).
+"""Reward statistics shared by all workers (stdlib only).
 
 One ``RewardTracker`` lives in shared memory next to the global network.
 Each worker calls ``record_episode`` once per completed episode and gets
-back the rolling statistics at that moment, plus the reward thresholds this
-episode was the first to reach.  Windows are ring buffers of episode
-rewards: the last ``REWARD_WINDOW`` episodes of all workers, the last
-``REWARD_WINDOW * num_workers`` episodes of all workers, and the last
-``REWARD_WINDOW`` episodes of each worker.
+back the statistics at that moment, plus the reward thresholds this episode
+was the first to reach.  Per worker it keeps ring buffers of the episode
+reward and the final goal distance of the last ``REWARD_WINDOW`` episodes,
+and the run minimum and maximum of both.  Run-wide values are aggregates of
+the workers: the mean of their means, the lowest minimum, the highest
+maximum.
 
 This module imports nothing from the project, so the torch-free
-``training_logger`` can reuse ``threshold_summary``.
+``training_logger`` can reuse ``threshold_summary`` and ``minmax_summary``.
 """
 
 import contextlib
@@ -19,26 +20,29 @@ import time
 
 REWARD_WINDOW = 100
 
-# What a threshold is compared against: the reward of the episode that just
-# ended, the run-wide mean of the last REWARD_WINDOW episodes, or the mean of
-# the last REWARD_WINDOW * num_workers episodes.  The two means count only
-# once their window is full.
-THRESHOLD_SIGNALS = ('episode_reward', 'reward_mean_100', 'reward_mean')
+# What a threshold is compared against.  Run-wide: the global mean reward,
+# once every worker's window is full.  Per worker, named
+# ``worker_<id>/<signal>``: the reward of the episode that just ended, and the
+# mean of the worker's window once it is full.
+THRESHOLD_SIGNALS = ('reward_mean_100',)
+WORKER_THRESHOLD_SIGNALS = ('episode_reward', 'reward_mean_100')
 
 # state_dict() and summary() wait this long for the tracker lock, then read
 # without it (see RewardTracker._read_lock).
 LOCK_TIMEOUT_S = 5.0
 
 # Per threshold slot, in the order they are stored in shared memory.
-_SLOT_FIELDS = ('global_t', 'global_episode', 'elapsed_training_s',
+_SLOT_FIELDS = ('global_step', 'global_episode', 'elapsed_training_s',
                 'value', 'worker')
 _NO_HIT = (-1.0, -1.0, 0.0, 0.0, -1.0)
-# Summary name of each slot field.
-_SUMMARY_NAMES = (('global_t', 'global_step'),
-                  ('elapsed_training_s', 'elapsed_training_s'),
-                  ('global_episode', 'global_episode'),
-                  ('value', 'value'),
-                  ('worker', 'worker'))
+# Fields of a threshold in the run summary; ``worker`` stays in the event.
+_SUMMARY_FIELDS = ('global_step', 'elapsed_training_s', 'global_episode',
+                   'value')
+
+# Run minimum and maximum: run-summary values ``worker_<id>/<name>`` (the
+# episode field ``<name>``) and ``global/<name>``.
+MINMAX_NAMES = ('reward_min', 'reward_max', 'goal_distance_min',
+                'goal_distance_max')
 
 
 def threshold_label(threshold):
@@ -67,10 +71,46 @@ def threshold_summary(signal, threshold, hit=None):
     """
     threshold = float(threshold)
     items = {threshold_key(signal, threshold, 'reached'): hit is not None}
-    for field, name in _SUMMARY_NAMES:
-        items[threshold_key(signal, threshold, name)] = \
+    for field in _SUMMARY_FIELDS:
+        items[threshold_key(signal, threshold, field)] = \
             hit.get(field) if hit is not None else None
     return items
+
+
+def minmax_summary(stats, worker_id=None):
+    """W&B run-summary entries of the run minimum and maximum in ``stats``.
+
+    ``stats`` holds the fields of an episode record; missing or ``None``
+    values are left out.
+    """
+    items = {}
+    for name in MINMAX_NAMES:
+        if worker_id is not None:
+            items['worker_{}/{}'.format(worker_id, name)] = stats.get(name)
+        items['global/' + name] = stats.get('global/' + name)
+    return {key: value for key, value in items.items() if value is not None}
+
+
+def _finite(value):
+    """``value``, or ``None`` for the +-inf of an empty minimum or maximum."""
+    return value if math.isfinite(value) else None
+
+
+def _mean(values):
+    """Mean of the values that are not ``None``; ``None`` if there are none."""
+    values = [value for value in values if value is not None]
+    return sum(values) / len(values) if values else None
+
+
+def _widen(low, high, index, value):
+    """Extend the minimum ``low[index]`` and the maximum ``high[index]``."""
+    low[index] = min(low[index], value)
+    high[index] = max(high[index], value)
+
+
+def _item(items, index, default):
+    """``items[index]``, or ``default`` when ``items`` is shorter."""
+    return items[index] if index < len(items) else default
 
 
 def clean_thresholds(thresholds):
@@ -127,13 +167,9 @@ class SharedRewardWindow:
         index = self._index.value
         return list(self._buffer[index:]) + list(self._buffer[:index])
 
-    def stats(self):
-        """``mean``, ``min``, ``max``; ``None`` when empty."""
-        values = self.values()
-        if not values:
-            return {'mean': None, 'min': None, 'max': None}
-        return {'mean': sum(values) / len(values),
-                'min': min(values), 'max': max(values)}
+    def mean(self):
+        """Mean of the stored values; ``None`` when empty."""
+        return _mean(self.values())
 
     def load(self, values):
         """Replace the content; only the last ``size`` values are kept."""
@@ -144,7 +180,7 @@ class SharedRewardWindow:
 
 
 class RewardTracker:
-    """Shared reward windows, best/worst rewards, and reward thresholds.
+    """Per-worker reward windows, run minimum and maximum, and thresholds.
 
     One lock guards everything.
     """
@@ -154,24 +190,30 @@ class RewardTracker:
         self.thresholds = clean_thresholds(thresholds)
         self.lock = multiprocessing.Lock()
 
-        self._global = SharedRewardWindow(REWARD_WINDOW)
-        self._long = SharedRewardWindow(REWARD_WINDOW * self.num_workers)
         self._workers = [SharedRewardWindow(REWARD_WINDOW)
                          for _ in range(self.num_workers)]
-
+        self._worker_goal_dists = [SharedRewardWindow(REWARD_WINDOW)
+                                   for _ in range(self.num_workers)]
+        # Run minimum and maximum of each worker; +-inf before its first value.
         inf = float('inf')
-        self._best = multiprocessing.Value('d', -inf, lock=False)
-        self._worst = multiprocessing.Value('d', inf, lock=False)
-        self._worker_best = multiprocessing.Array(
-            'd', [-inf] * self.num_workers, lock=False)
-        self._worker_worst = multiprocessing.Array(
+        self._reward_min = multiprocessing.Array(
             'd', [inf] * self.num_workers, lock=False)
+        self._reward_max = multiprocessing.Array(
+            'd', [-inf] * self.num_workers, lock=False)
+        self._goal_dist_min = multiprocessing.Array(
+            'd', [inf] * self.num_workers, lock=False)
+        self._goal_dist_max = multiprocessing.Array(
+            'd', [-inf] * self.num_workers, lock=False)
 
         # One slot per (signal, threshold). A slot holds _SLOT_FIELDS as
-        # doubles, which store these integers exactly; global_t < 0 means
+        # doubles, which store these integers exactly; global_step < 0 means
         # the threshold was not reached.
         self._pairs = [(signal, threshold) for signal in THRESHOLD_SIGNALS
                        for threshold in self.thresholds]
+        self._pairs += [('worker_{}/{}'.format(worker_id, signal), threshold)
+                        for worker_id in range(self.num_workers)
+                        for signal in WORKER_THRESHOLD_SIGNALS
+                        for threshold in self.thresholds]
         self._slot_of = {pair: slot for slot, pair in enumerate(self._pairs)}
         self._hits = multiprocessing.Array(
             'd', list(_NO_HIT) * len(self._pairs), lock=False)
@@ -228,14 +270,14 @@ class RewardTracker:
     def _read_hit(self, slot):
         """Hit dict of ``slot``, or None if its threshold is not reached."""
         stored = dict(zip(_SLOT_FIELDS, self._hits[self._slot_range(slot)]))
-        if stored['global_t'] < 0:
+        if stored['global_step'] < 0:
             return None
         signal, threshold = self._pairs[slot]
         return {
             'signal': signal,
             'threshold': threshold,
             'value': stored['value'],
-            'global_t': int(stored['global_t']),
+            'global_step': int(stored['global_step']),
             'global_episode': int(stored['global_episode']),
             'elapsed_training_s': stored['elapsed_training_s'],
             'worker': int(stored['worker']),
@@ -251,13 +293,41 @@ class RewardTracker:
         """Reached thresholds, earliest first. The caller holds the lock."""
         hits = [self._read_hit(slot) for slot in range(len(self._pairs))]
         hits = [hit for hit in hits if hit is not None]
-        hits.sort(key=lambda hit: (hit['global_t'], hit['global_episode']))
+        hits.sort(
+            key=lambda hit: (hit['global_step'], hit['global_episode']))
         return hits
 
     # -- recording --
 
-    def record_episode(self, worker_id, reward, global_t, global_episode):
+    def _stats(self, worker_id):
+        """Statistics of one worker (W&B names) and the run (``global/*``).
+
+        A run-wide mean is the mean of the worker means, without workers that
+        have none; a run-wide minimum or maximum is the lowest or highest of
+        the workers.  The caller holds the lock.
+        """
+        reward_means = [window.mean() for window in self._workers]
+        dist_means = [window.mean() for window in self._worker_goal_dists]
+        return {
+            'reward_mean_100': reward_means[worker_id],
+            'goal_distance_mean_100': dist_means[worker_id],
+            'reward_min': _finite(self._reward_min[worker_id]),
+            'reward_max': _finite(self._reward_max[worker_id]),
+            'goal_distance_min': _finite(self._goal_dist_min[worker_id]),
+            'goal_distance_max': _finite(self._goal_dist_max[worker_id]),
+            'global/reward_mean_100': _mean(reward_means),
+            'global/goal_distance_mean_100': _mean(dist_means),
+            'global/reward_min': _finite(min(self._reward_min)),
+            'global/reward_max': _finite(max(self._reward_max)),
+            'global/goal_distance_min': _finite(min(self._goal_dist_min)),
+            'global/goal_distance_max': _finite(max(self._goal_dist_max)),
+        }
+
+    def record_episode(self, worker_id, reward, global_t, global_episode,
+                       goal_dist=None):
         """Count one completed episode.
+
+        ``goal_dist`` is the final goal distance; None or inf is skipped.
 
         Returns ``(stats, new_hits)``.  ``stats`` is a flat dict whose keys
         become fields of the episode record; ``new_hits`` lists the
@@ -265,81 +335,60 @@ class RewardTracker:
         """
         reward = float(reward)
         with self.lock:
+            # Higher than every earlier episode of the run.
+            is_new_best = reward > max(self._reward_max)
             self._workers[worker_id].push(reward)
-            self._global.push(reward)
-            self._long.push(reward)
+            _widen(self._reward_min, self._reward_max, worker_id, reward)
+            if goal_dist is not None and math.isfinite(goal_dist):
+                goal_dist = float(goal_dist)
+                self._worker_goal_dists[worker_id].push(goal_dist)
+                _widen(self._goal_dist_min, self._goal_dist_max, worker_id,
+                       goal_dist)
 
-            is_new_best = reward > self._best.value
-            if is_new_best:
-                self._best.value = reward
-            if reward < self._worst.value:
-                self._worst.value = reward
-            if reward > self._worker_best[worker_id]:
-                self._worker_best[worker_id] = reward
-            if reward < self._worker_worst[worker_id]:
-                self._worker_worst[worker_id] = reward
-
-            local = self._workers[worker_id].stats()
-            run_100 = self._global.stats()
-            run_long = self._long.stats()
             elapsed = self.elapsed_training_s()
+            stats = self._stats(worker_id)
+            stats['global/elapsed_training_s'] = elapsed
+            stats['is_new_best'] = is_new_best
 
-            stats = {
-                'is_new_best': is_new_best,
-                'local_mean_reward': local['mean'],
-                'local_reward_min_100': local['min'],
-                'local_reward_max_100': local['max'],
-                'local_best_reward': self._worker_best[worker_id],
-                'local_worst_reward': self._worker_worst[worker_id],
-                'global_mean_reward_100': run_100['mean'],
-                'global_reward_min_100': run_100['min'],
-                'global_reward_max_100': run_100['max'],
-                'global_mean_reward': run_long['mean'],
-                'global_reward_min': run_long['min'],
-                'global_reward_max': run_long['max'],
-                'best_reward': self._best.value,
-                'worst_reward': self._worst.value,
-                'elapsed_training_s': elapsed,
-            }
-
+            all_full = all(window.full for window in self._workers)
             signal_values = {
-                'episode_reward': reward,
                 'reward_mean_100':
-                    run_100['mean'] if self._global.full else None,
-                'reward_mean': run_long['mean'] if self._long.full else None,
+                    stats['global/reward_mean_100'] if all_full else None,
+                'worker_{}/episode_reward'.format(worker_id): reward,
+                'worker_{}/reward_mean_100'.format(worker_id):
+                    stats['reward_mean_100']
+                    if self._workers[worker_id].full else None,
             }
             new_hits = []
-            for slot, (signal, threshold) in enumerate(self._pairs):
-                value = signal_values[signal]
-                if value is None or value < threshold or \
-                        self._read_hit(slot) is not None:
+            for signal, value in signal_values.items():
+                if value is None:
                     continue
-                self._write_hit(slot, {
-                    'global_t': global_t, 'global_episode': global_episode,
-                    'elapsed_training_s': elapsed, 'value': value,
-                    'worker': worker_id})
-                new_hits.append(self._read_hit(slot))
+                for threshold in self.thresholds:
+                    slot = self._slot_of[(signal, threshold)]
+                    if value < threshold or self._read_hit(slot) is not None:
+                        continue
+                    self._write_hit(slot, {
+                        'global_step': global_t,
+                        'global_episode': global_episode,
+                        'elapsed_training_s': elapsed, 'value': value,
+                        'worker': worker_id})
+                    new_hits.append(self._read_hit(slot))
         return stats, new_hits
 
     # -- summary --
 
     def summary(self):
-        """Flat entries for ``final_summary`` and the W&B run summary."""
+        """Flat entries for ``final_summary`` and the W&B run summary.
+
+        The run minimum and maximum (see ``minmax_summary``) and every
+        configured threshold.
+        """
+        summary = {}
         with self._read_lock():
-            run_100 = self._global.stats()
-            run_long = self._long.stats()
-            best, worst = self._best.value, self._worst.value
+            for worker_id in range(self.num_workers):
+                summary.update(
+                    minmax_summary(self._stats(worker_id), worker_id))
             hits = [self._read_hit(slot) for slot in range(len(self._pairs))]
-        summary = {
-            'best_reward': best if math.isfinite(best) else None,
-            'worst_reward': worst if math.isfinite(worst) else None,
-            'final_global_mean_reward': run_long['mean'],
-            'final_reward_min': run_long['min'],
-            'final_reward_max': run_long['max'],
-            'final_reward_mean_100': run_100['mean'],
-            'final_reward_min_100': run_100['min'],
-            'final_reward_max_100': run_100['max'],
-        }
         for (signal, threshold), hit in zip(self._pairs, hits):
             summary.update(threshold_summary(signal, threshold, hit))
         return summary
@@ -353,13 +402,13 @@ class RewardTracker:
         """
         with self._read_lock():
             return {
-                'global': self._global.values(),
-                'long': self._long.values(),
                 'workers': [window.values() for window in self._workers],
-                'best_reward': self._best.value,
-                'worst_reward': self._worst.value,
-                'worker_best': list(self._worker_best),
-                'worker_worst': list(self._worker_worst),
+                'worker_goal_dists': [
+                    window.values() for window in self._worker_goal_dists],
+                'worker_reward_min': list(self._reward_min),
+                'worker_reward_max': list(self._reward_max),
+                'worker_goal_dist_min': list(self._goal_dist_min),
+                'worker_goal_dist_max': list(self._goal_dist_max),
                 'hits': self._all_hits(),
                 'elapsed_training_s': self.elapsed_training_s(),
             }
@@ -369,63 +418,47 @@ class RewardTracker:
 
         The return value is ``elapsed_training_s`` of the snapshot, or
         ``None`` if it has none.  A different number of workers is
-        tolerated: worker lists are zipped (workers without saved data start
-        empty) and the long window keeps only its most recent values.  Only
-        thresholds configured now are restored; the others stay in the old
-        ``events.jsonl``.
+        tolerated: worker lists are zipped, and workers without saved data
+        start empty.  A snapshot from before the run minimum and maximum
+        takes the reward ones from ``worker_worst`` / ``worker_best`` and the
+        goal-distance ones from the saved window.  Only thresholds configured
+        now are restored; the others stay in the old ``events.jsonl``.
         """
         inf = float('inf')
-        saved_workers = list(state.get('workers', ()))
-        saved_best = list(state.get('worker_best', ()))
-        saved_worst = list(state.get('worker_worst', ()))
+        saved_rewards = list(state.get('workers', ()))
+        saved_dists = list(state.get('worker_goal_dists', ()))
+        reward_min = list(state.get('worker_reward_min',
+                                    state.get('worker_worst', ())))
+        reward_max = list(state.get('worker_reward_max',
+                                    state.get('worker_best', ())))
+        dist_min = list(state.get('worker_goal_dist_min', ()))
+        dist_max = list(state.get('worker_goal_dist_max', ()))
         with self.lock:
-            self._global.load(state.get('global', ()))
-            self._long.load(state.get('long', ()))
-            for index, window in enumerate(self._workers):
-                window.load(saved_workers[index]
-                            if index < len(saved_workers) else ())
-                self._worker_best[index] = float(
-                    saved_best[index] if index < len(saved_best) else -inf)
-                self._worker_worst[index] = float(
-                    saved_worst[index] if index < len(saved_worst) else inf)
-            self._best.value = float(state.get('best_reward', -inf))
-            self._worst.value = float(state.get('worst_reward', inf))
+            for index in range(self.num_workers):
+                self._workers[index].load(_item(saved_rewards, index, ()))
+                self._worker_goal_dists[index].load(
+                    _item(saved_dists, index, ()))
+                rewards = self._workers[index].values()
+                dists = self._worker_goal_dists[index].values()
+                self._reward_min[index] = _item(
+                    reward_min, index, min(rewards, default=inf))
+                self._reward_max[index] = _item(
+                    reward_max, index, max(rewards, default=-inf))
+                self._goal_dist_min[index] = _item(
+                    dist_min, index, min(dists, default=inf))
+                self._goal_dist_max[index] = _item(
+                    dist_max, index, max(dists, default=-inf))
             for slot in range(len(self._pairs)):
                 self._write_hit(slot, None)
             for hit in state.get('hits', ()):
+                # An older snapshot names the step ``global_t``.
+                hit = dict(hit, global_step=hit.get(
+                    'global_step', hit.get('global_t')))
                 try:
                     slot = self._slot_of[
                         (hit['signal'], float(hit['threshold']))]
+                    self._write_hit(slot, hit)
                 except (KeyError, TypeError, ValueError):
                     continue
-                self._write_hit(slot, hit)
         elapsed = state.get('elapsed_training_s')
         return None if elapsed is None else float(elapsed)
-
-    def load_legacy(self, checkpoint_state):
-        """Migrate a checkpoint written before ``RewardTracker`` existed.
-
-        The old state is one ring buffer (``recent_rewards``,
-        ``recent_reward_count``, ``recent_reward_index``) and
-        ``best_reward``.  The run-wide worst reward becomes the lowest value
-        in the restored window.  Per-worker windows and per-worker best and
-        worst values, thresholds, and the training time start empty.
-        Returns ``None`` (no training time), as ``load_state_dict`` does for
-        a snapshot without one.
-        """
-        buffer = [float(value)
-                  for value in checkpoint_state.get('recent_rewards', ())]
-        size = len(buffer)
-        count = min(int(checkpoint_state.get('recent_reward_count', 0)), size)
-        if size and count == size:
-            start = int(checkpoint_state.get('recent_reward_index', 0)) % size
-            values = buffer[start:] + buffer[:start]
-        else:
-            values = buffer[:count]
-        with self.lock:
-            self._long.load(values)
-            self._global.load(values[-REWARD_WINDOW:])
-            self._best.value = float(
-                checkpoint_state.get('best_reward', -float('inf')))
-            self._worst.value = min(values) if values else float('inf')
-        return None

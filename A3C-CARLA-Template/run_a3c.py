@@ -159,7 +159,7 @@ def _start_worker(worker_id, global_network, config, port, device,
 def _emit_event(telemetry_queue, event_type, global_step=None,
                 worker_id=None, dropped_counter=None, **details):
     """Enqueue a supervisor lifecycle event (start, restart, rollback, ...)."""
-    details.update({'event': event_type, 'global_t': global_step})
+    details.update({'event': event_type, 'global_step': global_step})
     record = build_record('event', worker_id=worker_id, data=details)
     enqueue_telemetry(
         telemetry_queue, record, is_event=True,

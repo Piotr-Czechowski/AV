@@ -66,9 +66,12 @@ model_incr_save = model_incr_load
 gamma = settings.GAMMA
 lr = settings.LR
 use_entropy = settings.USE_ENTROPY
+# The actor loss subtracts the entropy unscaled: coefficient 1 or 0.
+entropy_coef = 1.0 if use_entropy else 0.0
 scenario = settings.SCENARIO
 testing = settings.TESTING
 logging = settings.LOGGING
+reward_thresholds = settings.REWARD_THRESHOLDS
 
 STOP_REQUESTED = False
 ACTIVE_WORKER = None
@@ -139,6 +142,28 @@ def _save_run_global_step(step):
     temporary_path.replace(step_path)
 
 
+# Values compared with reward thresholds: episode reward, and the mean of the
+# last 100 episodes once there are 100.
+THRESHOLD_SIGNALS = ('episode_reward', 'reward_mean_100')
+# Distance to the goal [m] at which an episode counts as a success.
+GOAL_RADIUS_M = 3.0
+
+
+def _threshold_summary(signal, threshold, hit=None):
+    """W&B summary keys of one threshold, e.g. threshold/episode_reward/neg50/*.
+
+    Without ``hit`` the threshold is not reached and the fields are None.
+    """
+    label = '{:g}'.format(threshold).replace('-', 'neg').replace(
+        '.', 'p').replace('+', '')
+    prefix = 'threshold/{}/{}/'.format(signal, label)
+    items = {prefix + 'reached': hit is not None}
+    for field in ('global_step', 'elapsed_training_s', 'global_episode',
+                  'value'):
+        items[prefix + field] = hit.get(field) if hit is not None else None
+    return items
+
+
 # Transition - the representation of a single transition
 """
 :param s: the state
@@ -173,8 +198,16 @@ class DeepActorCriticAgent(mp.Process):
         self.trajectory = []  # Contains the trajectory of the self as a sequence of transitions
         self.rewards = []  # Contains the rewards obtained from the env at every step
         self.episode_rewards_history = []
+        self.episode_goal_dists_history = []  # Goal distance at episode end
         self.best_mean_reward = - float("inf")  # self's personal best mean episode reward
-        self.best_reward = - float("inf")
+        # Run min and max of the episode reward and the goal distance at
+        # episode end, under their W&B names
+        self.reward_min = float("inf")
+        self.reward_max = -float("inf")
+        self.goal_distance_min = float("inf")
+        self.goal_distance_max = -float("inf")
+        self.elapsed_training_s = 0.0  # Training time of all sessions
+        self.threshold_hits = {}  # (signal, threshold) -> reached threshold
         self.global_step_num = 0
         self.log = ColoredPrint()
 
@@ -251,24 +284,37 @@ class DeepActorCriticAgent(mp.Process):
         log_probs = torch.cat(
             [log_prob.view(-1) for log_prob in log_prob_a_batch])
         advantages = returns - values.detach()
-        actor_loss = -(log_probs * advantages.view(-1)).mean()
-        if self.use_entropy:
-            entropy = torch.cat([item.view(-1) for item in entropies]).mean()
-            actor_loss = actor_loss - entropy
+        policy_loss = -(log_probs * advantages.view(-1)).mean()
+        entropy = torch.cat([item.view(-1) for item in entropies]).mean()
+        actor_loss = policy_loss - entropy if self.use_entropy else policy_loss
         critic_loss = F.smooth_l1_loss(values, returns)
 
-        return actor_loss, critic_loss
+        # Update metrics for W&B (same as A3C).
+        stats = {
+            "train/pi_loss": policy_loss.item(),
+            "train/v_loss": critic_loss.item(),
+            "train/total_loss": (actor_loss + critic_loss).item(),
+            "train/entropy": entropy.item(),
+            "train/entropy_coef": entropy_coef,
+            "train/advantages_mean": advantages.mean().item(),
+            "train/advantages_std": advantages.std(unbiased=False).item(),
+            "train/value_mean": values.mean().item(),
+            "train/value_std": values.std(unbiased=False).item(),
+        }
+        return actor_loss, critic_loss, stats
 
     def optimize(self, final_state_rgb, done, final_speed):
         td_targets = self.calculate_n_step_return(
             self.rewards, final_state_rgb, done, self.gamma, final_speed)
 
-        actor_loss, critic_loss = self.calculate_loss(self.trajectory, td_targets)
+        actor_loss, critic_loss, stats = self.calculate_loss(
+            self.trajectory, td_targets)
         self.actor_optimizer.zero_grad()
         self.critic_optimizer.zero_grad()
         actor_loss.backward()
         critic_loss.backward()
         gradient_logs = {}
+        # A2C only: A3C does not send gradient histograms to W&B (see A3C docs/logging.md).
         if logging:
             for model_name, model in (
                     ("actor", self.actor), ("critic", self.critic)):
@@ -279,15 +325,16 @@ class DeepActorCriticAgent(mp.Process):
                                 param.grad.detach().cpu().numpy())
         self.actor_optimizer.step()
         self.critic_optimizer.step()
+        actor_lr = self.actor_optimizer.param_groups[0]['lr']
+        critic_lr = self.critic_optimizer.param_groups[0]['lr']
         if logging:
             wandb.log({
                 "global_step": self.global_step_num,
-                "actor_loss": actor_loss.detach(),
-                "critic_loss": critic_loss.detach(),
+                **stats,
+                "train/lr": actor_lr,
+                "train/reward_mean": float(np.mean(self.rewards)),
                 **gradient_logs,
             })
-        actor_lr = self.actor_optimizer.param_groups[0]['lr']
-        critic_lr = self.critic_optimizer.param_groups[0]['lr']
         self.trajectory.clear()
         self.rewards.clear()
 
@@ -361,11 +408,18 @@ class DeepActorCriticAgent(mp.Process):
             "actor_optimizer_state_dict": self.actor_optimizer.state_dict(),
             "critic_optimizer_state_dict": self.critic_optimizer.state_dict(),
             "best_mean_reward": self.best_mean_reward,
-            "best_reward": self.best_reward,
+            "reward_min": self.reward_min,
+            "reward_max": self.reward_max,
+            "goal_distance_min": self.goal_distance_min,
+            "goal_distance_max": self.goal_distance_max,
             "episode": self.episode,
             "mean_reward": self.mean_reward,
             "episode_rewards_history": self.episode_rewards_history[-100:],
+            "episode_goal_dists_history":
+                self.episode_goal_dists_history[-100:],
             "global_step": self.global_step_num,
+            "elapsed_training_s": self.elapsed_training_s,
+            "threshold_hits": list(self.threshold_hits.values()),
         }
 
         # Save the checkpoint dictionary
@@ -417,7 +471,6 @@ class DeepActorCriticAgent(mp.Process):
         self.episode = checkpoint.get("episode", 0)
         self.mean_reward = checkpoint.get("mean_reward", -float('inf'))
         self.best_mean_reward = checkpoint.get("best_mean_reward", -float('inf'))
-        self.best_reward = checkpoint.get("best_reward", -float('inf'))
         self.global_step_num = checkpoint.get("global_step", 0)
         history = checkpoint.get("episode_rewards_history")
         if history is None:
@@ -426,11 +479,30 @@ class DeepActorCriticAgent(mp.Process):
                 if self.episode > 0 and np.isfinite(self.mean_reward) else [])
         self.episode_rewards_history = [
             float(reward) for reward in history[-100:]]
+        self.episode_goal_dists_history = [
+            float(distance) for distance in
+            checkpoint.get("episode_goal_dists_history", [])[-100:]]
+        # An older checkpoint names them best/worst_reward, goal_dist_min/max.
+        self.reward_min = checkpoint.get(
+            "reward_min", checkpoint.get("worst_reward", float('inf')))
+        self.reward_max = checkpoint.get(
+            "reward_max", checkpoint.get("best_reward", -float('inf')))
+        self.goal_distance_min = checkpoint.get(
+            "goal_distance_min", checkpoint.get("goal_dist_min", float('inf')))
+        self.goal_distance_max = checkpoint.get(
+            "goal_distance_max", checkpoint.get("goal_dist_max", -float('inf')))
+        self.elapsed_training_s = checkpoint.get("elapsed_training_s", 0.0)
+        # Reached thresholds that are still configured.
+        self.threshold_hits = {
+            (hit["signal"], hit["threshold"]): hit
+            for hit in checkpoint.get("threshold_hits", [])
+            if hit["signal"] in THRESHOLD_SIGNALS
+            and hit["threshold"] in reward_thresholds}
 
         if logging:
             print("Checkpoint loaded successfully.")
             print(f"Resumed from Episode: {self.episode}")
-            print(f"Best Mean Reward: {self.best_mean_reward:.2f}, Best Reward: {self.best_reward:.2f}")
+            print(f"Best Mean Reward: {self.best_mean_reward:.2f}, Reward max: {self.reward_max:.2f}")
         
 def handle_crash(results_queue):
     signal.signal(signal.SIGUSR1, _request_worker_stop)
@@ -448,12 +520,23 @@ def handle_crash(results_queue):
                 'algorithm': 'A2C',
                 'network_architecture': 'separate_image_speed_actor_critic_v1',
                 'scenario': scenario,
-                'map': 'Town03',
+                'map_name': 'Town03',
                 'camera': camera_type,
-                'learning_rate': lr,
+                'res': 250,
+                'lr': lr,
                 'gamma': gamma,
                 'action_type': action_type,
                 'seed': seed,
+                'reward_thresholds': reward_thresholds,
+                # Values fixed in this file, under A3C config names.
+                'entropy_coef': entropy_coef,
+                'value_loss_coef': 1.0,
+                'rollout_length': 5,
+                'weight_decay': 1e-2,
+                'max_grad_norm': 0.0,
+                'normalize_advantages': False,
+                'reward_mode': 'legacy',
+                'reward_scale': 0.0,
             },
             notes='A2C CARLA experiment from a2c_rgb_try2.py',
         )
@@ -476,6 +559,18 @@ def handle_crash(results_queue):
             run_global_step))
     elif os.environ.get('A2C_STATE_DIR'):
         agent.global_step_num = 0
+    # Training clock, continued from the checkpoint.
+    elapsed_offset = agent.elapsed_training_s
+    session_start = time.time()
+    sent_minmax = {}  # Run min and max already in the W&B summary
+    if logging:
+        # Write all thresholds, reached or not, to the W&B summary.
+        # Not named "signal": that would hide the signal module.
+        for signal_name in THRESHOLD_SIGNALS:
+            for threshold in reward_thresholds:
+                wandb.run.summary.update(_threshold_summary(
+                    signal_name, threshold,
+                    agent.threshold_hits.get((signal_name, threshold))))
     prev_checkpoint_mean_ep_rew = agent.best_mean_reward
     num_improved_episodes_before_checkpoint = 0  # To keep track of the num of ep with higher perf to save model
     episodes_to_save_images = (1, 5, 10, 43, 44, 50, 150, 400, 401, 402, 1000, 1001, 1002, 1003, 2001, 2002, 2003,
@@ -483,7 +578,6 @@ def handle_crash(results_queue):
                                 4100, 4101, 4102, 4103, 4104, 4105, 4106, 4107, 4108, 4109, 4110,
                                 6800, 6801, 6802, 6803, 6804, 6805, 6806, 6807, 6808, 6809, 6810,
                                 42010, 42011, 42012, 42013, 42014, 42015, 42016, 42017, 42018, 42019, 42020)
-    max_speed = 0
     distance_from_goal = 0
     while 1:
         if STOP_REQUESTED:
@@ -526,6 +620,9 @@ def handle_crash(results_queue):
         for action in ac.ACTIONS_NAMES.values():
             actions_counter[action] = 0
         episode_step=0
+        max_speed_kmh = 0.0
+        min_route_distance = float('inf')
+        reached_goal = False
 
         episode_start_time = datetime.now()
 
@@ -535,8 +632,6 @@ def handle_crash(results_queue):
             # perform_actions +=1  #perform every 0.2 seconds
             # if perform_actions%2==1:
                 # print(perform_actions)
-            if speed_tensor.item() > max_speed:
-                max_speed = speed_tensor.item()
 
             action = agent.get_action(state_rgb, speed_tensor, testing)
 
@@ -567,10 +662,16 @@ def handle_crash(results_queue):
                 save_image=save_image,
                 episode=agent.episode,
                 step=episode_step)
+            max_speed_kmh = max(max_speed_kmh, speed)
+            min_route_distance = min(min_route_distance, route_distance)
+            # Episode statistics; success uses the env's own done flag.
+            if done and distance_from_goal < GOAL_RADIUS_M:
+                reached_goal = True
             agent.environment.state_observer.reward = reward
             agent.global_step_num += 1
             _save_run_global_step(agent.global_step_num)
             if logging:
+                # A2C only: A3C does not send step reward to W&B (see A3C docs/logging.md).
                 wandb.log({
                     "global_step": agent.global_step_num,
                     "step_reward": reward,
@@ -602,23 +703,86 @@ def handle_crash(results_queue):
         agent.episode_rewards_history.append(float(ep_reward))
         agent.episode_rewards_history = agent.episode_rewards_history[-100:]
         agent.mean_reward = float(np.mean(agent.episode_rewards_history))
-        if ep_reward > agent.best_reward:
-            agent.best_reward = ep_reward
+        agent.episode_goal_dists_history.append(float(distance_from_goal))
+        agent.episode_goal_dists_history = \
+            agent.episode_goal_dists_history[-100:]
+        mean_goal_distance = float(
+            np.mean(agent.episode_goal_dists_history))
+        agent.reward_min = min(agent.reward_min, ep_reward)
+        agent.reward_max = max(agent.reward_max, ep_reward)
+        if np.isfinite(distance_from_goal):
+            agent.goal_distance_min = min(agent.goal_distance_min,
+                                          distance_from_goal)
+            agent.goal_distance_max = max(agent.goal_distance_max,
+                                          distance_from_goal)
+        agent.elapsed_training_s = elapsed_offset + (
+            time.time() - session_start)
+        # Reward thresholds: each one is reached once per run.
+        window_mean = agent.mean_reward \
+            if len(agent.episode_rewards_history) == 100 else None
+        signal_values = {
+            'episode_reward': ep_reward,
+            'reward_mean_100': window_mean,
+        }
+        for signal_name in THRESHOLD_SIGNALS:
+            for threshold in reward_thresholds:
+                value = signal_values[signal_name]
+                if value is None or value < threshold or \
+                        (signal_name, threshold) in agent.threshold_hits:
+                    continue
+                hit = {
+                    'signal': signal_name,
+                    'threshold': threshold,
+                    'value': value,
+                    'global_step': agent.global_step_num,
+                    'global_episode': agent.episode,
+                    'elapsed_training_s': agent.elapsed_training_s,
+                }
+                agent.threshold_hits[(signal_name, threshold)] = hit
+                if logging:
+                    wandb.run.summary.update(
+                        _threshold_summary(signal_name, threshold, hit))
         agent.save(model_incr_save)
         if logging:
             print('Logging values of episode steps, episode duration [s], reward, episode, mean_reward etc.')
             print(f'{datetime.now().strftime("%Y %B %d | %H:%M")}  Logging values of episode steps, episode duration [s], reward, episode, mean_reward etc.')
             print(f'Episode {agent.episode}, and mean reward {agent.mean_reward}')
+            # Share of each action in the episode.
+            action_fractions = {
+                "episode/action_{}_fraction".format(index): actions_counter[
+                    ac.ACTIONS_NAMES[agent.environment.action_space[index]]]
+                / episode_step
+                for index in range(agent.action_shape)}
+            # Same names as A3C, without its worker_<id>/ prefix. One worker,
+            # so A3C's global/* aggregates are these values and are not
+            # logged again.
             wandb.log({
                 "global_step": agent.global_step_num,
-                "episode steps": episode_step,
-                "episode duration [s]": episode_time.seconds,
+                "episode/id": agent.episode,
+                "episode/reward_per_step": ep_reward / episode_step,
+                "episode/duration_s": episode_time.total_seconds(),
+                "episode/success": int(reached_goal),
+                "episode/max_speed_kmh": max_speed_kmh,
+                "episode/min_route_distance": min_route_distance,
+                "episode/collisions": len(
+                    agent.environment.collision_history_list),
+                **action_fractions,
                 "reward": ep_reward,
-                "episode": agent.episode,
-                "mean_reward": agent.mean_reward,
-                "max_speed": max_speed,
-                "distance_from_goal": distance_from_goal,
+                "episode_length": episode_step,
+                "reward_mean_100": agent.mean_reward,
+                "goal_distance": distance_from_goal,
+                "goal_distance_mean_100": mean_goal_distance,
+                "global/elapsed_training_s": agent.elapsed_training_s,
             })
+            # Run min and max: W&B summary values, sent when they change.
+            minmax = {name: getattr(agent, name) for name in (
+                "reward_min", "reward_max",
+                "goal_distance_min", "goal_distance_max")}
+            changed = {key: value for key, value in minmax.items()
+                       if np.isfinite(value) and sent_minmax.get(key) != value}
+            if changed:
+                wandb.run.summary.update(changed)
+                sent_minmax.update(changed)
 
         # print("Episode: {} \t ep_reward:{} \t mean_ep_rew:{}\t best_ep_reward:{} max_speed: {} distance_from_goal: {}".format(agent.episode,
         #                                                                                     ep_reward,
@@ -629,6 +793,11 @@ def handle_crash(results_queue):
     agent.environment.world = None
     agent.environment.client = None
     if logging and wandb.run is not None:
+        # End-of-session values, A3C final_summary keys.
+        wandb.run.summary.update({
+            "final_global_step": agent.global_step_num,
+            "session_elapsed_s": time.time() - session_start,
+        })
         wandb.finish()
     results_queue.put(1)
 
